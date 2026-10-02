@@ -1,0 +1,14 @@
+{
+  "name": "frameboard",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "A local, image-first kanban board",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test": "node --test test/*.test.js",
+    "test:browser": "node scripts/browser-test.mjs"
+  },
+  "engines": { "node": ">=22" }
+}
