@@ -1,47 +1,46 @@
 # Card-selected chat interaction prototype
 
-THROWAWAY — layout, card click behavior and card switching chosen; remaining interaction preferences await human answers.
+THROWAWAY — approved interaction direction, not production feature implementation.
 
-Question: How can a selected card’s persistent chat stay accessible while the user works on the board and edits the card?
+Question: How can the selected card’s editor and persistent chat stay usable together while the user works on the board?
 
-Run `npm start` on this prototype branch and open `http://localhost:3000/?prototype=card-chat&variant=C` (or the server’s reported port). The normal board remains at `/`. Alternatively, open `public/card-chat.prototype.html` directly; it is a self-contained artifact.
+Run `npm start` on this prototype branch and open `http://localhost:3000/?prototype=card-chat&variant=C` (or the server’s reported port). The normal board remains at `/`. Alternatively, open `public/card-chat.prototype.html` directly as a self-contained artifact.
 
-## Layout alternatives
+## Settled interaction contract
 
-- A: Resizable dock; board uses the remaining width, card editing opens separately beside chat.
-- B: Overlay drawer; preserves lane widths but covers part of the board.
-- C (chosen): Compact board, central card editor and adjacent chat. Clicking a card opens both. Hiding chat returns to a floating card editor with the existing editor content; this prototype only approximates its appearance.
-
-Use the bottom arrows or Left/Right keys outside text inputs. Layout selection updates the `variant` URL parameter.
+- Choose C: board, open card editor, and separate adjacent chat on a wide screen.
+- Clicking a card opens its editor directly, with its single persistent card chat visible by default.
+- Hiding chat returns to the existing floating editor modal; showing chat restores the adjacent arrangement. Reuse the real editor’s contents and editing behavior in production; this prototype approximates them.
+- Remember hidden chat across cards and app restarts until the user explicitly reopens it.
+- Selecting another card switches editor and chat together. It does not interrupt work on the previous card.
+- Keep each card’s unsent prompt, reference attachment choices, and view position associated with that card when switching views/cards. Durable recovery is another decision.
+- On narrow screens, use Editor / Chat tabs, initially Editor, preserving each view’s state when switching.
+- Closing a card returns to the board; background replies continue. Stop is the explicit interruption control.
+- Card indicators: blue pulsing glow and elapsed time for Working, green for Done, question mark for Input needed. Pair color with text/symbols; reduced-motion users receive a static working indication.
+- Expose background work and pending input both on cards and through a workspace activity control. Activity entries identify their originating card.
+- Keep prompt submission, Stop, card-specific approval/input requests, reference/image controls, and selected-output review accessible in the chat surface.
+- Agent editing is desired; exact authority, manual acceptance, stale revisions and image adoption are separate decisions.
+- Allow chat resizing within the available space without making the editor unusable. Prototype pixel dimensions are illustrative.
 
 ## Scenarios to try
 
-1. Type an unsent prompt, attach the sample reference, select another card, then return: prompt and reference stay with their card.
-2. Start a simulated reply, switch cards, and press Finish other cards: the original card shows New reply without changing the selected conversation.
-3. Simulate Approval needed: the request names its card. Switch away and return; the card badge keeps it visible.
-4. Simulate Finish reply, then Review for this card: the review explicitly names the destination and field.
-5. Open Edit card; the chat stays outside the editing surface. Collapse/reopen chat; inspect each variant.
-6. Drag the pane edge or focus its separator and use Left/Right to resize. On a narrow viewport the chat becomes a full-width surface with Back to board.
-7. Simulate connection loss, stop, an image result, or no selection. These illustrate control placement, not provider/recovery semantics.
+1. Initial sample cards demonstrate Working with a timer, Input needed and Done.
+2. Type a draft or attach the sample reference, switch cards, and return: the draft/reference stays with its card.
+3. Start a simulated reply, switch cards, then Finish other cards: the original card becomes Done with a new-reply marker.
+4. Hide chat, close the editor, open another card, then reload: chat stays hidden. Show chat clears that preference.
+5. Close a working card and open Activity: its work remains visible and its entry returns to the originating card.
+6. Use Editor / Chat tabs in a narrow viewport.
+7. Simulate completion and review selected output; the destination card and field are explicit.
+8. Resize chat, simulate an image, or Stop a reply. The artifact explores control placement rather than native provider contracts.
 
-## Limits
+## Artifact boundaries
 
-The board is an example populated with three content cards, using the existing app’s palette and card/editor vocabulary. All modifications, drafts, attachments and replies exist only in memory and reset on reload. No provider/model calls, real files, backend writes, or actual images are used. Image capability, approval authority, output acceptance, execution queues, and recovery rules remain other decision tickets. The compact workbench is a candidate interaction, not authorization to replace the existing editor.
+Replies, approvals, images and card mutations are simulated in memory and reset on reload. Only chat visibility is saved, under the isolated `frameboard-prototype-chat-hidden` browser key when storage is available. No provider calls, real files, or backend writes occur. The prototype retains the original A/B alternatives via its bottom switcher and URL parameter as design evidence; C is the selected direction.
 
-## Chosen through the human exchange
+## Follow-through in existing decision tickets
 
-- Use the editing workbench (C), with card editor and chat alongside one another.
-- Clicking a card opens its editor directly, with chat beside it by default.
-- Hiding chat returns to the existing floating card editor; showing chat restores the adjacent arrangement.
-- Selecting another card switches the editor and chat to that card, while replies on other cards continue.
-- Agent editing is desired. Which tools may edit and when changes need acceptance remains the separate **Define manual acceptance and agent tool authority** ticket.
-
-## Pending decisions
-
-- Whether a hidden-chat preference follows card changes and survives restarts.
-- Editor/chat view switching versus vertical stacking on narrow screens.
-- Closing behavior and how workspace activity exposes background replies and approvals.
-
-The prototype demonstrates the recommended answers: remember hidden chat during this run, switch narrow views with Editor/Chat controls, and leave replies running when closing the card, with both card badges and a workspace activity button. These remaining recommendations are not resolved decisions. Reload still resets all prototype state.
+- **Define manual acceptance and agent tool authority**: agent edits, input/approval rules and adoption permissions.
+- **Choose durable chat, artifact, and recovery boundaries**: indicator aggregation across runs, finished/unread retention, failures and interruption, and reliable timing/state reconstruction across app restarts.
+- **Design image generation, editing, and version adoption**: actual image interactions and version roles.
 
 Ticket: https://github.com/michaelahoff/content-kanban/issues/4
