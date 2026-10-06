@@ -19,6 +19,7 @@ const pending = new Map();
 const browserErrors = [];
 let sequence = 0;
 let sessionId;
+let interceptedDrag;
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 try {
   const websocket = await new Promise((resolve, reject) => {
@@ -36,6 +37,7 @@ try {
   await new Promise((resolve, reject) => { socket.onopen = resolve; socket.onerror = reject; });
   socket.onmessage = (event) => {
     const message = JSON.parse(event.data);
+    if (message.method === 'Input.dragIntercepted') interceptedDrag = message.params.data;
     if (message.method === 'Runtime.exceptionThrown') browserErrors.push(message.params.exceptionDetails);
     if (message.id) {
       const handler = pending.get(message.id);
@@ -65,6 +67,57 @@ try {
   const click = (selector) => evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`);
   const fill = (selector, value) => evaluate(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); el.value = ${JSON.stringify(value)}; el.dispatchEvent(new Event('input', { bubbles: true })); })()`);
   const select = (selector, value) => evaluate(`(() => { const el = document.querySelector(${JSON.stringify(selector)}); el.value = ${JSON.stringify(value)}; el.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+  const drag = async (sourceSelector, targetSelector, expectedId, placement = 'before') => {
+    const points = await evaluate(`(() => {
+      const source = document.querySelector(${JSON.stringify(sourceSelector)});
+      const target = document.querySelector(${JSON.stringify(targetSelector)});
+      source.scrollIntoView({ block: 'center', inline: 'nearest' });
+      const a = source.getBoundingClientRect(), b = target.getBoundingClientRect();
+      const placement = ${JSON.stringify(placement)};
+      const siblings = Array.from(target.parentElement.querySelectorAll('[data-card]')).filter(card => card.dataset.card !== ${JSON.stringify(expectedId)});
+      const next = siblings[siblings.indexOf(target) + 1];
+      const last = target.querySelector('.card:last-child');
+      return {
+        x1: a.left + a.width / 2, y1: a.top + a.height / 2, x2: b.left + b.width / 2,
+        y2: target.matches('.card') ? b.top + b.height * (placement === 'after' ? .75 : .25) : placement === 'end' ? Math.max(b.top + 70, (last?.getBoundingClientRect().bottom || b.top) + 20) : Math.max(b.top + 70, a.top + a.height / 2),
+        beforeId: target.matches('.card') ? placement === 'after' ? next?.dataset.card || null : target.dataset.card : null,
+      };
+    })()`);
+    interceptedDrag = null;
+    await send('Input.setInterceptDrags', { enabled: true });
+    try {
+      await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: points.x1, y: points.y1 });
+      await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: points.x1, y: points.y1, button: 'left', clickCount: 1 });
+      for (let step = 1; step <= 5; step++) {
+        await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: points.x1 + (points.x2 - points.x1) * step / 5, y: points.y1 + (points.y2 - points.y1) * step / 5, button: 'left', buttons: 1 });
+      }
+      for (let attempt = 0; attempt < 30 && !interceptedDrag; attempt++) await pause(20);
+      assert.ok(interceptedDrag, 'Dragging from the card starts a native drag');
+      assert.equal(interceptedDrag.items.find((item) => item.mimeType === 'text/plain')?.data, expectedId, 'Dragging the image carries the card ID');
+      assert.equal(interceptedDrag.items.some((item) => item.mimeType === 'text/uri-list'), false, 'Dragging a card must not start a separate image URL drag');
+      for (const type of ['dragEnter', 'dragOver']) await send('Input.dispatchDragEvent', { type, x: points.x2, y: points.y2, data: interceptedDrag });
+      const motion = await evaluate(`(() => {
+        const slot = document.querySelector('.drop-indicator');
+        return { reduced: matchMedia('(prefers-reduced-motion: reduce)').matches, animations: slot?.getAnimations({ subtree: true }).length || 0 };
+      })()`);
+      if (motion.reduced) assert.equal(motion.animations, 0, 'Reduced motion keeps the insertion preview still');
+      else assert.equal(motion.animations, 2, 'The gap slides open and the line grows');
+      await evaluate(`Promise.all(document.querySelector('.drop-indicator').getAnimations({ subtree: true }).map(animation => animation.finished.catch(() => {})))`);
+      const indicator = await evaluate(`(() => {
+        const slots = document.querySelectorAll('.drop-indicator');
+        const slot = slots[0];
+        return { count: slots.length, height: slot?.getBoundingClientRect().height, lineHeight: slot?.querySelector('span').getBoundingClientRect().height, beforeId: slot?.nextElementSibling?.dataset.card || null };
+      })()`);
+      assert.equal(indicator.count, 1, 'One insertion line shows the active drop position');
+      assert.ok(indicator.height >= 26, 'The insertion line gets its own gap between cards');
+      assert.equal(indicator.lineHeight, 2);
+      assert.equal(indicator.beforeId, points.beforeId, 'The insertion gap matches the intended position');
+      await send('Input.dispatchDragEvent', { type: 'drop', x: points.x2, y: points.y2, data: interceptedDrag });
+      await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: points.x2, y: points.y2, button: 'left', clickCount: 1 });
+      assert.equal(await evaluate(`document.querySelectorAll('.drop-indicator').length`), 0, 'The insertion line clears after dropping');
+      await evaluate(`Promise.all(document.querySelector('#board').getAnimations({ subtree: true }).map(animation => animation.finished.catch(() => {})))`);
+    } finally { await send('Input.setInterceptDrags', { enabled: false }); }
+  };
   const saved = () => waitFor(`document.querySelector('[data-save-status]')?.textContent.includes('All changes saved')`);
   const snapshot = async (name) => {
     await evaluate(`Promise.all(document.getAnimations().map(animation => animation.finished.catch(() => {})))`);
@@ -72,7 +125,15 @@ try {
     const { data } = await send('Page.captureScreenshot', { format: 'png' });
     await writeFile(`test-results/${name}.png`, Buffer.from(data, 'base64'));
   };
-  const state = async () => (await (await fetch(`${base}/api/board`)).json()).board;
+  // Rebuilds the nested projects → lanes → cards shape from the API for easy assertions.
+  const state = async () => {
+    const workspace = await (await fetch(`${base}/api/workspace`)).json();
+    return { projects: await Promise.all(workspace.projects.map(async (project) => {
+      const { cards } = await (await fetch(`${base}/api/projects/${project.id}/cards`)).json();
+      const { stages } = workspace.flows.find((flow) => flow.id === project.flowId);
+      return { ...project, lanes: stages.map((stage) => ({ ...stage, cards: cards.filter((card) => card.stageId === stage.id) })) };
+    })) };
+  };
   await send('Page.navigate', { url: base });
   await waitFor(`document.querySelectorAll('.lane').length === 4`);
   await snapshot('empty-board');
@@ -94,7 +155,7 @@ try {
     }
   }
   await saved();
-  assert.equal((await state()).projects[0].lanes[0].cards[0].originalVideoUrl, 'unfinished');
+  assert.equal((await state()).projects[0].lanes[0].cards[0].fields.originalVideoUrl, 'unfinished');
   await fill('#card-original-video-url', `${base}/?video=original&reference=1`);
   await fill('#card-published-video-url', `${base}/?video=published`);
   for (const [field, url] of [['card-original-video-url', `${base}/?video=original&reference=1`], ['card-published-video-url', `${base}/?video=published`]]) {
@@ -132,12 +193,12 @@ try {
   await snapshot('card-editor');
   const edited = (await state()).projects[0].lanes[0].cards[0];
   assert.equal(edited.title, 'A quiet morning');
-  assert.equal(edited.titleOptions, 'Before the city wakes\nSmall rituals');
-  assert.equal(edited.originalVideoTitle, 'A study in stillness');
-  assert.equal(edited.originalVideoUrl, `${base}/?video=original&reference=1`);
-  assert.equal(edited.publishedVideoUrl, `${base}/?video=published`);
+  assert.equal(edited.fields.titleOptions, 'Before the city wakes\nSmall rituals');
+  assert.equal(edited.fields.originalVideoTitle, 'A study in stillness');
+  assert.equal(edited.fields.originalVideoUrl, `${base}/?video=original&reference=1`);
+  assert.equal(edited.fields.publishedVideoUrl, `${base}/?video=published`);
   assert.equal(edited.images.length, 2);
-  assert.equal(edited.coverImageId, edited.images[1].id);
+  assert.equal(edited.imageRoles.cover, edited.images[1].id);
   assert.ok(Date.parse(edited.updatedAt) > Date.parse(createdTimestamp));
   assert.equal(await evaluate(`document.querySelector('#card-dialog .edited-at time').dateTime`), edited.updatedAt);
   await click('.image-tile.is-display [data-action="set-display"]');
@@ -234,13 +295,10 @@ try {
   await click('[data-action="open-card"]');
   assert.equal(await evaluate(`document.querySelector('#card-dialog .edited-at time').dateTime`), movedTimestamp);
   assert.equal((await state()).projects[0].lanes[1].cards[0].updatedAt, movedTimestamp);
-  assert.equal(await evaluate(`document.querySelector('#card-intro').value`), edited.intro);
-  assert.equal(await evaluate(`document.querySelector('#card-title-options').value`), edited.titleOptions);
-  assert.equal(await evaluate(`document.querySelector('#card-script').value`), edited.script);
-  assert.equal(await evaluate(`document.querySelector('#card-original-video-title').value`), edited.originalVideoTitle);
-  assert.equal(await evaluate(`document.querySelector('#card-original-video-url').value`), edited.originalVideoUrl);
-  assert.equal(await evaluate(`document.querySelector('#card-published-video-url').value`), edited.publishedVideoUrl);
-  assert.equal(await evaluate(`document.querySelector('#card-original-video-url-link a').href`), edited.originalVideoUrl);
+  for (const [input, key] of [['card-intro', 'intro'], ['card-title-options', 'titleOptions'], ['card-script', 'script'], ['card-original-video-title', 'originalVideoTitle'], ['card-original-video-url', 'originalVideoUrl'], ['card-published-video-url', 'publishedVideoUrl']]) {
+    assert.equal(await evaluate(`document.querySelector('#${input}').value`), edited.fields[key]);
+  }
+  assert.equal(await evaluate(`document.querySelector('#card-original-video-url-link a').href`), edited.fields.originalVideoUrl);
   assert.equal(await evaluate(`document.querySelectorAll('.image-tile').length`), 3);
   await click('.image-tile.is-display [data-action="remove-image"]');
   await click('#small-form [type="submit"]');
@@ -252,13 +310,10 @@ try {
 
   // Drag existing card to another lane, then paste a new card into that lane.
   const lanes = (await state()).projects[0].lanes;
-  await evaluate(`(() => {
-    const transfer = new DataTransfer();
-    document.querySelector('.card').dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: transfer }));
-    document.querySelector('[data-lane="${lanes[2].id}"]').dispatchEvent(new DragEvent('drop', { bubbles: true, dataTransfer: transfer }));
-  })()`);
+  await drag('.card-image img', `[data-lane="${lanes[2].id}"]`, lanes[1].cards[0].id);
   await saved();
   assert.equal((await state()).projects[0].lanes[2].cards.length, 1);
+  assert.equal(await evaluate(`document.querySelector('#card-dialog').open`), false, 'Dragging does not also open the editor');
   await evaluate(`document.querySelector('[data-lane="${lanes[0].id}"]').focus()`);
   await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'v', code: 'KeyV', modifiers: 2, windowsVirtualKeyCode: 86 });
   await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'v', code: 'KeyV', modifiers: 2, windowsVirtualKeyCode: 86 });
@@ -277,8 +332,79 @@ try {
   await snapshot('board-with-cards');
   console.log('PASS drag-and-drop, clipboard creates card, script and title options search');
 
+  // A tall lane must leave neighbouring lanes droppable at the same depth.
+  const tallCards = await evaluate(`(async () => {
+    const { project, createCard, cardChanged, flushCards } = await import('/state.js');
+    const { renderBoard } = await import('/board.js');
+    const lane = project().lanes[0], original = lane.cards[0];
+    const ids = [];
+    for (let i = 0; i < 6; i++) {
+      const card = createCard(lane);
+      card.title = 'Tall lane card ' + i;
+      card.images = structuredClone(original.images);
+      card.imageRoles = structuredClone(original.imageRoles);
+      cardChanged(card); ids.push(card.id);
+    }
+    flushCards(); renderBoard(); return ids;
+  })()`);
+  await saved();
+  const laneHeights = await evaluate(`Array.from(document.querySelectorAll('.lane'), lane => lane.getBoundingClientRect().height)`);
+  assert.ok(laneHeights[0] > 1000, 'Fixture makes a lane taller than the viewport');
+  assert.ok(laneHeights.every((height) => Math.abs(height - laneHeights[0]) < 1), 'Short and empty lanes stretch to the tallest lane');
+  const lastTallCard = tallCards.at(-1);
+  await drag(`[data-card="${lastTallCard}"] .card-image img`, `[data-lane="${lanes[1].id}"]`, lastTallCard);
+  await saved();
+  assert.ok((await state()).projects[0].lanes[1].cards.some((card) => card.id === lastTallCard), 'Image drag drops into the empty space near the bottom of a short lane');
+  assert.equal(await evaluate(`document.querySelector('#card-dialog').open`), false);
+  console.log('PASS tall lanes share full-height drop targets and accept image drags near the bottom');
+
+  await click('[data-action="toggle-cards"]');
+  assert.equal(await evaluate(`document.querySelector('[data-action="toggle-cards"]').textContent`), 'Expand cards');
+  assert.equal(await evaluate(`document.querySelector('[data-action="toggle-cards"]').getAttribute('aria-pressed')`), 'true');
+  assert.equal(await evaluate(`document.querySelectorAll('.card-image, .card-meta, .card-body > p, .card-body > .edited-at').length`), 0);
+  assert.ok(await evaluate(`Array.from(document.querySelectorAll('.card'), card => card.getBoundingClientRect().height).every(height => height < 60)`));
+  await evaluate(`document.querySelector('#board').scrollLeft = 0; window.scrollTo(0, 0)`);
+  await drag(`[data-card="${tallCards[1]}"] h3`, `[data-card="${tallCards[0]}"]`, tallCards[1]);
+  await saved();
+  const compactOrder = (await state()).projects[0].lanes[0].cards.map((card) => card.id);
+  assert.ok(compactOrder.indexOf(tallCards[1]) < compactOrder.indexOf(tallCards[0]), 'Titles-only cards still reorder with a native drag');
+  await drag(`[data-card="${tallCards[1]}"] h3`, `[data-card="${tallCards[0]}"]`, tallCards[1], 'after');
+  await saved();
+  const afterOrder = (await state()).projects[0].lanes[0].cards.map((card) => card.id);
+  assert.ok(afterOrder.indexOf(tallCards[1]) > afterOrder.indexOf(tallCards[0]), 'Dropping in the lower half inserts after the target card');
+  await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
+  await drag(`[data-card="${tallCards[0]}"] h3`, `[data-lane="${lanes[0].id}"]`, tallCards[0], 'end');
+  await send('Emulation.setEmulatedMedia', { features: [] });
+  await saved();
+  assert.equal((await state()).projects[0].lanes[0].cards.at(-1).id, tallCards[0], 'The end-of-lane insertion line appends the card');
+  await fill('#search', 'kettle');
+  assert.equal(await evaluate(`document.querySelectorAll('.card').length`), 1, 'Collapsed cards still search their hidden fields');
+  await fill('#search', '');
+  await click(`[data-card="${tallCards[0]}"] [data-action="open-card"]`);
+  assert.equal(await evaluate(`document.querySelector('#card-dialog').open`), true);
+  assert.equal(await evaluate(`document.querySelector('#card-title').value`), 'Tall lane card 0');
+  await click('#card-dialog [data-action="close-card"]');
+  await waitFor(`!document.querySelector('#card-dialog').open`);
+  await evaluate(`window.beforeCompactReload = true`);
+  await send('Page.reload');
+  await waitFor(`!window.beforeCompactReload && document.querySelector('#board')?.classList.contains('cards-collapsed')`);
+  assert.equal(await evaluate(`document.querySelectorAll('.card-image').length`), 0, 'Collapsed display preference survives reload');
+  await snapshot('collapsed-board');
+  await click('[data-action="toggle-cards"]');
+  assert.ok(await evaluate(`document.querySelectorAll('.card-image').length > 0`));
+  await evaluate(`(async () => {
+    const { deleteCard } = await import('/state.js');
+    for (const id of ${JSON.stringify(tallCards)}) deleteCard(id);
+    (await import('/board.js')).renderBoard();
+    window.scrollTo(0, 0);
+  })()`);
+  await saved();
+  assert.equal((await state()).projects[0].lanes.reduce((sum, lane) => sum + lane.cards.length, 0), 2);
+  console.log('PASS titles-only cards open, reorder, search, and remember their display preference');
+
   await click('.header-actions [data-action="add-lane"]');
   await fill('#name-input', 'Published');
+  const entryPrompt = 'Review this card’s script.\nSuggest a stronger opening.';
   assert.equal(await evaluate(`document.querySelectorAll('input[name="color"]').length`), 12);
   await click('input[name="color"][value="teal"]');
   await click('#small-form [type="submit"]');
@@ -287,6 +413,67 @@ try {
   const addedLane = (await state()).projects[0].lanes.at(-1).id;
   assert.equal((await state()).projects[0].lanes.at(-1).color, 'teal');
   assert.ok(await evaluate(`document.querySelector('[data-lane="${addedLane}"] .lane-dot').classList.contains('teal')`));
+  await click(`[data-action="edit-flow"][data-id="${addedLane}"]`);
+  assert.equal(await evaluate(`document.querySelectorAll('.flow-node').length`), 1);
+  await click('[data-flow-action="add"]');
+  await fill('#flow-value', entryPrompt);
+  const promptNodeId = await evaluate(`document.querySelector('.flow-node.selected').dataset.node`);
+  await click('[data-flow-action="add-field"]');
+  await select('#flow-field-1', 'originalVideoTitle');
+  await fill('#flow-value-1', 'An inspiration set in the same node');
+  await click('[data-flow-action="add-field"]');
+  await select('#flow-field-2', 'script');
+  await fill('#flow-value-2', 'A script set in the same node');
+  await click('[data-flow-action="add-field"]');
+  await fill('#flow-value-3', 'Remove this row');
+  await click('[data-flow-action="remove-field"][data-assignment-index="3"]');
+  assert.equal(await evaluate(`document.querySelectorAll('.flow-assignment').length`), 3);
+  assert.equal(await evaluate(`document.querySelector('#flow-value-1').value`), 'An inspiration set in the same node');
+  assert.equal(await evaluate(`document.querySelector('#flow-value-2').value`), 'A script set in the same node');
+  assert.equal(await evaluate(`document.querySelector('.flow-node.selected [data-node-label]').textContent`), '3 fields');
+  await snapshot('multi-field-set-node');
+  await click('[data-flow-action="add"]');
+  await select('#flow-field', 'intro');
+  await fill('#flow-value', 'An introduction from the lane');
+  const introNodeId = await evaluate(`document.querySelector('.flow-node.selected').dataset.node`);
+  await click('[data-flow-action="add"]');
+  await select('#flow-field', 'title');
+  await fill('#flow-value', 'Ready for review');
+  const titleNodeId = await evaluate(`document.querySelector('.flow-node.selected').dataset.node`);
+  assert.equal(await evaluate(`document.querySelectorAll('.flow-wire').length`), 3);
+  // Removing and reconnecting a wire changes the executable graph.
+  await evaluate(`document.querySelector('.flow-wire:last-child').dispatchEvent(new MouseEvent('click', { bubbles: true }))`);
+  await click('[data-flow-action="save"]');
+  assert.equal(await evaluate(`document.querySelector('#flow-dialog').open`), true);
+  assert.ok((await evaluate(`document.querySelector('#flow-error').textContent`)).includes('Connect every'));
+  await click(`[data-flow-action="output"][data-node-id="${introNodeId}"]`);
+  await click(`[data-flow-action="input"][data-node-id="${titleNodeId}"]`);
+  // A reverse edge would create a cycle and must not be accepted.
+  await click(`[data-flow-action="output"][data-node-id="${titleNodeId}"]`);
+  await click(`[data-flow-action="input"][data-node-id="${promptNodeId}"]`);
+  assert.ok((await evaluate(`document.querySelector('#flow-error').textContent`)).includes('loop'));
+  await click(`[data-flow-action="output"][data-node-id="${titleNodeId}"]`);
+  await click('[data-flow-action="arrange"]');
+  // Use real pointer input to drag the title node's header at 70% zoom.
+  for (let i = 0; i < 3; i++) await click('[data-flow-action="zoom-out"]');
+  const nodePoints = await evaluate(`(() => {
+    const handle=document.querySelector('[data-node="${titleNodeId}"] .flow-node-handle');
+    handle.scrollIntoView({block:'nearest',inline:'nearest'});
+    const r=handle.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2};
+  })()`);
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: nodePoints.x, y: nodePoints.y });
+  await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: nodePoints.x, y: nodePoints.y, button: 'left', clickCount: 1 });
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: nodePoints.x + 14, y: nodePoints.y + 35, button: 'left', buttons: 1 });
+  await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: nodePoints.x + 14, y: nodePoints.y + 35, button: 'left', clickCount: 1 });
+  await snapshot('lane-command-graph');
+  await click('[data-flow-action="save"]');
+  await waitFor(`!document.querySelector('#flow-dialog').open`);
+  await saved();
+  const savedGraph = (await state()).projects[0].lanes.at(-1).entryGraph;
+  assert.deepEqual(savedGraph.nodes.find(node => node.id === promptNodeId).config.assignments.map(assignment => assignment.field), ['prompt', 'originalVideoTitle', 'script']);
+  assert.deepEqual(savedGraph.nodes.filter(node => node.type === 'set').map(node => node.config.assignments[0].field), ['prompt', 'intro', 'title']);
+  const titlePosition = savedGraph.nodes.find(node => node.id === titleNodeId).position;
+  assert.ok(Math.abs(titlePosition.x - 1004) < 1 && Math.abs(titlePosition.y - 150) < 1, 'Dragging at 70% zoom saves the correct canvas coordinates');
   await click(`[data-action="edit-lane"][data-id="${addedLane}"]`);
   await fill('#name-input', 'Archived');
   await click('input[name="color"][value="purple"]');
@@ -295,7 +482,82 @@ try {
   await saved();
   assert.equal((await state()).projects[0].lanes[0].name, 'Archived');
   assert.equal((await state()).projects[0].lanes[0].color, 'purple');
+  // The prompt updates while the card editor stays open, and later edits save.
+  await click('[data-action="open-card"]');
+  const entryCardId = await evaluate(`(async () => (await import('/state.js')).state.cardId)()`);
+  const entrySourceLane = await evaluate(`document.querySelector('#card-lane').value`);
+  const entryBefore = await evaluate(`(async () => { const { locateCard } = await import('/state.js'); const card = locateCard().card; return { title: card.title, fields: { ...card.fields } }; })()`);
+  await select('#card-lane', addedLane);
+  await saved();
+  assert.equal(await evaluate(`document.querySelector('#card-prompt').value`), entryPrompt);
+  assert.equal(await evaluate(`document.querySelector('#card-intro').value`), 'An introduction from the lane');
+  assert.equal(await evaluate(`document.querySelector('#card-title').value`), 'Ready for review');
+  assert.equal(await evaluate(`document.querySelector('#card-original-video-title').value`), 'An inspiration set in the same node');
+  assert.equal(await evaluate(`document.querySelector('#card-script').value`), 'A script set in the same node');
+  await click('#card-dialog [data-action="undo-move"]');
+  await saved();
+  assert.equal(await evaluate(`document.querySelector('#card-lane').value`), entrySourceLane);
+  assert.equal(await evaluate(`document.querySelector('#card-title').value`), entryBefore.title);
+  assert.equal(await evaluate(`document.querySelector('#card-prompt').value`), entryBefore.fields.prompt);
+  assert.equal(await evaluate(`document.querySelector('#card-intro').value`), entryBefore.fields.intro);
+  assert.equal(await evaluate(`document.querySelector('#card-script').value`), entryBefore.fields.script);
+  assert.equal(await evaluate(`document.querySelector('#card-dialog [data-action="undo-move"]').disabled`), true);
+  await select('#card-lane', addedLane);
+  await saved();
+  await fill('#card-prompt', 'My prompt after entering');
+  await saved();
+  await select('#card-lane', entrySourceLane);
+  await click('#card-dialog [data-action="close-card"]');
+  await saved();
+  await drag(`[data-card="${entryCardId}"] h3`, `[data-lane="${addedLane}"]`, entryCardId);
+  await saved();
+  assert.equal((await state()).projects[0].lanes[0].cards[0].fields.prompt, entryPrompt, 'Dragging into the lane also replaces the prompt');
+  await send('Page.reload');
+  await waitFor(`document.querySelector('[data-action="open-card"][data-id="${entryCardId}"]')`);
+  await saved();
+  assert.equal(await evaluate(`document.querySelector('[data-undo-move="board"]').disabled`), false, 'Undo survives reloading');
+  await click('[data-undo-move="board"]');
+  await saved();
+  assert.equal((await state()).projects[0].lanes.find(lane => lane.id === entrySourceLane).cards.find(card => card.id === entryCardId).fields.prompt, 'My prompt after entering');
+  await drag(`[data-card="${entryCardId}"] h3`, `[data-lane="${addedLane}"]`, entryCardId);
+  await saved();
+  console.log('PASS editor and board undo restore lane command fields, including after reload');
+
+  await click(`[data-action="open-card"][data-id="${entryCardId}"]`);
+  await select('#card-lane', entrySourceLane);
+  await click('#card-dialog [data-action="close-card"]');
+  await saved();
+  await click(`[data-lane="${addedLane}"] .lane-actions [data-action="add-card"]`);
+  await saved();
+  assert.equal(await evaluate(`document.querySelector('#card-prompt').value`), entryPrompt, 'Cards created in the lane start with its prompt');
+  await click('#card-dialog [data-action="close-card"]');
+  await click(`[data-action="edit-flow"][data-id="${addedLane}"]`);
+  assert.equal(await evaluate(`document.querySelectorAll('.flow-node').length`), 4);
+  assert.equal(await evaluate(`document.querySelector('#flow-value').value`), entryPrompt);
+  assert.equal(await evaluate(`document.querySelectorAll('.flow-assignment').length`), 3);
+  assert.equal(await evaluate(`document.querySelector('#flow-value-2').value`), 'A script set in the same node');
+  // Cancel discards graph edits; deleting a middle node keeps the chain intact.
+  await click('[data-flow-action="add"]');
+  await click('[data-flow-action="close"]');
+  await click(`[data-action="edit-flow"][data-id="${addedLane}"]`);
+  assert.equal(await evaluate(`document.querySelectorAll('.flow-node').length`), 4);
+  await click(`[data-flow-action="select"][data-node-id="${introNodeId}"]`);
+  await click('[data-flow-action="remove-node"]');
+  await click('[data-flow-action="save"]');
+  await waitFor(`!document.querySelector('#flow-dialog').open`);
+  await saved();
+  assert.ok((await state()).projects[0].lanes[0].entryGraph.edges.some(edge => edge.from === promptNodeId && edge.to === titleNodeId), 'Deleting a command reconnects its neighbours');
+  await click(`[data-action="edit-flow"][data-id="${addedLane}"]`);
+  while (await evaluate(`document.querySelectorAll('.flow-node').length > 1`)) {
+    await click('.flow-node:not(.flow-trigger) .flow-node-handle');
+    await click('[data-flow-action="remove-node"]');
+  }
+  await click('[data-flow-action="save"]');
+  await waitFor(`!document.querySelector('#flow-dialog').open`);
+  await saved();
+  assert.equal((await state()).projects[0].lanes[0].entryGraph.nodes.length, 1, 'Removing all commands disables lane actions');
   await click(`[data-action="edit-lane"][data-id="${addedLane}"]`);
+  console.log('PASS command graphs, pointer movement at zoom, links, validation, persistence, multi-field actions, deletion and cancel');
   await click('[data-action="delete-lane"]');
   await click('#small-form [type="submit"]');
   await saved();
@@ -346,13 +608,13 @@ try {
   await click('[data-action="fetch-youtube"]');
   await waitFor(`document.querySelector('#card-title').value === 'A borrowed idea'`);
   await saved();
-  const fetchedCard = (await state()).projects[0].lanes.flatMap((lane) => lane.cards).find((card) => card.originalVideoUrl === 'https://youtu.be/62NJbICVWkQ');
+  const fetchedCard = (await state()).projects[0].lanes.flatMap((lane) => lane.cards).find((card) => card.fields.originalVideoUrl === 'https://youtu.be/62NJbICVWkQ');
   assert.equal(fetchedCard.title, 'A borrowed idea');
-  assert.equal(fetchedCard.originalVideoTitle, 'A borrowed idea');
+  assert.equal(fetchedCard.fields.originalVideoTitle, 'A borrowed idea');
   assert.equal(await evaluate(`document.querySelector('#card-original-video-title').value`), 'A borrowed idea');
   assert.equal(fetchedCard.images.length, 1);
-  assert.equal(fetchedCard.originalImageId, fetchedCard.images[0].id);
-  assert.equal(fetchedCard.coverImageId, fetchedCard.images[0].id);
+  assert.equal(fetchedCard.imageRoles.original, fetchedCard.images[0].id);
+  assert.equal(fetchedCard.imageRoles.cover, fetchedCard.images[0].id);
   await click('[data-action="fetch-youtube"]');
   await waitFor(`document.querySelector('#upload-status') && document.querySelector('[data-action="fetch-youtube"]') && !document.querySelector('[data-action="fetch-youtube"]').disabled`);
   await saved();
@@ -360,14 +622,59 @@ try {
   await click('[data-action="close-card"]');
   console.log('PASS original URL fetches title and thumbnail');
 
-  // Preserve unsaved text and show actionable feedback if another tab saved first.
-  const external = await (await fetch(`${base}/api/board`)).json();
-  await fetch(`${base}/api/board`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(external) });
+  // Editor labels and limits come from the same template as server validation.
+  await evaluate(`(async () => {
+    const { templates } = await import('/card-template.js');
+    const field = templates['youtube-video'].fields.find(field => field.key === 'titleOptions');
+    window.originalTemplateField = { ...field };
+    field.label = 'Candidate titles'; field.max = 1234;
+  })()`);
   await click('[data-action="open-card"]');
+  assert.equal(await evaluate(`document.querySelector('label[for="card-title-options"]').textContent`), 'Candidate titles');
+  assert.equal(await evaluate(`document.querySelector('#card-title-options').maxLength`), 1234);
+  await evaluate(`(async () => {
+    const { templates } = await import('/card-template.js');
+    Object.assign(templates['youtube-video'].fields.find(field => field.key === 'titleOptions'), window.originalTemplateField);
+  })()`);
+  await click('[data-action="close-card"]');
+  console.log('PASS editor reads template labels and limits');
+
+  // Preserve unsaved text and show actionable feedback if another tab saved the same card first.
+  const conflictId = await evaluate(`document.querySelector('[data-action="open-card"]').dataset.id`);
+  const { card: external } = await (await fetch(`${base}/api/cards/${conflictId}`)).json();
+  assert.equal((await fetch(`${base}/api/cards/${conflictId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ revision: external.revision, title: 'Edited in another tab' }) })).status, 200);
+  await click('[data-action="open-card"]');
+  const nextLane = await evaluate(`Array.from(document.querySelector('#card-lane').options).find(option => option.value !== document.querySelector('#card-lane').value).value`);
+  await select('#card-lane', nextLane);
+  await saved();
   await fill('#card-intro', 'This text must not disappear after a conflict.');
   await waitFor(`document.querySelector('#editor-save-error')?.textContent.includes('another tab') && !document.querySelector('#editor-save-error').hidden`);
   assert.equal(await evaluate(`document.querySelector('#card-intro').value`), 'This text must not disappear after a conflict.');
-  console.log('PASS save conflict feedback retains unsaved edits');
+  assert.equal((await (await fetch(`${base}/api/cards/${conflictId}`)).json()).card.title, 'Edited in another tab');
+  console.log('PASS moving a stale card preserves conflict protection and unsaved edits');
+
+  await click('[data-action="close-card"]');
+  await waitFor(`!document.querySelector('#card-dialog').open`);
+  await click('.header-actions [data-action="add-card"]');
+  await fill('#card-title', 'Saved despite another card’s conflict');
+  const independentId = await evaluate(`(async () => (await import('/state.js')).state.cardId)()`);
+  await waitFor(`(async () => (await fetch('/api/cards/' + ${JSON.stringify(independentId)}).then(r => r.json())).card?.title === 'Saved despite another card’s conflict')()`);
+  await click('[data-action="close-card"]');
+  await waitFor(`!document.querySelector('#card-dialog').open`);
+  await click(`[data-action="open-card"][data-id="${conflictId}"]`);
+  assert.equal(await evaluate(`document.querySelector('#card-intro').value`), 'This text must not disappear after a conflict.');
+  await click('[data-action="use-saved-card"]');
+  await waitFor(`document.querySelector('#form-dialog').open`);
+  await click('#form-dialog [data-action="close-form"]');
+  assert.equal(await evaluate(`document.querySelector('#card-intro').value`), 'This text must not disappear after a conflict.');
+  await click('[data-action="use-saved-card"]');
+  await click('#small-form button[type="submit"]');
+  await waitFor(`!document.querySelector('#form-dialog').open && document.querySelector('#card-title').value === 'Edited in another tab'`);
+  await saved();
+  await fill('#card-intro', 'Resolved and saved');
+  await saved();
+  assert.equal((await (await fetch(`${base}/api/cards/${conflictId}`)).json()).card.fields.intro, 'Resolved and saved');
+  console.log('PASS unrelated cards save during conflict, and confirmed resolution resumes saving');
   assert.deepEqual(browserErrors, []);
   console.log('All browser checks passed. Screenshots: test-results/');
 } finally {

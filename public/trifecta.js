@@ -97,11 +97,10 @@ function dataURL(blob) {
 // Each MIME type represents the same complete packet. Image-first chat inputs
 // can consume the PNG alone without losing the prompt, titles, or intro.
 export function createTrifectaItem(card) {
-  const prompt = card.prompt || '';
-  const intro = card.intro || '';
-  const titles = [card.title, ...(card.titleOptions || '').split('\n'), card.originalVideoTitle || '']
+  const { prompt, intro, titleOptions, originalVideoTitle } = card.fields;
+  const titles = [card.title, ...titleOptions.split('\n'), originalVideoTitle]
     .map((title) => title.trim()).filter(Boolean);
-  const selected = [['Original', card.originalImageId], ['Inspiration', card.inspirationImageId]]
+  const selected = [['Original', card.imageRoles.original], ['Inspiration', card.imageRoles.inspiration]]
     .filter(([, id]) => id).map(([label, id]) => ({ label, id }));
   const plain = ['PROMPT', prompt || '(empty)', '\nTITLES', titles.join('\n') || '(none)',
     ...(selected.length ? ['\nIMAGES', 'The attached Trifecta image contains the labeled original and inspiration selections.'] : []),

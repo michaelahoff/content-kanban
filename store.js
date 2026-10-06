@@ -1,0 +1,626 @@
+// All database access lives here. Every read and write is scoped to a
+// workspace and attributed to an actor ("user:<id>", "automation:<id>", or
+// "system:<name>") so more users and automatic steps can be added later.
+import { DatabaseSync } from 'node:sqlite';
+import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { rename, rm } from 'node:fs/promises';
+import path from 'node:path';
+import { templates, defaultTemplate, emptyFields, emptyImageRoles } from './public/card-template.js';
+import { readLegacyBoard } from './legacy-board.js';
+import { emptyGraph, promptGraph, validateGraph, executeGraph, assignmentsFor } from './public/flow-graph.js';
+
+export const imageIdPattern = /^[a-f0-9-]{36}\.(png|jpg|webp|gif|avif)$/;
+export const laneColors = ['lavender', 'blue', 'amber', 'green', 'pink', 'gray', 'teal', 'cyan', 'orange', 'red', 'purple', 'lime'];
+const defaultStages = [['Ideas', 'lavender'], ['In progress', 'blue'], ['Review', 'amber'], ['Done', 'green']];
+const idPattern = /^[\w-]{1,100}$/;
+const criterionRules = { field: 'filled', imageRole: 'set' };
+
+// Each entry upgrades the schema by one version. Never edit a released entry;
+// append a new one instead.
+const migrations = [`
+  CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+  CREATE TABLE workspaces (id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at TEXT NOT NULL);
+  CREATE TABLE users (id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at TEXT NOT NULL);
+  CREATE TABLE flows (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), name TEXT NOT NULL, created_at TEXT NOT NULL);
+  CREATE TABLE stages (
+    id TEXT PRIMARY KEY, flow_id TEXT NOT NULL REFERENCES flows(id), name TEXT NOT NULL, color TEXT NOT NULL, position INTEGER NOT NULL,
+    instructions TEXT NOT NULL DEFAULT '', exit_criteria TEXT NOT NULL DEFAULT '[]',
+    approve_to TEXT REFERENCES stages(id), send_back_to TEXT REFERENCES stages(id),
+    automations TEXT NOT NULL DEFAULT '[]', deleted_at TEXT);
+  CREATE TABLE projects (
+    id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), flow_id TEXT NOT NULL REFERENCES flows(id),
+    name TEXT NOT NULL, position INTEGER NOT NULL, created_at TEXT NOT NULL, deleted_at TEXT);
+  CREATE TABLE cards (
+    id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES projects(id), stage_id TEXT NOT NULL REFERENCES stages(id),
+    position REAL NOT NULL, template TEXT NOT NULL, title TEXT NOT NULL DEFAULT '',
+    fields TEXT NOT NULL DEFAULT '{}', images TEXT NOT NULL DEFAULT '[]', image_roles TEXT NOT NULL DEFAULT '{}',
+    revision INTEGER NOT NULL DEFAULT 1, entered_stage_at TEXT, created_at TEXT, updated_at TEXT, deleted_at TEXT);
+  CREATE INDEX cards_by_stage ON cards(stage_id, position) WHERE deleted_at IS NULL;
+  CREATE INDEX cards_by_project ON cards(project_id) WHERE deleted_at IS NULL;
+  CREATE TABLE card_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, workspace_id TEXT NOT NULL REFERENCES workspaces(id), project_id TEXT NOT NULL,
+    card_id TEXT NOT NULL REFERENCES cards(id), type TEXT NOT NULL, actor TEXT NOT NULL,
+    from_stage_id TEXT, to_stage_id TEXT, note TEXT NOT NULL DEFAULT '', data TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL);
+  CREATE INDEX card_events_by_card ON card_events(card_id, id);
+  CREATE INDEX card_events_by_workspace ON card_events(workspace_id, id);
+  CREATE TABLE workspace_changes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+    entity TEXT NOT NULL, entity_id TEXT NOT NULL, project_id TEXT, type TEXT NOT NULL,
+    actor TEXT NOT NULL, data TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL);
+  CREATE INDEX changes_by_workspace ON workspace_changes(workspace_id, id);
+`, `ALTER TABLE stages ADD COLUMN entry_prompt TEXT;`, `
+  ALTER TABLE stages ADD COLUMN entry_graph TEXT NOT NULL DEFAULT '${JSON.stringify(emptyGraph())}';
+  UPDATE stages SET entry_graph = json_object('version', 1,
+    'nodes', json_array(
+      json_object('id', 'entry', 'type', 'entry', 'position', json_object('x', 48, 'y', 100)),
+      json_object('id', 'set-prompt', 'type', 'set', 'position', json_object('x', 360, 'y', 100),
+        'config', json_object('field', 'prompt', 'value', entry_prompt))),
+    'edges', json_array(json_object('id', 'entry-prompt', 'from', 'entry', 'to', 'set-prompt')))
+    WHERE entry_prompt IS NOT NULL;
+`, `
+  CREATE TABLE card_moves (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, card_id TEXT NOT NULL REFERENCES cards(id),
+    event_id INTEGER REFERENCES card_events(id), before_card TEXT NOT NULL, after_card TEXT NOT NULL,
+    placement TEXT NOT NULL, created_at TEXT NOT NULL, undone_at TEXT, undo_event_id INTEGER REFERENCES card_events(id));
+  CREATE INDEX card_moves_by_card ON card_moves(card_id, id);
+`];
+
+const now = () => new Date().toISOString();
+const fail = (status, message) => { throw Object.assign(new Error(message), { status }); };
+const check = (value, message) => { if (!value) fail(400, message); };
+const isText = (value, max) => typeof value === 'string' && value.length <= max;
+const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+const checkName = (value, max, message) => check(isText(value, max) && value.trim(), message);
+
+const stageFrom = (row) => ({
+  id: row.id, flowId: row.flow_id, name: row.name, color: row.color, position: row.position, instructions: row.instructions,
+  exitCriteria: JSON.parse(row.exit_criteria), approveTo: row.approve_to, sendBackTo: row.send_back_to, automations: JSON.parse(row.automations),
+  entryGraph: JSON.parse(row.entry_graph),
+  // Compatibility for an older browser; execution uses only entryGraph.
+  entryPrompt: legacyPrompt(JSON.parse(row.entry_graph)),
+});
+const cardFrom = (row) => ({
+  id: row.id, projectId: row.project_id, stageId: row.stage_id, position: row.position, template: row.template, title: row.title,
+  fields: JSON.parse(row.fields), images: JSON.parse(row.images), imageRoles: JSON.parse(row.image_roles), revision: row.revision,
+  enteredStageAt: row.entered_stage_at, createdAt: row.created_at, updatedAt: row.updated_at,
+});
+const eventFrom = (row) => ({
+  id: row.id, cardId: row.card_id, projectId: row.project_id, type: row.type, actor: row.actor, fromStageId: row.from_stage_id,
+  toStageId: row.to_stage_id, note: row.note, data: JSON.parse(row.data), createdAt: row.created_at,
+});
+const changeFrom = (row) => ({
+  id: row.id, entity: row.entity, entityId: row.entity_id, projectId: row.project_id,
+  type: row.type, actor: row.actor, data: JSON.parse(row.data), createdAt: row.created_at,
+});
+
+// Applies a partial content update to a card and checks the result.
+function cardContent(templateId, input, current) {
+  const template = templates[templateId];
+  const next = { title: current.title, fields: { ...current.fields }, images: current.images, imageRoles: { ...current.imageRoles } };
+  if ('title' in input) {
+    check(isText(input.title, template.title.max), `Card titles can be up to ${template.title.max} characters.`);
+    next.title = input.title;
+  }
+  if ('fields' in input) {
+    check(isObject(input.fields), 'Invalid card fields.');
+    for (const [key, value] of Object.entries(input.fields)) {
+      const field = template.fields.find((item) => item.key === key);
+      check(field, `Unknown card field “${key}”.`);
+      check(isText(value, field.max), `${field.label} must be text of up to ${field.max.toLocaleString('en-US')} characters.`);
+      next.fields[key] = value;
+    }
+  }
+  if ('images' in input) {
+    check(Array.isArray(input.images) && input.images.length <= 200, 'A card can hold up to 200 images.');
+    const seen = new Set();
+    for (const image of input.images) {
+      check(isObject(image) && imageIdPattern.test(image.id) && isText(image.name, 500) && !seen.has(image.id), 'Invalid image.');
+      seen.add(image.id);
+    }
+    next.images = input.images.map(({ id, name }) => ({ id, name }));
+  }
+  if ('imageRoles' in input) {
+    check(isObject(input.imageRoles), 'Invalid image flags.');
+    for (const [role, imageId] of Object.entries(input.imageRoles)) {
+      check(role in next.imageRoles, `Unknown image flag “${role}”.`);
+      check(imageId === null || typeof imageId === 'string', 'Invalid image flags.');
+      next.imageRoles[role] = imageId;
+    }
+  }
+  for (const [role, imageId] of Object.entries(next.imageRoles)) {
+    check(imageId === null || next.images.some((image) => image.id === imageId), role === 'cover' ? 'The display image must belong to the card.' : 'Flagged images must belong to the card.');
+  }
+  return next;
+}
+
+function checkCriteria(value) {
+  check(Array.isArray(value) && value.length <= 50, 'Exit criteria must be a list of up to 50 checks.');
+  for (const item of value) {
+    const kind = Object.keys(criterionRules).find((key) => key in (item || {}));
+    check(isObject(item) && kind && isText(item[kind], 100) && item.rule === criterionRules[kind] && (item.label === undefined || isText(item.label, 200)), 'Each exit criterion needs a field with rule "filled" or an imageRole with rule "set".');
+  }
+}
+
+function checkEntryPrompt(value) {
+  const max = templates[defaultTemplate].fields.find((field) => field.key === 'prompt').max;
+  check(value === null || isText(value, max), `The lane prompt must be text of up to ${max.toLocaleString('en-US')} characters, or null to disable it.`);
+}
+function legacyPrompt(graph) {
+  const commands = graph.nodes.filter((node) => node.type !== 'entry');
+  if (commands.length !== 1 || commands[0].type !== 'set') return null;
+  const assignments = assignmentsFor(commands[0]);
+  return assignments.length === 1 && assignments[0].field === 'prompt' ? assignments[0].value : null;
+}
+function graphInput(input) {
+  check(!('entryPrompt' in input && 'entryGraph' in input), 'Choose either a command graph or a legacy lane prompt.');
+  if ('entryGraph' in input) return validateGraph(input.entryGraph);
+  if ('entryPrompt' in input) { checkEntryPrompt(input.entryPrompt); return promptGraph(input.entryPrompt); }
+  return null;
+}
+
+// Lists the exit criteria of a stage that a card does not meet yet.
+function unmetCriteria(stage, card) {
+  return stage.exitCriteria.filter((item) => item.field
+    ? !String(item.field === 'title' ? card.title : card.fields[item.field] ?? '').trim()
+    : !card.imageRoles[item.imageRole]).map((item) => item.label || (item.field ? `${item.field} is filled` : `${item.imageRole} image is set`));
+}
+
+export async function openStore({ dataDir, onCardEvent = () => {} }) {
+  const file = path.join(dataDir, 'frameboard.db');
+  const legacyFile = path.join(dataDir, 'board.json');
+  const created = !existsSync(file);
+  const db = new DatabaseSync(file);
+  db.exec('PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;');
+  const all = (sql, ...params) => db.prepare(sql).all(...params);
+  const get = (sql, ...params) => db.prepare(sql).get(...params);
+  const run = (sql, ...params) => db.prepare(sql).run(...params);
+  let pendingEvents = [];
+  let depth = 0;
+  // Runs fn atomically. Event hooks fire only after the data is committed.
+  const transaction = (fn) => {
+    if (depth) return fn();
+    db.exec('BEGIN IMMEDIATE');
+    depth++;
+    try {
+      const result = fn();
+      db.exec('COMMIT');
+      const events = pendingEvents;
+      pendingEvents = [];
+      for (const event of events) {
+        try { onCardEvent(event); } catch (error) { console.error(error); }
+      }
+      return result;
+    } catch (error) {
+      db.exec('ROLLBACK');
+      pendingEvents = [];
+      if (String(error.code).startsWith('ERR_SQLITE') && /UNIQUE|PRIMARY KEY/.test(error.message)) fail(400, 'Invalid or duplicate ID.');
+      throw error;
+    } finally { depth--; }
+  };
+
+  const schemaVersion = () => (get("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'meta'")
+    ? Number(get("SELECT value FROM meta WHERE key = 'schema_version'")?.value || 0) : 0);
+
+  function insertFlow(workspaceId, name, stages) {
+    const flowId = randomUUID();
+    run('INSERT INTO flows (id, workspace_id, name, created_at) VALUES (?, ?, ?, ?)', flowId, workspaceId, name, now());
+    stages.forEach(([id, stageName, color], position) => run('INSERT INTO stages (id, flow_id, name, color, position) VALUES (?, ?, ?, ?, ?)', id, flowId, stageName, color, position));
+    return flowId;
+  }
+  function insertEvent(workspaceId, card, type, actor, { from = null, to = null, note = '', data = {}, at = now() } = {}) {
+    const { lastInsertRowid } = run('INSERT INTO card_events (workspace_id, project_id, card_id, type, actor, from_stage_id, to_stage_id, note, data, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      workspaceId, card.projectId, card.id, type, actor, from, to, note, JSON.stringify(data), at);
+    const event = eventFrom(get('SELECT * FROM card_events WHERE id = ?', lastInsertRowid));
+    pendingEvents.push(event);
+    recordChange({ workspaceId, actor }, 'card', card.id, type, { projectId: card.projectId, data, at });
+    return event;
+  }
+  // The synchronization feed includes ordinary edits and structural changes;
+  // the card timeline stays focused on decisions and image changes.
+  function recordChange(ctx, entity, entityId, type, { projectId = null, data = {}, at = now() } = {}) {
+    run('INSERT INTO workspace_changes (workspace_id, entity, entity_id, project_id, type, actor, data, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      ctx.workspaceId, entity, entityId, projectId, type, ctx.actor, JSON.stringify(data), at);
+  }
+
+  // Entry actions run in the same transaction as creation or movement. The
+  // revision before the action lets a client acknowledge just this field
+  // without treating another tab's unseen content as its own saved draft.
+  function applyEntryGraph(ctx, card, stage, at) {
+    const { values, steps } = executeGraph(stage.entryGraph, card);
+    if (!steps.length) return null;
+    const changedFields = Object.keys(values).filter((key) => values[key] !== (key === 'title' ? card.title : card.fields[key]));
+    const revision = card.revision + Number(changedFields.length > 0);
+    if (changedFields.length) {
+      const fields = { ...card.fields, ...Object.fromEntries(Object.entries(values).filter(([key]) => key !== 'title')) };
+      run('UPDATE cards SET title = ?, fields = ?, revision = ?, updated_at = ? WHERE id = ?',
+        values.title ?? card.title, JSON.stringify(fields), revision, at, card.id);
+      insertEvent(ctx.workspaceId, card, 'fields_set', `automation:${stage.id}`, { to: stage.id, data: { fields: changedFields, steps, revision }, at });
+    }
+    return { beforeRevision: card.revision, revision, values };
+  }
+
+  // First run: create the schema, then import board.json or start fresh.
+  async function initialize() {
+    const legacy = await readLegacyBoard(legacyFile);
+    transaction(() => {
+      for (const sql of migrations) db.exec(sql);
+      run("INSERT INTO meta (key, value) VALUES ('schema_version', ?)", String(migrations.length));
+      const workspaceId = randomUUID();
+      const userId = randomUUID();
+      run('INSERT INTO workspaces (id, name, created_at) VALUES (?, ?, ?)', workspaceId, 'Personal workspace', now());
+      run('INSERT INTO users (id, name, created_at) VALUES (?, ?, ?)', userId, 'You', now());
+      run("INSERT INTO meta (key, value) VALUES ('owner_user_id', ?), ('owner_workspace_id', ?)", userId, workspaceId);
+      const projects = legacy?.board.projects ?? [{ id: randomUUID(), name: 'My project', lanes: defaultStages.map(([name, color]) => ({ id: randomUUID(), name, color, cards: [] })) }];
+      projects.forEach((project, projectIndex) => {
+        const flowId = insertFlow(workspaceId, project.name, project.lanes.map((lane) => [lane.id, lane.name, lane.color]));
+        run('INSERT INTO projects (id, workspace_id, flow_id, name, position, created_at) VALUES (?, ?, ?, ?, ?, ?)', project.id, workspaceId, flowId, project.name, projectIndex, now());
+        for (const lane of project.lanes) lane.cards.forEach((card, cardIndex) => {
+          const fields = Object.fromEntries(Object.keys(emptyFields()).map((key) => [key, card[key] ?? '']));
+          const imageRoles = { cover: card.coverImageId ?? null, original: card.originalImageId ?? null, inspiration: card.inspirationImageId ?? null };
+          run('INSERT INTO cards (id, project_id, stage_id, position, template, title, fields, images, image_roles, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            card.id, project.id, lane.id, cardIndex + 1, defaultTemplate, card.title, JSON.stringify(fields), JSON.stringify(card.images), JSON.stringify(imageRoles), card.updatedAt ?? null);
+          insertEvent(workspaceId, { id: card.id, projectId: project.id }, 'created', `user:${userId}`, { to: lane.id, at: card.updatedAt ?? now() });
+        });
+      });
+    });
+    if (legacy) {
+      let target = `${legacyFile}.migrated`;
+      if (existsSync(target)) target += `-${Date.now()}`;
+      await rename(legacyFile, target);
+    }
+  }
+
+  try {
+    if (!schemaVersion()) await initialize();
+    const version = schemaVersion();
+    if (version > migrations.length) throw new Error('This data was saved by a newer version of Frameboard.');
+    if (version < migrations.length) transaction(() => {
+      for (const sql of migrations.slice(version)) db.exec(sql);
+      run("UPDATE meta SET value = ? WHERE key = 'schema_version'", String(migrations.length));
+    });
+  } catch (error) {
+    db.close();
+    if (created) await rm(file, { force: true });
+    throw error;
+  }
+
+  const meta = (key) => get('SELECT value FROM meta WHERE key = ?', key)?.value;
+  const owner = { userId: meta('owner_user_id'), workspaceId: meta('owner_workspace_id') };
+
+  const activeStages = (flowId) => all('SELECT * FROM stages WHERE flow_id = ? AND deleted_at IS NULL ORDER BY position', flowId).map(stageFrom);
+  function requireProject(ctx, id) {
+    return get('SELECT * FROM projects WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL', id, ctx.workspaceId) || fail(404, 'This project no longer exists. Reload the page.');
+  }
+  function requireStage(ctx, id) {
+    const row = get('SELECT s.* FROM stages s JOIN flows f ON f.id = s.flow_id WHERE s.id = ? AND f.workspace_id = ? AND s.deleted_at IS NULL', id, ctx.workspaceId);
+    return row ? stageFrom(row) : fail(404, 'This lane no longer exists. Reload the page.');
+  }
+  function requireCard(ctx, id) {
+    const row = get('SELECT c.* FROM cards c JOIN projects p ON p.id = c.project_id WHERE c.id = ? AND p.workspace_id = ? AND c.deleted_at IS NULL AND p.deleted_at IS NULL', id, ctx.workspaceId);
+    return row ? withLastMove(cardFrom(row)) : fail(404, 'This card no longer exists. Reload the page.');
+  }
+  function withLastMove(card) {
+    const move = get('SELECT id, created_at, undone_at FROM card_moves WHERE card_id = ? ORDER BY id DESC LIMIT 1', card.id);
+    return { ...card, lastMove: move && !move.undone_at ? { id: move.id, createdAt: move.created_at } : null };
+  }
+  const orderedCards = (stageId, except = '') => all('SELECT id FROM cards WHERE stage_id = ? AND deleted_at IS NULL AND id != ? ORDER BY position', stageId, except);
+  function undoAnchor(stageId, cardId, placement) {
+    const rows = orderedCards(stageId, cardId);
+    if (rows.some((row) => row.id === placement.beforeCardId)) return placement.beforeCardId;
+    const previous = rows.findIndex((row) => row.id === placement.afterCardId);
+    return rows[previous < 0 ? Math.min(placement.index, rows.length) : previous + 1]?.id ?? null;
+  }
+  function requireFlow(ctx, id) {
+    return get('SELECT * FROM flows WHERE id = ? AND workspace_id = ?', id, ctx.workspaceId) || fail(404, 'This flow no longer exists. Reload the page.');
+  }
+  const checkId = (id) => check(id === undefined || (typeof id === 'string' && idPattern.test(id)), 'Invalid or duplicate ID.');
+
+  // Returns a sort position that places a card before another card in the
+  // stage, or at the end. Renumbers the stage when positions get too close.
+  function positionFor(stageId, beforeCardId, movingId = '') {
+    const rows = all('SELECT id, position FROM cards WHERE stage_id = ? AND deleted_at IS NULL AND id != ? ORDER BY position', stageId, movingId);
+    const index = beforeCardId ? rows.findIndex((row) => row.id === beforeCardId) : -1;
+    if (index < 0) return rows.length ? Math.floor(rows.at(-1).position) + 1 : 1;
+    const after = rows[index].position;
+    const before = index ? rows[index - 1].position : after - 1;
+    const middle = (before + after) / 2;
+    if (middle > before && middle < after) return middle;
+    rows.forEach((row, i) => run('UPDATE cards SET position = ? WHERE id = ?', i + 1, row.id));
+    return index + 0.5;
+  }
+  function renumberStages(flowId, ordered) {
+    ordered.forEach((stage, position) => run('UPDATE stages SET position = ? WHERE id = ?', position, stage.id));
+    return activeStages(flowId);
+  }
+  function deleteCards(ctx, rows, reason) {
+    const at = now();
+    for (const row of rows) {
+      run('UPDATE cards SET deleted_at = ? WHERE id = ?', at, row.id);
+      insertEvent(ctx.workspaceId, cardFrom(row), 'deleted', ctx.actor, { from: row.stage_id, data: { reason }, at });
+    }
+  }
+
+  return {
+    owner,
+    close: () => db.close(),
+
+    workspace(ctx) {
+      const workspace = get('SELECT id, name FROM workspaces WHERE id = ?', ctx.workspaceId);
+      const user = ctx.userId ? get('SELECT id, name FROM users WHERE id = ?', ctx.userId) : null;
+      const projects = all(`SELECT p.id, p.name, p.flow_id, p.position, (SELECT COUNT(*) FROM cards c WHERE c.project_id = p.id AND c.deleted_at IS NULL) AS card_count
+        FROM projects p WHERE p.workspace_id = ? AND p.deleted_at IS NULL ORDER BY p.position`, ctx.workspaceId)
+        .map((row) => ({ id: row.id, name: row.name, flowId: row.flow_id, position: row.position, cardCount: row.card_count }));
+      const flows = all('SELECT id, name FROM flows WHERE workspace_id = ? ORDER BY created_at', ctx.workspaceId).map((row) => ({ ...row, stages: activeStages(row.id) }));
+      const eventCursor = get('SELECT MAX(id) AS cursor FROM workspace_changes WHERE workspace_id = ?', ctx.workspaceId).cursor ?? 0;
+      return { workspace, user, projects, flows, eventCursor };
+    },
+
+    createProject(ctx, input) {
+      check(isObject(input), 'Invalid project.');
+      checkId(input.id);
+      checkName(input.name, 150, 'Projects need a name (up to 150 characters).');
+      return transaction(() => {
+        const { count } = get('SELECT COUNT(*) AS count FROM projects WHERE workspace_id = ? AND deleted_at IS NULL', ctx.workspaceId);
+        check(count < 200, 'A workspace can hold up to 200 projects.');
+        const id = input.id ?? randomUUID();
+        const name = input.name.trim();
+        const flowId = insertFlow(ctx.workspaceId, name, defaultStages.map(([stageName, color]) => [randomUUID(), stageName, color]));
+        const position = (get('SELECT MAX(position) AS position FROM projects WHERE workspace_id = ?', ctx.workspaceId).position ?? -1) + 1;
+        run('INSERT INTO projects (id, workspace_id, flow_id, name, position, created_at) VALUES (?, ?, ?, ?, ?, ?)', id, ctx.workspaceId, flowId, name, position, now());
+        recordChange(ctx, 'project', id, 'created', { projectId: id, data: { flowId } });
+        return { project: { id, name, flowId, position, cardCount: 0 }, flow: { id: flowId, name, stages: activeStages(flowId) } };
+      });
+    },
+
+    updateProject(ctx, id, input) {
+      check(isObject(input), 'Invalid project.');
+      requireProject(ctx, id);
+      checkName(input.name, 150, 'Projects need a name (up to 150 characters).');
+      return transaction(() => {
+        run('UPDATE projects SET name = ? WHERE id = ?', input.name.trim(), id);
+        recordChange(ctx, 'project', id, 'updated', { projectId: id });
+        return { id, name: input.name.trim() };
+      });
+    },
+
+    deleteProject(ctx, id) {
+      requireProject(ctx, id);
+      transaction(() => {
+        deleteCards(ctx, all('SELECT * FROM cards WHERE project_id = ? AND deleted_at IS NULL', id), 'project deleted');
+        run('UPDATE projects SET deleted_at = ? WHERE id = ?', now(), id);
+        recordChange(ctx, 'project', id, 'deleted', { projectId: id });
+      });
+    },
+
+    setProjectPrompt(ctx, projectId, prompt) {
+      requireProject(ctx, projectId);
+      check(isText(prompt, 200000), 'Prompts can be up to 200,000 characters.');
+      return transaction(() => {
+        const at = now();
+        return all('SELECT * FROM cards WHERE project_id = ? AND deleted_at IS NULL', projectId).map(cardFrom)
+          .filter((card) => templates[card.template].fields.some((field) => field.key === 'prompt'))
+          .map((card) => {
+            run('UPDATE cards SET fields = ?, revision = revision + 1, updated_at = ? WHERE id = ?', JSON.stringify({ ...card.fields, prompt }), at, card.id);
+            recordChange(ctx, 'card', card.id, 'updated', { projectId, data: { revision: card.revision + 1 }, at });
+            return { id: card.id, revision: card.revision + 1, updatedAt: at };
+          });
+      });
+    },
+
+    createStage(ctx, flowId, input) {
+      check(isObject(input), 'Invalid lane.');
+      requireFlow(ctx, flowId);
+      checkId(input.id);
+      checkName(input.name, 100, 'Lanes need a name (up to 100 characters).');
+      check(laneColors.includes(input.color), 'Choose a lane color.');
+      const graph = graphInput(input) ?? emptyGraph();
+      return transaction(() => {
+        const stages = activeStages(flowId);
+        check(stages.length < 100, 'A project can hold up to 100 lanes.');
+        const id = input.id ?? randomUUID();
+        run('INSERT INTO stages (id, flow_id, name, color, position, entry_graph) VALUES (?, ?, ?, ?, ?, ?)', id, flowId, input.name.trim(), input.color, (stages.at(-1)?.position ?? -1) + 1, JSON.stringify(graph));
+        recordChange(ctx, 'stage', id, 'created', { data: { flowId } });
+        return requireStage(ctx, id);
+      });
+    },
+
+    updateStage(ctx, id, input) {
+      check(isObject(input), 'Invalid lane.');
+      const stage = requireStage(ctx, id);
+      const sibling = (value) => value === null || (value !== id && activeStages(stage.flowId).some((item) => item.id === value));
+      const columns = {};
+      if ('name' in input) { checkName(input.name, 100, 'Lanes need a name (up to 100 characters).'); columns.name = input.name.trim(); }
+      if ('color' in input) { check(laneColors.includes(input.color), 'Choose a lane color.'); columns.color = input.color; }
+      if ('instructions' in input) { check(isText(input.instructions, 20000), 'Review instructions can be up to 20,000 characters.'); columns.instructions = input.instructions; }
+      const graph = graphInput(input);
+      if (graph) columns.entry_graph = JSON.stringify(graph);
+      if ('exitCriteria' in input) { checkCriteria(input.exitCriteria); columns.exit_criteria = JSON.stringify(input.exitCriteria); }
+      if ('approveTo' in input) { check(sibling(input.approveTo), 'Approving must lead to another lane in this project.'); columns.approve_to = input.approveTo; }
+      if ('sendBackTo' in input) { check(sibling(input.sendBackTo), 'Sending back must lead to another lane in this project.'); columns.send_back_to = input.sendBackTo; }
+      if ('automations' in input) {
+        check(Array.isArray(input.automations) && input.automations.length <= 50 && input.automations.every(isObject) && JSON.stringify(input.automations).length <= 50000, 'Invalid automations.');
+        columns.automations = JSON.stringify(input.automations);
+      }
+      if ('position' in input) check(Number.isInteger(input.position) && input.position >= 0, 'Invalid lane position.');
+      return transaction(() => {
+        const keys = Object.keys(columns);
+        if (keys.length) run(`UPDATE stages SET ${keys.map((key) => `${key} = ?`).join(', ')} WHERE id = ?`, ...Object.values(columns), id);
+        if ('position' in input) {
+          const others = activeStages(stage.flowId).filter((item) => item.id !== id);
+          others.splice(Math.min(input.position, others.length), 0, stage);
+          renumberStages(stage.flowId, others);
+        }
+        recordChange(ctx, 'stage', id, 'updated', { data: { flowId: stage.flowId } });
+        return requireStage(ctx, id);
+      });
+    },
+
+    deleteStage(ctx, id) {
+      const stage = requireStage(ctx, id);
+      transaction(() => {
+        deleteCards(ctx, all('SELECT * FROM cards WHERE stage_id = ? AND deleted_at IS NULL', id), 'lane deleted');
+        run('UPDATE stages SET deleted_at = ? WHERE id = ?', now(), id);
+        renumberStages(stage.flowId, activeStages(stage.flowId));
+        recordChange(ctx, 'stage', id, 'deleted', { data: { flowId: stage.flowId } });
+      });
+    },
+
+    listCards(ctx, projectId) {
+      requireProject(ctx, projectId);
+      return all('SELECT c.* FROM cards c JOIN stages s ON s.id = c.stage_id WHERE c.project_id = ? AND c.deleted_at IS NULL ORDER BY s.position, c.position', projectId).map((row) => withLastMove(cardFrom(row)));
+    },
+
+    getCard(ctx, id) {
+      const card = requireCard(ctx, id);
+      return { card, events: all('SELECT * FROM card_events WHERE card_id = ? ORDER BY id', id).map(eventFrom) };
+    },
+
+    createCard(ctx, projectId, input) {
+      check(isObject(input), 'Invalid card.');
+      const project = requireProject(ctx, projectId);
+      checkId(input.id);
+      const template = input.template ?? defaultTemplate;
+      check(Object.hasOwn(templates, template), 'Unknown card template.');
+      const stage = requireStage(ctx, input.stageId);
+      check(stage.flowId === project.flow_id, 'Choose a lane in this project.');
+      const content = cardContent(template, input, { title: '', fields: emptyFields(template), images: [], imageRoles: emptyImageRoles(template) });
+      return transaction(() => {
+        const id = input.id ?? randomUUID();
+        const at = now();
+        run('INSERT INTO cards (id, project_id, stage_id, position, template, title, fields, images, image_roles, entered_stage_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          id, projectId, stage.id, positionFor(stage.id, null), template, content.title, JSON.stringify(content.fields), JSON.stringify(content.images), JSON.stringify(content.imageRoles), at, at, at);
+        insertEvent(ctx.workspaceId, { id, projectId }, 'created', ctx.actor, { to: stage.id, at });
+        applyEntryGraph(ctx, requireCard(ctx, id), stage, at);
+        return requireCard(ctx, id);
+      });
+    },
+
+    // Content edits are checked against the card's revision so an automatic
+    // step or another tab cannot silently overwrite them.
+    updateCard(ctx, id, input) {
+      check(isObject(input), 'Invalid card.');
+      const card = requireCard(ctx, id);
+      check(Number.isInteger(input.revision), 'Card updates need the revision they were based on.');
+      if (input.revision !== card.revision) fail(409, 'This card changed in another tab. Copy any unsaved text, then reload to get the latest version.');
+      const content = cardContent(card.template, input, card);
+      return transaction(() => {
+        const at = now();
+        run('UPDATE cards SET title = ?, fields = ?, images = ?, image_roles = ?, revision = revision + 1, updated_at = ? WHERE id = ?',
+          content.title, JSON.stringify(content.fields), JSON.stringify(content.images), JSON.stringify(content.imageRoles), at, id);
+        const before = new Set(card.images.map((image) => image.id));
+        const after = new Set(content.images.map((image) => image.id));
+        const added = [...after].filter((imageId) => !before.has(imageId));
+        const removed = [...before].filter((imageId) => !after.has(imageId));
+        const roles = Object.keys(content.imageRoles).filter((role) => content.imageRoles[role] !== card.imageRoles[role]);
+        if (added.length || removed.length || roles.length) {
+          insertEvent(ctx.workspaceId, card, 'images_changed', ctx.actor, { data: { added, removed, roles }, at });
+        } else recordChange(ctx, 'card', id, 'updated', { projectId: card.projectId, data: { revision: card.revision + 1 }, at });
+        return requireCard(ctx, id);
+      });
+    },
+
+    // Flows are advisory: any move is allowed. Approve and send back are
+    // shortcuts to the stage's configured (or neighbouring) lane, and moving
+    // forward records any exit criteria the card did not meet.
+    transitionCard(ctx, id, input) {
+      check(isObject(input), 'Invalid move.');
+      const card = requireCard(ctx, id);
+      const stages = activeStages(requireProject(ctx, card.projectId).flow_id);
+      const index = stages.findIndex((stage) => stage.id === card.stageId);
+      const current = stages[index];
+      const note = input.note ?? '';
+      check(isText(note, 20000), 'Notes can be up to 20,000 characters.');
+      check(input.beforeCardId === undefined || input.beforeCardId === null || typeof input.beforeCardId === 'string', 'Invalid card position.');
+      let target;
+      if (input.action === 'approve') {
+        target = stages.find((stage) => stage.id === current.approveTo) ?? stages[index + 1];
+        check(target, 'This card is already in the last lane.');
+      } else if (input.action === 'send_back') {
+        target = stages.find((stage) => stage.id === current.sendBackTo) ?? stages[index - 1];
+        check(target, 'This card is already in the first lane.');
+      } else if (input.action === 'move') {
+        target = stages.find((stage) => stage.id === input.toStageId);
+        check(target, 'Choose a lane in this project.');
+      } else fail(400, 'Unknown move. Use approve, send_back, or move.');
+      return transaction(() => {
+        const at = now();
+        const changedStage = target.id !== current.id;
+        const oldOrder = orderedCards(current.id);
+        const oldIndex = oldOrder.findIndex((row) => row.id === id);
+        const placement = { index: oldIndex, beforeCardId: oldOrder[oldIndex + 1]?.id ?? null, afterCardId: oldOrder[oldIndex - 1]?.id ?? null };
+        const nextOrder = orderedCards(target.id, id);
+        const nextIndex = nextOrder.findIndex((row) => row.id === input.beforeCardId);
+        if (!changedStage && (nextIndex < 0 ? nextOrder.length : nextIndex) === oldIndex) {
+          return { card, event: null, fieldUpdate: null, promptUpdate: null };
+        }
+        run('UPDATE cards SET stage_id = ?, position = ?, updated_at = ?, entered_stage_at = ? WHERE id = ?',
+          target.id, positionFor(target.id, input.beforeCardId, id), at, changedStage ? at : card.enteredStageAt, id);
+        let event = null;
+        if (changedStage || input.action !== 'move') {
+          const unmet = target.position > current.position ? unmetCriteria(current, card) : [];
+          const type = { approve: 'approved', send_back: 'sent_back', move: 'moved' }[input.action];
+          event = insertEvent(ctx.workspaceId, card, type, ctx.actor, { from: current.id, to: target.id, note, data: unmet.length ? { unmet } : {}, at });
+        } else recordChange(ctx, 'card', id, 'reordered', { projectId: card.projectId, at });
+        const fieldUpdate = changedStage ? applyEntryGraph(ctx, card, target, at) : null;
+        // Keep the complete move boundary separate from the lightweight event feed.
+        // Reordering also gets a snapshot, without adding ordinary reorder history.
+        const { lastMove: previousMove, ...before } = card;
+        const { lastMove: pendingMove, ...after } = requireCard(ctx, id);
+        run('INSERT INTO card_moves (card_id, event_id, before_card, after_card, placement, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+          id, event?.id ?? null, JSON.stringify(before), JSON.stringify(after), JSON.stringify(placement), at);
+        // Older browsers can still acknowledge a prompt-only action safely.
+        const promptUpdate = fieldUpdate && Object.keys(fieldUpdate.values).length === 1 && 'prompt' in fieldUpdate.values
+          ? { beforeRevision: fieldUpdate.beforeRevision, revision: fieldUpdate.revision, prompt: fieldUpdate.values.prompt } : null;
+        return { card: requireCard(ctx, id), event, fieldUpdate, promptUpdate };
+      });
+    },
+
+    // Undo reverses this move's content delta, preserving subsequent unrelated
+    // edits. Returning to a lane must not run that lane's entry commands again.
+    undoMove(ctx, id, input) {
+      check(isObject(input) && Number.isInteger(input.moveId) && Number.isInteger(input.revision), 'Undo needs a move ID and card revision.');
+      const card = requireCard(ctx, id);
+      const move = get('SELECT * FROM card_moves WHERE card_id = ? ORDER BY id DESC LIMIT 1', id);
+      if (!move || move.undone_at || move.id !== input.moveId) fail(409, 'This is no longer the card’s last move. Reload to see its current position.');
+      if (card.revision !== input.revision) fail(409, 'This card changed in another tab. Reload before undoing its move.');
+      const before = JSON.parse(move.before_card);
+      const after = JSON.parse(move.after_card);
+      const source = activeStages(requireProject(ctx, card.projectId).flow_id).find((stage) => stage.id === before.stageId);
+      if (!source) fail(409, 'Cannot undo: the original lane has been deleted.');
+      if (card.stageId !== after.stageId) fail(409, 'The card has moved again. Reload before undoing.');
+      const previous = { ...before.fields, title: before.title };
+      const applied = { ...after.fields, title: after.title };
+      const current = { ...card.fields, title: card.title };
+      const keys = Object.keys(previous).filter((key) => previous[key] !== applied[key]);
+      for (const key of keys) {
+        if (current[key] !== applied[key]) fail(409, `Cannot undo: ${key} was edited after this move. Your edits have been kept.`);
+      }
+      return transaction(() => {
+        const at = now();
+        const values = Object.fromEntries(keys.map((key) => [key, previous[key]]));
+        const fields = { ...card.fields, ...Object.fromEntries(keys.filter((key) => key !== 'title').map((key) => [key, previous[key]])) };
+        const revision = card.revision + Number(keys.length > 0);
+        const beforeCardId = undoAnchor(source.id, id, JSON.parse(move.placement));
+        run('UPDATE cards SET stage_id = ?, position = ?, title = ?, fields = ?, revision = ?, entered_stage_at = ?, updated_at = ? WHERE id = ?',
+          source.id, positionFor(source.id, beforeCardId, id), values.title ?? card.title, JSON.stringify(fields), revision, before.enteredStageAt, at, id);
+        const event = insertEvent(ctx.workspaceId, card, 'move_undone', ctx.actor, {
+          from: card.stageId, to: source.id, data: { moveId: move.id, originalEventId: move.event_id, fields: keys }, at,
+        });
+        run('UPDATE card_moves SET undone_at = ?, undo_event_id = ? WHERE id = ?', at, event.id, move.id);
+        return { card: requireCard(ctx, id), event, beforeCardId,
+          fieldUpdate: keys.length ? { beforeRevision: card.revision, revision, values } : null };
+      });
+    },
+
+    deleteCard(ctx, id) {
+      requireCard(ctx, id);
+      transaction(() => deleteCards(ctx, [get('SELECT * FROM cards WHERE id = ?', id)], 'card deleted'));
+    },
+
+    // A change feed for other tabs and, later, automatic steps.
+    events(ctx, { since = 0, limit = 500 } = {}) {
+      return all('SELECT * FROM workspace_changes WHERE workspace_id = ? AND id > ? ORDER BY id LIMIT ?', ctx.workspaceId, since, limit).map(changeFrom);
+    },
+  };
+}
