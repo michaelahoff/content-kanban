@@ -18,21 +18,22 @@ All state is in memory. Images are SVG illustration placeholders. Provider ident
 
 The current uploader fills Display when empty. That behavior cannot be reused unchanged for generated-image gallery-only adoption because the earlier acceptance decision requires explicit role choices.
 
-## Proposed behavior awaiting human decisions
+## Agreed behavior and remaining decisions
 
-1. Offer an explicit supporting Codex image run in a Claude-backed chat, while Claude remains primary. Ordinary image Send reports unavailable capability rather than rerouting automatically. Real installation, login, capability and entitlement checks remain prerequisites.
-2. Select exact references from the gallery, earlier chat results, or new uploads. Default card-context roles follow the existing prompt-context decision. Edit pins the selected source version and leaves other selected references visible and removable. Every output gets its own identity; reference relationships are distinct from the main edit-source relationship.
-3. Offer Add to gallery and Add and choose roles. Role checkboxes start unchecked and show the current holder. Gallery-only adoption preserves all roles, even an empty Display. Already adopted results expose Choose roles without duplicating gallery entries.
-4. Retain all generated versions for the lifetime of retained card/chat history; removing an adopted image from the gallery does not erase its chat version. Exact retention/backup/reclamation mechanics belong to the durable-boundaries decision.
-5. Retry saving after generation/import failure without requesting a new generation. Usage limits, request failure, interrupted work, and missing files preserve inspectable history and require deliberate follow-through. Missing output files show unavailable state without automatic prompt replay/regeneration.
+1. **Evidence clarified; choice pending:** Claude can create visuals through code and rendering/browser tools, including saved screenshots. Treat those returned files as image candidates without a model image-generation claim. An explicit supporting Codex native image run remains an optional proposed alternative while Claude stays primary. Never silently switch providers. Real tools, installation, login, capability and artifact import remain validation prerequisites. See the accompanying Claude artifact research report.
+2. **Accepted:** select exact references from the gallery, earlier chat results, or new uploads. Default card-context roles follow the existing prompt-context decision. Edit pins the selected source version and leaves other selected references visible and removable. Every output gets its own identity; reference relationships are distinct from the main edit-source relationship.
+3. **Accepted:** offer only Add to gallery in chat. It preserves all roles, even an empty Display. Users select or change Original, Inspiration, and Display afterward in the card editor. There is no combined adoption/role action.
+4. **Accepted:** retain all generated versions for the lifetime of retained card/chat history; removing an adopted image from the gallery does not erase its chat version. Exact retention/backup/reclamation mechanics belong to the durable-boundaries decision.
+5. **Accepted:** retry saving after generation/import failure without requesting a new generation. Usage limits, request failure, interrupted work, and missing files preserve inspectable history and require deliberate follow-through. Missing output files show unavailable state without automatic prompt replay/regeneration.
 6. Protect newer gallery/role changes during acceptance. The demo uses a coarse simulated conflict flag; it does not settle merge granularity, revision coordination, or unsaved-editor implementation.
 
-These recommendations have **not** been accepted or resolved. The initial human round asks about explicit Codex image runs, exact references/immutable versions, and gallery/combined-role acceptance. Later rounds must settle retention and removal, entry points for conversational image requests, edit defaults, multiple outputs, explicit result handoff to the primary conversation, and error/reopen expectations as applicable. Live provider proof remains a separate ticket.
+**Accepted:** ordinary chat requests use the selected agent's available tools, and Edit preselects its source with references visible before Send. References are exact; gallery adoption is separate from role selection; versions survive gallery removal, restart, and card restoration; saving retry is distinct from explicit generation retry. **Still pending:** whether to offer explicit Codex image runs from Claude, whether Edit adds the source to current attachments or clears other image attachments, and how multiple outputs are adopted. No final resolution or map index update has been published. Source labels and live artifact import must distinguish native model generation from rendering/screenshot tools. Live provider proof remains a separate ticket.
 
 ## Guided walkthroughs
 
 - **Generate → adopt:** Generate with selected references; finish; adopt only into the gallery; simulate reopening. Existing Original, Inspiration, and Display remain unchanged.
-- **Edit → choose roles:** Generate a source; Edit selects it; generate a new version; explicitly adopt that version with Display. The source remains in chat; other roles are preserved.
+- **Edit → choose roles:** Generate a source; Edit selects it; generate a new version; add that version to the gallery, then explicitly set Display in the editor. The source remains in chat; other roles are preserved.
+- **Claude renders:** Use a connected Claude renderer/browser tool; import its screenshot into chat; adopt into the gallery. Claude remains primary and the method is labeled as rendering. This is a simulated illustration of documented feasibility, not live integration proof.
 - **Claude → Codex:** Select Claude; ordinary image send explains unavailable capability; explicitly choose Codex; complete the image. Claude remains primary and the output identifies the separate Codex image session.
 - **Failure → retry save:** Generation finishes but saving fails; retry saving the same output; encounter a usage limit on another request; deliberately retry; Stop. Completed images remain.
 - **Conflict → restoration:** Newer edits prevent adoption; review current card and accept explicitly; restore the earlier card; simulate a missing result file and recover its same bytes. Generated image history persists throughout.
@@ -41,7 +42,7 @@ Free-play controls allow variations outside those walkthroughs. Each action rend
 
 ## Verification performed
 
-Driven in the T3 collaborative browser, without production tests: all five guided walkthroughs; selected-role resolution, deduplication and frozen references; desktop and narrow layout; missing-file state; request/import separation; primary provider preservation. Check console output and layout after refinements. There is no test suite or database behind this artifact.
+Driven in the T3 collaborative browser, without production tests: all guided walkthroughs; selected-role resolution, deduplication and frozen references; desktop and narrow layout; missing-file state; request/import separation; primary provider preservation. Check console output and layout after refinements. There is no test suite or database behind this artifact.
 
 ## Decision boundaries
 
