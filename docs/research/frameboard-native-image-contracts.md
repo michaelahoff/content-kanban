@@ -1,0 +1,83 @@
+# Native image contracts for Frameboard card chats
+
+Researched 2026-10-06 for [Verify native image generation and editing paths](https://github.com/michaelahoff/content-kanban/issues/3), a child of [Wayfinder: Frameboard card chats, native agents, and living history](https://github.com/michaelahoff/content-kanban/issues/1). This is evidence and proposed contract guidance, not an approved product specification or completed integration.
+
+## Finding
+
+**Codex is a documented native subscription-backed generation/editing path, and its installed protocol and first-party implementation expose real image artifacts. The account-specific round trip remains unproven. Claude Code does not currently have an established qualifying native photo/illustration generation path.** Therefore the specification can make native Codex images a validation-gated milestone, but cannot promise native generation in every harness.
+
+Official OpenAI documentation explicitly describes generating images from an interactive Codex CLI session and editing with an attached reference (`-i`/`--image`), without requiring the desktop app. It currently names `gpt-image-2`; image turns draw from general Codex usage, with an average 3–5 times faster consumption than comparable text turns. Those are current documentation statements, not a verified entitlement for this installation. [Image generation](https://learn.chatgpt.com/docs/image-generation)
+
+Anthropic says Claude does not generate photos/illustrations as an image-generation tool does. Its current model documentation describes image input and text output; Claude Code documents image analysis from pasted images or local paths. HTML/SVG/code visuals and ordinary programmatic file editing are different capabilities. No supported native Claude subscription image-generation event/artifact contract was established by these sources. [Claude image capabilities](https://support.claude.com/en/articles/9002504-can-claude-produce-images), [model modalities](https://platform.claude.com/docs/en/models/overview), [Claude Code image workflows](https://code.claude.com/docs/en/common-workflows#work-with-images)
+
+Separate model/image APIs and fallbacks are outside this map's scope. The distinct Sign in with ChatGPT token-sharing Responses preview explicitly lists hosted image generation as unsupported; successful text or image-input use on that route does not validate native Codex image generation. [Preview limitations](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations)
+
+## Evidence boundary and reproducibility
+
+The prior [T3 card-chat report](t3-code-card-chats.md) inspected Codex 0.160.0. This session's read-only checks reported **`codex-cli 0.160.1`**. Generated the version-specific, non-experimental JSON-schema bundle with:
+
+```sh
+codex --version
+codex app-server generate-json-schema --out /tmp/frameboard-image-schema-01601
+```
+
+The v2 schema bundle SHA-256 was `81a88c04ae4984b16d73080f4109d0477682bc76c8adbe483e371175ce54c054`. Temporary schemas are inspection artifacts, not committed assets. No inference, image turn, authentication mutation, credential inspection, or provider session inspection was performed.
+
+Inspected first-party source at **OpenAI Codex tag `rust-v0.160.1`, commit `d27764b82f7118f674371e6d6e76271d9d606edb`**. Source behavior is a stronger explanation than a schema alone, but is still not a successful test of the installed binary, current backend, or signed-in account. [Pinned source](https://github.com/openai/codex/tree/d27764b82f7118f674371e6d6e76271d9d606edb)
+
+App-server is designed for embedding Codex with history, approvals, and streaming. Its official documentation still marks the command/transport experimental and unsupported for production workloads. Generated contracts belong to the particular installed version; pin and retest them. [App-server documentation](https://learn.chatgpt.com/docs/app-server)
+
+## Native output contract
+
+The generated 0.160.1 schema exposes `ThreadItem.type = "imageGeneration"` with required `id`, `status`, and `result`, and nullable/optional `savedPath`, `revisedPrompt`, `transparentBackground`, and `failure`. Generic `item/started` and `item/completed` notifications carry the item plus `threadId`, `turnId`, and lifecycle timestamps. The image item's `status` is a string, not a closed protocol enum.
+
+The native extension emits `in_progress`, then `completed` or `failed`. Successful `result` contains base64 image bytes; failure leaves it empty. `revisedPrompt` is set from the model-facing tool's prompt, so preserve the user's submitted prompt separately. The public item has **no image-model field, reference list, dimensions, or backend generation/request identity**. Backend generation/request IDs exist in source but are explicitly excluded from serialization and persistence; they are not an integration identity. [Public image item](https://github.com/openai/codex/blob/d27764b82f7118f674371e6d6e76271d9d606edb/codex-rs/ext/items/src/image_generation.rs), [native tool execution](https://github.com/openai/codex/blob/d27764b82f7118f674371e6d6e76271d9d606edb/codex-rs/ext/image-generation/src/tool.rs)
+
+App-server installs the extension with Codex's configured home as its save root. The extension chooses `<codex-home>/generated_images/<sanitized-native-thread-id>/<sanitized-tool-call-id>.png`. The path is provider-owned storage, not Frameboard gallery ownership. File saving can fail while the image item still completes with base64 bytes and `savedPath = null`. Do not equate completed generation with successful local saving or gallery import. [App-server installation](https://github.com/openai/codex/blob/d27764b82f7118f674371e6d6e76271d9d606edb/codex-rs/app-server/src/extensions.rs#L101), [artifact naming](https://github.com/openai/codex/blob/d27764b82f7118f674371e6d6e76271d9d606edb/codex-rs/ext/image-generation/src/artifact.rs), [save behavior](https://github.com/openai/codex/blob/d27764b82f7118f674371e6d6e76271d9d606edb/codex-rs/ext/image-generation/src/tool.rs#L298)
+
+A non-default `omit_app_server_notification_media` feature clears image `result` from item notifications but keeps path/metadata. Its source default is false; effective configuration can differ. A notification's empty result is consequently not proof that generation failed. Two first-party mobile client names also receive image items removed from `thread/resume` responses; a Frameboard client should use its own client identity and test its actual history API. [Media filtering](https://github.com/openai/codex/blob/d27764b82f7118f674371e6d6e76271d9d606edb/codex-rs/app-server/src/notification_media.rs), [feature defaults](https://github.com/openai/codex/blob/d27764b82f7118f674371e6d6e76271d9d606edb/codex-rs/features/src/lib.rs#L1553), [client-specific resume redaction](https://github.com/openai/codex/blob/d27764b82f7118f674371e6d6e76271d9d606edb/codex-rs/app-server/src/request_processors/thread_resume_redaction.rs)
+
+## Explicit reference editing
+
+`turn/start` accepts mixed text and `localImage` inputs with an absolute local path. The native model-facing `image_gen.imagegen` tool supports either `referenced_image_paths` or `num_last_images_to_include`, never both, with up to five references. Existing local references are read through the tool environment's filesystem permissions. The native edit call uses `gpt-image-2`; current tool arguments do not expose a mask, explicit size/quality, or image-model override. [Turn inputs](https://learn.chatgpt.com/docs/app-server#turns), [image tool arguments and edit selection](https://github.com/openai/codex/blob/d27764b82f7118f674371e6d6e76271d9d606edb/codex-rs/ext/image-generation/src/tool.rs#L86)
+
+The source itself calls recent-image selection best effort: newer unrelated images can enter that bounded window. For the product's “edit this version” operation, prefer an explicitly selected immutable Frameboard image version, materialized at a stable readable local path and attached to the submitted turn. Save its identity/hash/order in the submission, and instruct the harness to use that path. **Attachment and instructions do not prove the model selected the intended edit reference**; the live validation must inspect observable tool arguments or equivalent evidence. No dedicated app-server “edit exactly this image” RPC was established. [Reference resolution](https://github.com/openai/codex/blob/d27764b82f7118f674371e6d6e76271d9d606edb/codex-rs/ext/image-generation/src/tool.rs#L434)
+
+## Capability and failure discovery
+
+The installed schema includes `modelProvider/capabilities/read` with `imageGeneration`, `namespaceTools`, and `webSearch` booleans. Its implementation reports configured provider capabilities without an auth manager: this is a useful rejection signal, **not an account entitlement check**. Model image-input support likewise does not establish image-output support. [Capability response](https://github.com/openai/codex/blob/d27764b82f7118f674371e6d6e76271d9d606edb/codex-rs/app-server-protocol/src/protocol/v2/model.rs#L41), [capability implementation](https://github.com/openai/codex/blob/d27764b82f7118f674371e6d6e76271d9d606edb/codex-rs/app-server/src/request_processors/config_processor.rs#L203)
+
+The pinned runtime additionally gates exposure on the image-generation feature, provider namespace/image support, model image-input modality, an eligible Codex-backend/actor authentication path, and a non-Free plan when that plan is known. The feature defaults on, but that does not bypass these other gates or server-side availability. [Runtime tool gate](https://github.com/openai/codex/blob/d27764b82f7118f674371e6d6e76271d9d606edb/codex-rs/core/src/tools/spec_plan.rs#L727)
+
+The public image failure type currently has only `usageLimitExceeded` with `limitId` and nullable `resetsAt`. The tool populates it specifically for an `image_gen` usage-limit bucket. Other image failures can still have `status = failed` and no typed `failure`; the error is also returned to the model. Preserve raw item status and available tool/run error evidence rather than inventing structured categories. An overall successful agent turn does not necessarily mean its image tool succeeded. [Failure definition](https://github.com/openai/codex/blob/d27764b82f7118f674371e6d6e76271d9d606edb/codex-rs/ext/items/src/image_generation.rs#L8), [failure mapping](https://github.com/openai/codex/blob/d27764b82f7118f674371e6d6e76271d9d606edb/codex-rs/ext/image-generation/src/tool.rs#L272)
+
+## Proposed Frameboard contract
+
+These are recommendations for the downstream decision tickets, not provider guarantees:
+
+- Advertise native image support as unsupported, available but unverified, or successfully validated for a recorded runtime/provider configuration. Keep transient quota/auth/tool failure separate from unsupported capability. A catalog or feature boolean alone should not produce a “verified” badge.
+- Persist the app run and exact prompt/reference snapshot before submission. Preserve native thread, turn, and item IDs; use their tuple to deduplicate received/replayed image items. One user request may produce several items, so do not assume one run means one output.
+- Keep generation status and import status separate. Accept bytes from a completed image item or a permitted provider artifact path, validate actual image format/size, then copy into app-owned immutable storage. Use server-minted artifact URLs in the browser, not arbitrary provider paths. An import failure should be retryable without regenerating and consuming another turn.
+- Preserve each output as a new version, with its content hash, dimensions/MIME, source item/turn/run, original prompt, tool prompt when supplied, selected reference-version IDs, transparent-background outcome, and timestamps. Record chat model and image model separately; `gpt-image-2` is version-pinned source knowledge here, not an item-reported model. Label inferred/unknown metadata honestly.
+- Do not overwrite a prior image when editing. Distinguish transcript artifact creation from adding it to the card gallery or choosing Display/Original/Inspiration roles. Those are product/manual-authority decisions.
+- Keep artifacts and transcript when restoring a card. Restoration changes its gallery selection/state without rewinding provider history or deleting generated versions. A referenced version must stay retrievable for later editing.
+- Backup both app-owned artifacts/transcript and provider-native session storage. Never rely on a saved native path or ID surviving cleanup/machine migration.
+
+History reconstruction in the pinned source rebuilds image items from persisted completion events, preserving item/turn association, result, saved path, and failure. Tests exercise that projection. This supports a reconciliation strategy, but does not prove an actual interrupted image request will be recoverable or safely repeatable. [History reconstruction and tests](https://github.com/openai/codex/blob/d27764b82f7118f674371e6d6e76271d9d606edb/codex-rs/app-server-protocol/src/protocol/thread_history.rs#L2318)
+
+## Minimal live validation prerequisite
+
+A later, explicitly authorized validation task must use the actual native local subscription path, without an API-key fallback, desktop app, or credential logging. It can be a throwaway protocol harness rather than production implementation. Successful text inference is insufficient.
+
+1. **Record configuration:** installed CLI/version, selected chat model, auth mode/plan category without tokens, configured provider capabilities, image feature/media behavior, and filesystem roots. Use a new isolated working folder and native thread with a distinct Frameboard test client identity.
+2. **Generate:** submit a small original-image request. Capture the submitted turn and item events. Require a completed `imageGeneration` item and decodable actual bytes or an existing readable artifact. Record native IDs, status, size/type/hash, and where bytes came from. Copy the image into test app-owned storage and display it through the local web server.
+3. **Reference-edit:** retain version A, attach its stable local path, and request one unmistakable change. Prefer explicit tool path references; verify observed reference selection when exposed. Require a different output version B and visually confirm the requested change while documenting the model's imperfect editing fidelity. Preserve both versions and the reference link; do not replace A.
+4. **Restart and resume:** terminate/restart the backend/app-server after both turns complete. Read/reconcile the same native thread; reopen both test artifacts and transcript. Submit a follow-up referencing A explicitly and verify it reaches that conversation. Distinguish restored app display from successful provider-native continuation.
+5. **Import/replay recovery:** simulate an app-side failure after receipt and before import acknowledgement. Replay/reconcile the completed item and ensure a single imported version without a new model request. Separately exercise bytes-only/no-`savedPath` and media-omitted/path-only handling using fixtures, without inducing extra paid failures.
+6. **Unsupported/failure behavior:** use deterministic fixtures or a non-supporting configuration to verify missing capability, failed image item, quota failure/reset timestamp, and missing artifact produce honest UI states. Do not deliberately exhaust the subscription. Image Stop/in-flight restart behavior must be investigated separately if the first round does not establish it.
+
+**Proof still missing:** this account can actually invoke native generation through app-server; the current backend returns usable bytes/events on this auth route; explicit reference editing uses the intended version; artifacts display and survive import/restart; provider history resumes; cancellation/ambiguous crashes reconcile without silently starting a duplicate image request. Neither documentation nor this read-only schema/source investigation supplies that proof.
+
+## Suggested decision consequence
+
+Keep native Codex generation/editing in the first milestone, gated on the live validation above. Treat native raster generation as unavailable for Claude unless new qualifying primary evidence appears. The later image-experience decision must choose whether a Claude chat explicitly invokes a distinct local Codex image run or offers generation only when that card uses a supporting harness; either choice must retain the actual source harness/session and must not pretend Claude's conversation natively generated the image. No API fallback is proposed.
