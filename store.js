@@ -9,6 +9,7 @@ import path from 'node:path';
 import { templates, defaultTemplate, emptyFields, emptyImageRoles } from './public/card-template.js';
 import { readLegacyBoard } from './legacy-board.js';
 import { emptyGraph, promptGraph, validateGraph, executeGraph, assignmentsFor } from './public/flow-graph.js';
+import { chatMigration, createChatStore } from './store-chat.js';
 
 export const imageIdPattern = /^[a-f0-9-]{36}\.(png|jpg|webp|gif|avif)$/;
 export const laneColors = ['lavender', 'blue', 'amber', 'green', 'pink', 'gray', 'teal', 'cyan', 'orange', 'red', 'purple', 'lime'];
@@ -115,7 +116,7 @@ const migrations = [`
     workspace_id TEXT NOT NULL REFERENCES workspaces(id), provider TEXT NOT NULL,
     revision INTEGER NOT NULL, selection TEXT NOT NULL, updated_at TEXT NOT NULL,
     PRIMARY KEY (workspace_id, provider));
-`];
+`, chatMigration];
 
 const now = () => new Date().toISOString();
 const fail = (status, message) => { throw Object.assign(new Error(message), { status }); };
@@ -222,7 +223,7 @@ function unmetCriteria(stage, card) {
     : !card.imageRoles[item.imageRole]).map((item) => item.label || (item.field ? `${item.field} is filled` : `${item.imageRole} image is set`));
 }
 
-export async function openStore({ dataDir, onCardEvent = () => {}, clock = now }) {
+export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = () => {}, clock = now }) {
   const now = clock;
   const file = path.join(dataDir, 'frameboard.db');
   const legacyFile = path.join(dataDir, 'board.json');
@@ -247,6 +248,7 @@ export async function openStore({ dataDir, onCardEvent = () => {}, clock = now }
       for (const event of events) {
         try { onCardEvent(event); } catch (error) { console.error(error); }
       }
+      try { onCommit(); } catch (error) { console.error(error); }
       return result;
     } catch (error) {
       db.exec('ROLLBACK');
@@ -276,7 +278,7 @@ export async function openStore({ dataDir, onCardEvent = () => {}, clock = now }
   // One append-only log serves activity and the synchronization feed. Legacy
   // card history is a filtered projection; the old tables are migration input.
   function recordChange(ctx, entity, entityId, type, { projectId = null, data = {}, at = now(), eventId = null, from = null, to = null, note = '' } = {}) {
-    const card = entity === 'card' ? get('SELECT title, stage_id FROM cards WHERE id = ?', entityId) : null;
+    const card = ['card', 'chat'].includes(entity) ? get('SELECT title, stage_id FROM cards WHERE id = ?', entityId) : null;
     const context = {
       projectName: projectId ? get('SELECT name FROM projects WHERE id = ?', projectId)?.name : undefined,
       cardTitle: card?.title,
@@ -443,14 +445,18 @@ export async function openStore({ dataDir, onCardEvent = () => {}, clock = now }
   function deleteCards(ctx, rows, reason) {
     const at = now();
     for (const row of rows) {
+      chats.cancelCard(ctx, row.id, reason);
       run('UPDATE cards SET deleted_at = ? WHERE id = ?', at, row.id);
       insertEvent(ctx.workspaceId, cardFrom(row), 'deleted', ctx.actor, { from: row.stage_id, data: { reason }, at });
       recordSavedState(ctx, row.id, 'deleted', at);
     }
   }
 
+  const chats = createChatStore({ all, get, run, transaction, retainedCard, requireCard, recordChange, now });
+
   return {
     owner,
+    chats,
     close: () => db.close(),
 
     providerConfiguration(ctx, provider = 'codex') {

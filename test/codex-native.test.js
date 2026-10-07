@@ -9,9 +9,64 @@ import { createCodexAdapter } from '../codex-adapter.js';
 import { configurationDiscovery, compileConfiguration, openConfiguredThread, queuedConfigurationDecision } from '../codex-configuration.js';
 import { createResponsesFixture } from './support/responses-fixture.js';
 import { installedCodexSchema } from './support/json-schema.js';
+import { createApp } from '../server.js';
+import { randomUUID } from 'node:crypto';
 
 const enabled = process.env.FRAMEBOARD_NATIVE_TEST === '1';
 const schema = enabled ? installedCodexSchema() : null;
+
+test('installed native: durable HTTP worker follows up after process/app restart with the exact binding and frozen context', { skip: !enabled, timeout: 45000 }, async (t) => {
+  const f = await nativeFixture(t);
+  const dataDir = path.join(path.dirname(f.home), 'http-data');
+  let app; let adapter = f.adapter;
+  async function start() {
+    // Only this credential-free gate selects the local Responses peer. The
+    // production worker still explicitly uses the installed openai provider.
+    const boundary = { ...adapter, openThread: (options) => adapter.openThread({ ...options, modelProvider: 'fb_fixture' }) };
+    app = await createApp({ dataDir, codexAdapter: boundary });
+    await new Promise((resolve) => app.listen(0, '127.0.0.1', resolve));
+  }
+  const close = () => new Promise((resolve) => app.close(resolve));
+  async function call(method, pathname, body) {
+    const response = await fetch(`http://127.0.0.1:${app.address().port}${pathname}`, { method, headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
+    const value = await response.json(); assert.ok(response.ok, JSON.stringify(value)); return value;
+  }
+  async function submit(cardId, prompt, model) {
+    const composer = (await call('GET', `/api/cards/${cardId}/chat`)).composer;
+    const saved = await call('PUT', `/api/cards/${cardId}/chat/composer`, { ...composer, prompt, model });
+    const submission = await call('POST', `/api/cards/${cardId}/chat/submissions`, { id: randomUUID(), composerRevision: saved.revision });
+    for (let i = 0; i < 200; i++) {
+      const chat = await call('GET', `/api/cards/${cardId}/chat`);
+      const state = chat.submissions.find((row) => row.id === submission.id);
+      if (state.status === 'completed') return chat;
+      assert.ok(!['held', 'failed', 'uncertain'].includes(state.status), JSON.stringify(state));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.fail('Installed native HTTP turn did not complete.');
+  }
+  await start();
+  try {
+    const workspace = await call('GET', '/api/workspace'); const project = workspace.projects[0];
+    const stageId = workspace.flows.find((flow) => flow.id === project.flowId).stages[0].id;
+    const card = await call('POST', `/api/projects/${project.id}/cards`, { stageId, title: 'HTTP_NATIVE_CARD', fields: { intro: 'HTTP_NATIVE_FROZEN_INTRO', prompt: 'HTTP_NATIVE_LEGACY_PROMPT' } });
+    const first = await submit(card.id, 'HTTP_NATIVE_FIRST_PROMPT', 'gpt-6-luna');
+    const binding = first.conversations[0].binding;
+    assert.ok(binding.threadId); assert.ok(first.items.some((item) => item.text === 'FB_FIXTURE_RESPONSE'));
+    assert.equal(first.submissions[0].context.fields.find((field) => field.key === 'intro').value, 'HTTP_NATIVE_FROZEN_INTRO');
+    const serialized = f.peer.requests.map((request) => request.serialized).join('\n');
+    assert.match(serialized, /HTTP_NATIVE_FROZEN_INTRO/); assert.doesNotMatch(serialized, /HTTP_NATIVE_LEGACY_PROMPT/);
+    await adapter.close({ signal: 'SIGKILL' }); await close();
+    adapter = createCodexAdapter({ cwd: f.cwd, env: { ...process.env, CODEX_HOME: f.home }, requestTimeoutMs: 15000 });
+    await start();
+    const second = await submit(card.id, 'HTTP_NATIVE_FOLLOW_UP', 'gpt-5.6-luna');
+    assert.deepEqual(second.conversations[0].binding, binding);
+    assert.equal(second.submissions.length, 2); assert.equal(second.attempts.length, 2);
+    assert.equal(second.conversations[0].model, 'gpt-5.6-luna');
+    const turns = (await adapter.listTurns({ threadId: binding.threadId })).data;
+    assert.ok(second.attempts.every((attempt) => turns.some((turn) => turn.items.some((item) => item.type === 'userMessage' && item.clientId === attempt.id))));
+    assert.ok(f.peer.requests.every((request) => !request.authorization));
+  } finally { if (app.listening) await close(); await adapter.close(); }
+});
 
 async function nativeFixture(t) {
   assert.ok(schema, 'Install Codex before running the native gates.');

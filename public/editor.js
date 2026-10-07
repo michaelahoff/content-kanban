@@ -5,6 +5,7 @@ import { state, locateCard, cardChanged, flushCards, onCardFieldsChange, beginCa
 import { renderBoard, renderStatus } from './board.js';
 import { request } from './api.js';
 import { templates, fieldInputId } from './card-template.js';
+import { mountChat, unmountChat } from './chat.js';
 
 const cardDialog = $('#card-dialog');
 let lastCardTrigger;
@@ -77,6 +78,7 @@ export function originalVideoMarkup(card) {
 export function openCard(targetId) {
   const found = locateCard(targetId);
   if (!found) return;
+  unmountChat();
   if (state.cardId && state.cardId !== targetId) endCardEditing(state.cardId);
   beginCardEditing(targetId);
   state.cardId = targetId;
@@ -94,7 +96,7 @@ export function openCard(targetId) {
     <div class="editor-footer">${button('delete-card', 'Delete card', 'trash', 'text-button danger')}${button('copy-trifecta', 'Trifecta copy', 'text', 'button secondary')}<span class="edited-at" data-edited-card="${card.id}">${lastEditedMarkup(card)}</span>${button('close-card', 'Done', 'check', 'button primary')}</div>`;
   renderImages();
   renderStatus();
-  if (!cardDialog.open) cardDialog.showModal();
+  mountChat(targetId);
   if (!card.title) $(card.fields.originalVideoUrl ? '#card-title' : '#card-original-video-url').focus();
 }
 export function renderImages() {
@@ -108,6 +110,7 @@ export function renderImages() {
     ${card.images.length ? `<p class="gallery-heading">Choose the display, original, and inspiration images for this card.</p><div class="image-gallery">${card.images.map((item) => `<div class="image-tile ${item.id === coverImageId ? 'is-display' : ''}"><button class="thumbnail" data-action="preview-image" data-id="${item.id}" aria-label="Preview ${escape(item.name)}"><img src="${imageURL(item.id)}" alt="${escape(item.name)}" loading="lazy"></button>${iconButton('remove-image', `Remove ${item.name}`, 'close', `data-id="${item.id}"`)}<div class="image-flags"><button class="set-display" data-action="set-display" data-id="${item.id}" aria-pressed="${item.id === coverImageId}">${icon(item.id === coverImageId ? 'check' : 'star')}${item.id === coverImageId ? 'Display image' : 'Set as display'}</button><button class="set-image-role ${item.id === originalImageId ? 'selected' : ''}" data-action="set-image-role" data-role="original" data-id="${item.id}" aria-pressed="${item.id === originalImageId}">${item.id === originalImageId ? '✓ ' : ''}Original</button><button class="set-image-role ${item.id === inspirationImageId ? 'selected' : ''}" data-action="set-image-role" data-role="inspiration" data-id="${item.id}" aria-pressed="${item.id === inspirationImageId}">${item.id === inspirationImageId ? '✓ ' : ''}Inspiration</button></div></div>`).join('')}</div>` : ''}`;
 }
 export function closeCard() {
+  unmountChat();
   if (state.cardId) endCardEditing(state.cardId);
   cardDialog.close();
 }
@@ -115,6 +118,7 @@ cardDialog.addEventListener('cancel', () => { if (state.cardId) endCardEditing(s
 cardDialog.addEventListener('close', () => {
   // The close event arrives as a separate task, so ignore it if a card was reopened first.
   if (cardDialog.open) return;
+  unmountChat();
   if (state.cardId) endCardEditing(state.cardId);
   state.cardId = null;
   renderBoard();

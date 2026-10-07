@@ -6,6 +6,8 @@ import { fileURLToPath } from 'node:url';
 import { openStore, imageIdPattern } from './store.js';
 import { createCodexAdapter } from './codex-adapter.js';
 import { configurationDiscovery, compileConfiguration, mandatoryBehavior } from './codex-configuration.js';
+import { createChatService } from './chat-service.js';
+import { createChatWorker } from './chat-worker.js';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const imageTypes = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif', 'image/avif': 'avif' };
@@ -74,8 +76,8 @@ async function json(req, limit) {
 export async function createApp({ dataDir = process.env.DATA_DIR || path.join(root, 'data'), fetch: fetchImpl = globalThis.fetch, onCardEvent, codexAdapter } = {}) {
   const imagesDir = path.join(dataDir, 'images');
   await mkdir(imagesDir, { recursive: true });
-  let store;
-  try { store = await openStore({ dataDir, onCardEvent }); }
+  let store; let worker;
+  try { store = await openStore({ dataDir, onCardEvent, onCommit: () => worker?.wake() }); }
   catch (error) { throw new Error(`Could not load the board in ${dataDir}. Your data has not been changed. ${error.message}`); }
   // Only top-level files in public/ are served, so paths cannot escape it.
   const publicFiles = new Map((await readdir(path.join(root, 'public'))).filter((name) => staticTypes[path.extname(name)]).map((name) => [`/${name}`, name]));
@@ -88,6 +90,8 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
   };
   const read = (req) => json(req, 12 * 1024 * 1024);
   const codex = codexAdapter ?? createCodexAdapter();
+  const chat = createChatService({ store, adapter: codex, dataDir });
+  worker = createChatWorker({ store, adapter: codex, service: chat, ctx: currentUser() });
   const codexAction = async (fn) => {
     try { return await fn(); } catch (error) {
       if (error.kind) Object.assign(error, { status: 503 });
@@ -95,6 +99,18 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
     }
   };
   const routes = [
+    ['GET', /^\/api\/chat-activity$/, (ctx) => ({ entries: store.chats.indicators(ctx) })],
+    ['GET', /^\/api\/cards\/([^/]+)\/chat$/, (ctx, req, id) => store.chats.snapshot(ctx, id)],
+    ['PUT', /^\/api\/cards\/([^/]+)\/chat\/composer$/, async (ctx, req, id) => store.chats.saveComposer(ctx, id, await read(req))],
+    ['POST', /^\/api\/cards\/([^/]+)\/chat\/preview$/, (ctx, req, id) => chat.preview(ctx, id)],
+    ['POST', /^\/api\/cards\/([^/]+)\/chat\/discover$/, (ctx, req, id) => codexAction(() => chat.discover(ctx, id))],
+    ['POST', /^\/api\/cards\/([^/]+)\/chat\/submissions$/, (ctx, req, id) => codexAction(async () => chat.queue(ctx, id, await read(req))), 201],
+    ['POST', /^\/api\/cards\/([^/]+)\/chat\/fresh$/, async (ctx, req, id) => store.chats.fresh(ctx, id, await read(req))],
+    ['POST', /^\/api\/cards\/([^/]+)\/chat\/viewed$/, (ctx, req, id) => (store.chats.viewed(ctx, id), { ok: true })],
+    ['POST', /^\/api\/cards\/([^/]+)\/chat\/stop$/, (ctx, req, id) => ({ attempt: worker.stop(id) })],
+    ['POST', /^\/api\/cards\/([^/]+)\/chat\/cancel$/, async (ctx, req, id) => (store.chats.cancelSubmission(ctx, id, (await read(req)).submissionId), { ok: true })],
+    ['POST', /^\/api\/cards\/([^/]+)\/chat\/retry$/, async (ctx, req, id) => store.chats.retry(ctx, id, (await read(req)).submissionId)],
+    ['POST', /^\/api\/cards\/([^/]+)\/chat\/answer$/, async (ctx, req, id) => { const input = await read(req); return worker.answer(id, input.requestId, input.response); }],
     ['GET', /^\/api\/providers\/codex$/, (ctx) => ({ ...store.providerConfiguration(ctx), running: codex.running, mandatoryBehavior, discoveryRequired: true })],
     ['PUT', /^\/api\/providers\/codex$/, async (ctx, req) => store.saveProviderConfiguration(ctx, await read(req))],
     ['POST', /^\/api\/providers\/codex\/discover$/, (ctx) => codexAction(async () => {
@@ -179,7 +195,7 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
       if (!error.status && error.code !== 'ENOENT') console.error(error);
     }
   });
-  server.on('close', () => { store.close(); codex.close().catch((error) => console.error(error)); });
+  server.on('close', () => { worker.close(); store.close(); codex.close().catch((error) => console.error(error)); });
   return server;
 }
 

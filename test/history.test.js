@@ -6,6 +6,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { openStore } from '../store.js';
 import { promptGraph } from '../public/flow-graph.js';
+import { dropChatSchema } from './support/drop-chat-schema.js';
 
 async function fixture(t) {
   const dataDir = await mkdtemp(path.join(tmpdir(), 'frameboard-history-'));
@@ -34,6 +35,7 @@ const image = { id: '00000001-0000-4000-8000-000000000000.png', name: 'Reference
 // records remain intact so migration tests also exercise real preexisting undo.
 function downgrade(db) {
   db.exec('PRAGMA foreign_keys = OFF;');
+  dropChatSchema(db);
   db.exec(`
     INSERT INTO card_events SELECT card_event_id, workspace_id, project_id, entity_id, type, actor,
       from_stage_id, to_stage_id, note, data, created_at FROM activity_log WHERE card_event_id IS NOT NULL;

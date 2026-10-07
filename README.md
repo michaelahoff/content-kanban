@@ -40,9 +40,9 @@ Supports PNG, JPEG, WebP, GIF, and AVIF, up to 20 MB per image and 200 images pe
 
 ## Your data
 
-The server listens only on this computer (`127.0.0.1`). The only time the app goes online is when you choose **Get title & thumbnail**: the server then asks YouTube for that video's title and thumbnail and saves the thumbnail in `data/images/`. Everything else works offline. Projects, lanes, cards, and history live in the SQLite database `data/frameboard.db`; original images live in `data/images/`. The browser stores the last selected project and whether cards are collapsed.
+The server listens only on this computer (`127.0.0.1`). Board editing works offline. **Get title & thumbnail** contacts YouTube and saves its thumbnail in `data/images/`. Explicit Codex discovery and chat Send use the installed native harness; inference uses its existing authentication and online access. Projects, lanes, cards, chat/composer state and history live in `data/frameboard.db`; original images live in `data/images/`; card workspaces live in `data/workspaces/<cardId>/`. The browser remembers display preferences and per-card workbench view state.
 
-**Stop the server and back up the whole `data/` directory.** To restore a backup, stop the server, replace `data/` with your backup, and restart. Set `DATA_DIR` to use a different storage location. On the first start with an older `board.json`, the server transfers its board to SQLite in one transaction and keeps the original file as `board.json.migrated`.
+**Stop the server and back up the whole `data/` directory.** To restore a backup, stop the server, replace `data/` with your backup, and restart. This preserves app history and workspace files; it does not include native conversations outside `data/` or guarantee native resume. Verified native backup/restore comes in the later release gate. Set `DATA_DIR` to use a different storage location. On the first start with an older `board.json`, the server transfers its board to SQLite in one transaction and keeps the original file as `board.json.migrated`.
 
 Deleting a card hides it from the board while retaining its saved data and history. Removing an image removes its association with the card. Original uploaded files remain in `data/images/`, so deleting cards does not reclaim image storage. This also keeps in-progress uploads and backups from losing files.
 
@@ -58,7 +58,7 @@ npm run test:browser  # End-to-end browser checks; requires Chromium or CHROME_P
 
 The app uses Node's standard library and plain HTML, CSS, and JavaScript. Browser checks create a temporary workspace and leave your real board untouched.
 
-SQL lives in `store.js`. This keeps persistence behind one boundary; changing database engines may also require changes to asynchronous calls, transactions, and deployment.
+SQL lives in `store.js` and its `store-chat.js` component. `openStore` keeps persistence behind one public boundary; changing database engines may also require changes to asynchronous calls, transactions, and deployment.
 
 Command graphs have a version, typed nodes, node positions, and explicit edges. `public/flow-graph.js` validates graphs and evaluates Set field commands independently of the canvas. Independent branches run in saved node order after their incoming commands complete. The server applies the resulting fields in the same transaction as the move, records the executed node IDs, and increments the content revision once if values changed. The editor preserves newer typing while acknowledging only the fields the flow changed. Set field is the only command type today. LLM/API commands will need execution handlers, credentials and asynchronous run tracking before they can be enabled.
 
@@ -81,6 +81,16 @@ Full history browsing and card restoration controls are scheduled for Phase 3. E
 
 ### Codex adapter foundation (Phase 1.2)
 
-Open **Codex settings** from the board to save provider guidance and explicitly discover the installed harness. Optional discoveries start unchecked. Opening settings does not start Codex. Unsupported MCP/plugin/hook and native skill selections display their isolation limits; card chat controls are delivered in the next milestone.
+Open **Codex settings** from the board to save provider guidance and explicitly discover the installed harness. Optional discoveries start unchecked. Opening settings does not start Codex. Unsupported MCP/plugin/hook and native skill selections display their isolation limits.
 
 `npm run test:native` runs opt-in, credential-free installed Codex protocol/persistence/configuration gates against a local fixture. It does not verify model entitlement. See [implementation evidence and supported boundaries](docs/implementation/phase-1-codex.md).
+
+### Manual workbench and durable queue (Phase 1.3)
+
+Opening a card shows its editor beside **Card chat** on wide screens; narrow screens use **Editor / Chat** tabs. **Hide chat** restores the modal editor and is remembered. Switching, hiding and closing preserve per-card composer/references and keep background work running. Opening a view starts no native conversation.
+
+Choose **Discover**, select an available model, and compose a prompt. Expand **What will be sent** to select labeled saved fields and exact image references; Original/Inspiration start selected, Display is opt-in, duplicate roles attach one image, and legacy Prompt stays out. **Send** freezes those inputs/configuration and atomically clears composer text. Different cards can run independently; follow-ups on one card wait their turn. Earlier submissions expose their original inputs.
+
+**Stop** preserves partial output and invalidates requests. **Start fresh context** retains previous history, resets grants and explicitly cancels queued old work; it waits for acknowledged interruption and starts no native turn until Send. Changed configuration holds queued work until cancel/resubmit, and changed native configuration needs deliberate fresh context. Ambiguous delivery stays held and is never automatically resent.
+
+This is a development milestone. Card tools, full grants/input handling, native image adoption, complete recovery/streaming and verified backups remain required before the Phase 1 daily-use release. See [the workbench implementation and evidence](docs/implementation/phase-1-workbench.md).

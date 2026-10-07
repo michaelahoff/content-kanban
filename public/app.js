@@ -6,6 +6,7 @@ import { state, project, locateCard, cardCount, loadWorkspace, loadCards, cardCh
 import { view, selectProject, renderApp, renderBoard, renderStatus, editProject, editLane, editProjectPrompt, toggleCards } from './board.js';
 import { openCard, closeCard, renderImages, copyText, copyTrifecta, fetchYoutube, addImages, originalVideoMarkup, videoLinkMarkup } from './editor.js';
 import { openFlow } from './flow-editor.js';
+import { initializeChats, hasUnsentChatChanges, flushComposers } from './chat.js';
 
 const cardDialog = $('#card-dialog');
 const formDialog = $('#form-dialog');
@@ -316,9 +317,9 @@ for (const dialog of [cardDialog, formDialog, imageDialog]) {
   dialog.addEventListener('click', (event) => { if (downOnBackdrop && event.target === dialog) dialog.close(); downOnBackdrop = false; });
 }
 window.addEventListener('beforeunload', (event) => {
-  if (hasUnsavedWork()) { event.preventDefault(); event.returnValue = ''; }
+  if (hasUnsavedWork() || hasUnsentChatChanges()) { event.preventDefault(); event.returnValue = ''; }
 });
-document.addEventListener('visibilitychange', () => { if (document.hidden) flushCards(); });
+document.addEventListener('visibilitychange', () => { if (document.hidden) { flushCards(); flushComposers(); } });
 window.addEventListener('online', () => { if (saveStatus().error) retry(); });
 onStatusChange(renderStatus);
 
@@ -328,6 +329,7 @@ try {
   if (!project()) state.projectId = state.projects[0]?.id;
   await loadCards(state.projectId);
   renderApp();
+  initializeChats({ openCard, switchProject, renderBoard });
 } catch (error) {
   app.innerHTML = `<div class="loading-screen"><h1>Couldn’t open your workspace</h1><p>${escape(error.message)}</p><p>Make sure the local server is running, then reload this page.</p><a class="button primary" href="/">Try again</a></div>`;
 }

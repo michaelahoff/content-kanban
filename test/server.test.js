@@ -7,6 +7,7 @@ import http from 'node:http';
 import { DatabaseSync } from 'node:sqlite';
 import { createApp } from '../server.js';
 import { emptyGraph, promptGraph } from '../public/flow-graph.js';
+import { dropChatSchema } from './support/drop-chat-schema.js';
 
 async function start(dataDir, options = {}) {
   const app = await createApp({ dataDir, ...options });
@@ -53,6 +54,7 @@ function commandChain(commands) {
 // writes live only in activity_log, whereas these fixtures exercise older apps.
 function removeHistoryMilestone(db) {
   db.exec('PRAGMA foreign_keys = OFF;');
+  dropChatSchema(db);
   db.exec(`
     INSERT INTO card_events (id, workspace_id, project_id, card_id, type, actor, from_stage_id, to_stage_id, note, data, created_at)
       SELECT card_event_id, workspace_id, project_id, entity_id, type, actor, from_stage_id, to_stage_id, note, data, created_at

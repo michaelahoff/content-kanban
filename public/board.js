@@ -1,6 +1,7 @@
 // The project sidebar, the board of lanes and cards, and the project and lane forms.
 import { $, escape, icon, button, iconButton, imageURL, palette, wordCount, lastEditedMarkup, smallForm, nameField, toast } from './ui.js';
 import { state, project, locateCard, cardCount, searchText, saveStatus, createProject, renameProject, addLane, updateLane, setProjectPrompt, latestMoveCard } from './state.js';
+import { activityMarkup } from './chat.js';
 
 const app = $('#app');
 export const view = { query: '', pasteLaneId: null, cardsCollapsed: false };
@@ -61,7 +62,7 @@ export function renderApp() {
       <div class="sidebar-bottom"><a class="button secondary" href="/codex.html">Codex settings</a><div class="local-label"><span class="online-dot"></span>Local workspace</div><p>Just you and your ideas.<br>Saved on this computer.</p><div class="workspace-owner"><span class="avatar">Y</span><div><strong>Your workspace</strong><span>No account needed</span></div>${icon('monitor')}</div></div>
     </aside>
     <main class="main">
-      <div class="topbar"><div class="breadcrumbs">${iconButton('toggle-sidebar', 'Toggle projects', 'menu')}<span>Workspace</span>${icon('chevron')}<strong>Board</strong></div><div class="save-status" data-save-status></div></div>
+      <div class="topbar"><div class="breadcrumbs">${iconButton('toggle-sidebar', 'Toggle projects', 'menu')}<span>Workspace</span>${icon('chevron')}<strong>Board</strong></div><div class="workspace-chat-activity"><button class="button small secondary" data-action="workspace-chat-activity">Chat activity</button><div id="chat-activity-list" hidden></div></div><div class="save-status" data-save-status></div></div>
       <div id="save-error" class="error-banner" role="alert" hidden></div>
       ${p ? `<header class="board-header"><div><div class="eyebrow">A LITTLE SPACE FOR BIG IDEAS</div><div class="heading-row"><h1>${escape(p.name)}</h1>${iconButton('edit-project', 'Project settings', 'more')}</div><p class="board-subtitle">Capture the idea. Find the words. Make it happen.</p></div><div class="header-actions">${button('set-project-prompt', 'Set prompt', 'text', 'button secondary')}${button('add-lane', 'Add lane', 'plus', 'button secondary')}${button('add-card', 'New card', 'plus', 'button primary', p.lanes.length ? '' : 'disabled')}</div></header>
       <div class="board-toolbar"><div class="board-tab">${icon('board')} Board <span id="total-count">${cardCount(p)}</span></div><div class="board-tools">${button('undo-move', 'Undo last move', 'undo', 'button small secondary', 'data-undo-move="board" disabled')}${button('toggle-cards', view.cardsCollapsed ? 'Expand cards' : 'Collapse cards', null, 'button small secondary', `aria-pressed="${view.cardsCollapsed}" aria-controls="board"`)}<span class="paste-hint">${icon('image')} Paste an image to start a card</span><label class="search">${icon('search')}<input id="search" type="search" placeholder="Find a card…" aria-label="Find a card" value="${escape(view.query)}"></label></div></div>
@@ -73,12 +74,12 @@ export function renderApp() {
 }
 function cardMarkup(card) {
   const title = escape(card.title || 'Untitled card');
-  if (view.cardsCollapsed) return `<article class="card" draggable="true" data-card="${card.id}"><button class="card-open" draggable="true" data-action="open-card" data-id="${card.id}" aria-label="Open ${title}" title="${title}"><div class="card-body"><h3>${title}</h3></div></button></article>`;
+  if (view.cardsCollapsed) return `<article class="card" draggable="true" data-card="${card.id}"><button class="card-open" draggable="true" data-action="open-card" data-id="${card.id}" aria-label="Open ${title}" title="${title}"><div class="card-body"><h3>${title}</h3>${activityMarkup(card.id)}</div></button></article>`;
   const words = wordCount(`${card.fields.titleOptions} ${card.fields.intro} ${card.fields.script}`);
   return `<article class="card" draggable="true" data-card="${card.id}">
     <button class="card-open" draggable="true" data-action="open-card" data-id="${card.id}" aria-label="Open ${title}">
       ${card.imageRoles.cover ? `<div class="card-image"><img src="${imageURL(card.imageRoles.cover)}" alt="" loading="lazy" draggable="false"><span class="card-open-label">Open card ${icon('arrow')}</span></div>` : `<div class="card-image no-image">${icon('image')}<span>Add a little inspiration</span><span class="card-open-label">Open card ${icon('arrow')}</span></div>`}
-      <div class="card-body"><h3>${escape(card.title || 'Untitled card')}</h3>${card.fields.intro.trim() ? `<p>${escape(card.fields.intro)}</p>` : ''}<div class="card-meta"><span>${icon('text')}${words ? `${words.toLocaleString()} words` : 'Ready for your words'}</span><span>${icon('image')}${card.images.length}</span></div><span class="edited-at" data-edited-card="${card.id}">${lastEditedMarkup(card)}</span></div>
+      <div class="card-body"><h3>${escape(card.title || 'Untitled card')}</h3>${activityMarkup(card.id)}${card.fields.intro.trim() ? `<p>${escape(card.fields.intro)}</p>` : ''}<div class="card-meta"><span>${icon('text')}${words ? `${words.toLocaleString()} words` : 'Ready for your words'}</span><span>${icon('image')}${card.images.length}</span></div><span class="edited-at" data-edited-card="${card.id}">${lastEditedMarkup(card)}</span></div>
     </button></article>`;
 }
 export function renderBoard() {
