@@ -1,0 +1,330 @@
+{
+ "c1": {
+  "sessionD": "f3a21719-6fea-44c8-a888-153e57ffdbac",
+  "sessionE": "6d4e4e33-5179-46e9-961f-63edb6ed0cd7",
+  "concurrentMs": 2444,
+  "seed": [
+   {
+    "text": "ok",
+    "models": [
+     "claude-sonnet-5-5"
+    ],
+    "subtype": "success",
+    "is_error": false,
+    "session_id": "f3a21719-6fea-44c8-a888-153e57ffdbac",
+    "num_turns": 1,
+    "duration_ms": 1498,
+    "total_cost_usd": 0.06400800000000001,
+    "stop_reason": "end_turn",
+    "terminal_reason": "completed"
+   },
+   {
+    "text": "ok",
+    "models": [
+     "claude-sonnet-5-5"
+    ],
+    "subtype": "success",
+    "is_error": false,
+    "session_id": "6d4e4e33-5179-46e9-961f-63edb6ed0cd7",
+    "num_turns": 1,
+    "duration_ms": 2431,
+    "total_cost_usd": 0.06400800000000001,
+    "stop_reason": "end_turn",
+    "terminal_reason": "completed"
+   }
+  ],
+  "init": {
+   "session_id": "f3a21719-6fea-44c8-a888-153e57ffdbac",
+   "claude_code_version": "2.1.291",
+   "model": "claude-sonnet-5-5",
+   "permissionMode": "default",
+   "apiKeySource": "none",
+   "tools": [
+    "Task",
+    "Bash",
+    "CronCreate",
+    "CronDelete",
+    "CronList",
+    "DesignSync",
+    "Edit",
+    "EnterWorktree",
+    "ExitWorktree",
+    "ListAgents",
+    "ListMcpResourcesTool",
+    "Monitor",
+    "NotebookEdit",
+    "PushNotification",
+    "Read",
+    "ReadMcpResourceDirTool",
+    "ReadMcpResourceTool",
+    "RemoteTrigger",
+    "ReportFindings",
+    "ScheduleWakeup",
+    "SendMessage",
+    "Skill",
+    "TaskStop",
+    "ToolSearch",
+    "WebFetch",
+    "WebSearch",
+    "Write",
+    "mcp__claude_ai_Claude_Docs__batch",
+    "mcp__claude_ai_Claude_Docs__create",
+    "mcp__claude_ai_Claude_Docs__delete",
+    "mcp__claude_ai_Claude_Docs__export",
+    "mcp__claude_ai_Claude_Docs__guide",
+    "mcp__claude_ai_Claude_Docs__query",
+    "mcp__claude_ai_Claude_Docs__read",
+    "mcp__claude_ai_Claude_Docs__update",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_authorize_with_youtube",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_balance",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_bookmarks_list",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_bookmarks_remove",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_bookmarks_save",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_channel_analytics",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_channel_performance_trends",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_channel_search",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_channel_stats",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_channel_videos",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_comment_insights",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_compose",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_connect_youtube_channel",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_earnings_calculate",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_edit_media",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_generate_broll",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_generate_clips",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_generate_comment_replies",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_generate_music",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_generate_script",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_generate_thumbnail",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_generate_titles",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_generate_video",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_generate_video_chapters",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_get_channels_by_ids",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_get_videos_by_ids",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_ig_accounts_from_outliers",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_ig_profile",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_ig_profile_reels",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_instagram_connected_accounts",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_instagram_owner_insights",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_instagram_publish_reel",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_instagram_tiktok_outlier_search",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_job_poll",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_jobs_list",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_keyword_research",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_list_competitors",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_motion_graphics",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_outliers",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_refine_thumbnail",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_score_thumbnail",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_score_title",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_similar_channels",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_similar_thumbnails",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_similar_videos",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_submit_feedback",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_subscriber_insights",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_trend_categories",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_trending_videos",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_update_competitors",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_update_video",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_update_video_thumbnail",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_user_channels",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_user_videos",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_video_change_history",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_video_comments",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_video_earnings_estimate",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_video_stats",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_video_transcript",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_video_upload",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_video_watch",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_voiceover_generate",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_voiceover_list_voices",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_watch_shortform_content",
+    "mcp__claude_ai_vidIQ_for_Claude__vidiq_youtube_search"
+   ],
+   "capabilities": [
+    "interrupt_receipt_v1",
+    "interrupt_cancel_queued_v1",
+    "interrupt_send_now_v1",
+    "msg_lifecycle_v1",
+    "sdk_mcp_tools_list_changed",
+    "sdk_mcp_manifests",
+    "mcp_read_resource_v1",
+    "mcp_tool_ui_meta_v1",
+    "ui_surface_v1"
+   ],
+   "mcp_servers": [
+    {
+     "name": "claude.ai Claude Docs",
+     "status": "connected",
+     "source": "claudeai"
+    },
+    {
+     "name": "claude.ai vidIQ for Claude",
+     "status": "connected",
+     "source": "claudeai"
+    }
+   ]
+  },
+  "account": {
+   "email": "<email>",
+   "organization": "<org>",
+   "subscriptionType": "Claude Pro",
+   "apiProvider": "firstParty"
+  },
+  "supportedModels": [
+   "default",
+   "opus",
+   "sonnet",
+   "fable",
+   "haiku",
+   "claude-sonnet-5",
+   "claude-opus-5",
+   "claude-fable-5",
+   "claude-opus-4-8",
+   "claude-opus-4-7",
+   "claude-opus-4-6",
+   "claude-sonnet-4-6"
+  ]
+ },
+ "c2": {
+  "D": {
+   "text": "MAPLE",
+   "session_id": "f3a21719-6fea-44c8-a888-153e57ffdbac",
+   "same": true
+  },
+  "E": {
+   "text": "CEDAR",
+   "session_id": "6d4e4e33-5179-46e9-961f-63edb6ed0cd7",
+   "same": true
+  }
+ },
+ "c3": {
+  "afterSetModel": {
+   "text": "MAPLE",
+   "models": [
+    "claude-haiku-4-5-20251001"
+   ],
+   "session": "f3a21719-6fea-44c8-a888-153e57ffdbac"
+  },
+  "nextTurn": {
+   "text": "ok",
+   "models": [
+    "claude-haiku-4-5-20251001"
+   ]
+  },
+  "afterResumeWithSonnetOption": {
+   "models": [
+    "claude-sonnet-5-5"
+   ],
+   "session": "f3a21719-6fea-44c8-a888-153e57ffdbac"
+  }
+ },
+ "c4": {
+  "permissionRequested": true,
+  "toolName": "Bash",
+  "input": {
+   "command": "printf hi > probe-claude.txt",
+   "description": "Write \"hi\" to probe-claude.txt"
+  },
+  "suggestionsCount": 2,
+  "suggestionTypes": [
+   "addRules:localSettings",
+   "addDirectories:session"
+  ],
+  "interruptReceipt": {
+   "still_queued": []
+  },
+  "signalAborted": true,
+  "result": {
+   "subtype": "error_during_execution",
+   "is_error": true,
+   "session_id": "6d4e4e33-5179-46e9-961f-63edb6ed0cd7",
+   "num_turns": 3,
+   "duration_ms": 1549,
+   "total_cost_usd": 0.14084480000000002,
+   "stop_reason": "tool_use",
+   "terminal_reason": "aborted_tools",
+   "errors": [
+    "[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=tool_use"
+   ]
+  },
+  "lateAnswer": "accepted-by-callback",
+  "fileCreated": false
+ },
+ "c5": {
+  "text": "CANNOT\n\nI have no file-writing tool available, and you declined the Bash call earlier. I haven't tried to get around that, for example by handing the write to a subagent.",
+  "toolsOffered": [],
+  "toolUses": [],
+  "denials": [],
+  "fileCreated": false
+ },
+ "c6": {
+  "sentUuid": "4f21a66e-5338-4e6d-9a02-2cd247f038b4",
+  "receipt": {
+   "still_queued": []
+  },
+  "result": {
+   "subtype": "error_during_execution",
+   "is_error": true,
+   "session_id": "f3a21719-6fea-44c8-a888-153e57ffdbac",
+   "num_turns": 2,
+   "duration_ms": 927,
+   "total_cost_usd": 0.1704873,
+   "stop_reason": null,
+   "terminal_reason": "aborted_streaming",
+   "errors": [
+    "[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null"
+   ]
+  },
+  "streamedChars": 7,
+  "assistantMsgs": [
+   {
+    "aborted": true,
+    "stop": null,
+    "chars": [
+     7
+    ]
+   }
+  ],
+  "messagesAfterResult": [
+   "command_lifecycle:"
+  ]
+ },
+ "c7": {
+  "killedUuid": "9ea4bbc1-230d-4926-8c35-a1e505cffcd3",
+  "transcriptMessages": 20,
+  "lastEntries": [
+   {
+    "type": "assistant",
+    "uuid": "528ef723-c04a-4b0f-8ced-cb15a36400b4",
+    "text": "[{\"type\":\"text\",\"text\":\"No response requested.\"}]"
+   },
+   {
+    "type": "user",
+    "uuid": "9ea4bbc1-230d-4926-8c35-a1e505cffcd3",
+    "text": "\"Count from 1 to 200, one number per line.\""
+   },
+   {
+    "type": "assistant",
+    "uuid": "a26f420d-db79-42d7-be5c-d8aa3e61e658",
+    "text": "[{\"type\":\"text\",\"text\":\"1\\n2\\n3\\n4\\n5\\n6\\n7\\n8\\n9\\n10\\n11\\n12\\n13\\n14\\n15\\n16\\n17\\n18\\n19\\n20\\n21\\n22\\n23\\n24\\n25\\n26\\n2"
+   }
+  ],
+  "killedUuidPersisted": true,
+  "info": {
+   "sessionId": "f3a21719-6fea-44c8-a888-153e57ffdbac",
+   "summary": "Card D note",
+   "lastModified": 1791383684771,
+   "fileSize": 148818,
+   "customTitle": "Card D note",
+   "gitBranch": "HEAD",
+   "cwd": "/tmp/fb-live-evidence/work",
+   "createdAt": 1791383652644
+  },
+  "afterKillResume": {
+   "text": "MAPLE",
+   "session": "f3a21719-6fea-44c8-a888-153e57ffdbac",
+   "same": true
+  }
+ }
+}

@@ -1,0 +1,193 @@
+{
+  "initialize": {
+    "userAgent": "frameboard-evidence/0.160.1 (Arch Linux Rolling Release; x86_64) unknown (frameboard-evidence; 0.0.1)",
+    "codexHome": "/home/hawful/.codex",
+    "platformFamily": "unix",
+    "platformOs": "linux"
+  },
+  "models": [
+    {
+      "id": "gpt-6.1-sol",
+      "displayName": "GPT-6.1-Sol",
+      "hidden": false,
+      "isDefault": true,
+      "inputModalities": [
+        "text",
+        "image"
+      ]
+    },
+    {
+      "id": "gpt-6-astra",
+      "displayName": "GPT-6-Astra",
+      "hidden": false,
+      "isDefault": false,
+      "inputModalities": [
+        "text",
+        "image"
+      ]
+    },
+    {
+      "id": "gpt-6-sol",
+      "displayName": "GPT-6-Sol",
+      "hidden": false,
+      "isDefault": false,
+      "inputModalities": [
+        "text",
+        "image"
+      ]
+    },
+    {
+      "id": "gpt-6-luna",
+      "displayName": "GPT-6-Luna",
+      "hidden": false,
+      "isDefault": false,
+      "inputModalities": [
+        "text",
+        "image"
+      ]
+    },
+    {
+      "id": "gpt-reserve",
+      "displayName": "GPT-Reserve",
+      "hidden": true,
+      "isDefault": false,
+      "inputModalities": [
+        "text",
+        "image"
+      ]
+    },
+    {
+      "id": "gpt-5.6-sol",
+      "displayName": "GPT-5.6-Sol",
+      "hidden": false,
+      "isDefault": false,
+      "inputModalities": [
+        "text",
+        "image"
+      ]
+    },
+    {
+      "id": "gpt-5.6-terra",
+      "displayName": "GPT-5.6-Terra",
+      "hidden": false,
+      "isDefault": false,
+      "inputModalities": [
+        "text",
+        "image"
+      ]
+    },
+    {
+      "id": "gpt-5.6-luna",
+      "displayName": "GPT-5.6-Luna",
+      "hidden": false,
+      "isDefault": false,
+      "inputModalities": [
+        "text",
+        "image"
+      ]
+    },
+    {
+      "id": "gpt-5.5",
+      "displayName": "GPT-5.5",
+      "hidden": true,
+      "isDefault": false,
+      "inputModalities": [
+        "text",
+        "image"
+      ]
+    },
+    {
+      "id": "codex-auto-review",
+      "displayName": "Codex Auto Review",
+      "hidden": true,
+      "isDefault": false,
+      "inputModalities": [
+        "text",
+        "image"
+      ]
+    }
+  ],
+  "providerCapabilities": {
+    "namespaceTools": true,
+    "imageGeneration": true,
+    "webSearch": true
+  },
+  "account": {
+    "type": "chatgpt",
+    "planType": "plus"
+  },
+  "rateLimitsBefore": {
+    "primary": {
+      "usedPercent": 2,
+      "windowDurationMins": 300,
+      "resetsAt": 1791400944
+    },
+    "secondary": {
+      "usedPercent": 1,
+      "windowDurationMins": 10080,
+      "resetsAt": 1791954140
+    }
+  },
+  "imageFeatures": [
+    {
+      "name": "view_image",
+      "stage": "stable",
+      "enabled": true
+    },
+    {
+      "name": "image_generation",
+      "stage": "stable",
+      "enabled": true
+    },
+    {
+      "name": "image_resize_notice",
+      "stage": "underDevelopment",
+      "enabled": false
+    },
+    {
+      "name": "unified_image_budget",
+      "stage": "underDevelopment",
+      "enabled": false
+    },
+    {
+      "name": "resize_all_images",
+      "stage": "removed",
+      "enabled": true
+    },
+    {
+      "name": "guardian_node_repl_transcript_images",
+      "stage": "underDevelopment",
+      "enabled": false
+    },
+    {
+      "name": "image_detail_original",
+      "stage": "removed",
+      "enabled": false
+    },
+    {
+      "name": "compaction_image_budget",
+      "stage": "stable",
+      "enabled": true
+    }
+  ],
+  "permissionProfiles": {
+    "data": [
+      {
+        "id": ":read-only",
+        "description": null,
+        "allowed": true
+      },
+      {
+        "id": ":workspace",
+        "description": null,
+        "allowed": true
+      },
+      {
+        "id": ":danger-full-access",
+        "description": null,
+        "allowed": true
+      }
+    ],
+    "nextCursor": null
+  }
+}

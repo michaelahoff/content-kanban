@@ -1,0 +1,171 @@
+{
+ "a1": {
+  "threadA": "01a116c2-1b06-7413-ac4d-abc484e67a10",
+  "threadB": "01a116c2-1b06-7413-ac4d-abdc0cb8310d",
+  "sessionA": "01a116c2-1b06-7413-ac4d-abc484e67a10",
+  "pathA": "~/.codex/sessions/2026/10/07/rollout-2026-10-07T07-26-22-01a116c2-1b06-7413-ac4d-abc484e67a10.jsonl",
+  "startModel": "gpt-6-luna",
+  "effort": "high",
+  "sandbox": {
+   "type": "readOnly",
+   "networkAccess": false
+  },
+  "approval": "on-request",
+  "cliVersion": "0.160.1",
+  "concurrentSeedMs": 3305,
+  "seed": [
+   {
+    "turn": "01a116c2-1b2f-7833-9796-990091144a20",
+    "status": "completed",
+    "text": "ok",
+    "ms": 2621
+   },
+   {
+    "turn": "01a116c2-1b2f-7833-9796-991b60b81a86",
+    "status": "completed",
+    "text": "ok",
+    "ms": 3302
+   }
+  ],
+  "recall": {
+   "A": "HERON",
+   "B": "NONE"
+  },
+  "eventMethods": [
+   "mcpServer/startupStatus/updated",
+   "thread/settings/updated",
+   "thread/status/changed",
+   "turn/started",
+   "item/started",
+   "item/completed",
+   "item/agentMessage/delta",
+   "thread/tokenUsage/updated",
+   "turn/completed"
+  ]
+ },
+ "a2": {
+  "overrideTurn": {
+   "status": "completed",
+   "text": "HERON"
+  },
+  "modelAfterOverride": "gpt-5.6-luna",
+  "nextTurnStatus": "completed",
+  "modelOnNextTurn": "gpt-5.6-luna",
+  "turnStartedModels": [
+   [],
+   []
+  ]
+ },
+ "a3": {
+  "turnId": "01a116c2-3e6a-7773-b799-4df4707fdde7",
+  "interruptResult": {},
+  "finalStatus": "interrupted",
+  "error": null,
+  "streamedChars": 1,
+  "streamedTail": "1",
+  "completedAgentItems": [],
+  "eventsAfterCompleted": []
+ },
+ "serverRequests": [
+  {
+   "id": 0,
+   "method": "item/commandExecution/requestApproval",
+   "threadId": "01a116c2-1b06-7413-ac4d-abdc0cb8310d",
+   "turnId": "01a116c2-4eea-7c42-b6d6-3cb02daf61f6",
+   "itemId": "exec-846da6b4-1fd3-4487-b91c-839fa81ae672",
+   "keys": [
+    "kind",
+    "threadId",
+    "turnId",
+    "itemId",
+    "startedAtMs",
+    "environmentId",
+    "reason",
+    "command",
+    "cwd",
+    "commandActions",
+    "proposedExecpolicyAmendment",
+    "availableDecisions"
+   ]
+  }
+ ],
+ "a4": {
+  "turnId": "01a116c2-4eea-7c42-b6d6-3cb02daf61f6",
+  "approvalRequested": true,
+  "requestMethod": "item/commandExecution/requestApproval",
+  "requestParamsKeys": [
+   "kind",
+   "threadId",
+   "turnId",
+   "itemId",
+   "startedAtMs",
+   "environmentId",
+   "reason",
+   "command",
+   "cwd",
+   "commandActions",
+   "proposedExecpolicyAmendment",
+   "availableDecisions"
+  ],
+  "availableDecisions": [
+   "accept",
+   {
+    "acceptWithExecpolicyAmendment": {
+     "execpolicy_amendment": [
+      "/usr/bin/bash",
+      "-lc",
+      "printf 'hi' > probe.txt"
+     ]
+    }
+   },
+   "cancel"
+  ],
+  "interruptResult": {},
+  "finalStatus": "interrupted",
+  "methodsSeen": [
+   "thread/status/changed",
+   "turn/started",
+   "item/started",
+   "item/completed",
+   "item/agentMessage/delta",
+   "thread/tokenUsage/updated",
+   "turn/completed",
+   "serverRequest/resolved"
+  ],
+  "serverRequestResolvedSeen": true,
+  "fileCreated": false
+ },
+ "a5": {
+  "resumedId": "01a116c2-1b06-7413-ac4d-abc484e67a10",
+  "sameId": true,
+  "resumedTurnCount": 4,
+  "model": "gpt-6-luna",
+  "recall": "HERON",
+  "status": "completed"
+ },
+ "a6a": {
+  "turnCountAfter": 5,
+  "lastTurn": {
+   "id": "01a116c2-71a7-7a51-9489-f25e0ee8134b",
+   "status": "completed",
+   "userText": "{\"type\":\"userMessage\",\"id\":\"01a116c2-78e5-7ee0-a141-352a684f9ec6\",\"clientId\":\"fb-A-5\",\"content\":[{\"type\":\"text\",\"text\":\"After restart: what is the codeword? Only the word.\",\"text_elements\":[]}]}"
+  }
+ },
+ "a6b": {
+  "ackTurnId": "01a116c2-8255-7ad2-ad29-cee35e67e82f",
+  "found": true,
+  "statusAfterRestart": "interrupted",
+  "error": null,
+  "itemTypes": [
+   "userMessage"
+  ],
+  "turnCount": 6,
+  "threadStatus": {
+   "type": "notLoaded"
+  },
+  "statusAfterResume": "interrupted",
+  "threadStatusAfterResume": {
+   "type": "idle"
+  }
+ }
+}

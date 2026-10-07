@@ -1,0 +1,59 @@
+{
+ "codexPrimary": "01a116c2-1b06-7413-ac4d-abc484e67a10",
+ "claudePrimary": "f3a21719-6fea-44c8-a888-153e57ffdbac",
+ "e1": {
+  "primaryBefore": {
+   "id": "01a116c2-1b06-7413-ac4d-abc484e67a10",
+   "model": "gpt-6-luna",
+   "turns": 6
+  },
+  "snapshotChars": 425,
+  "override": {
+   "provider": "claude",
+   "session": "d65a2888-515f-406a-9253-a21a98c0b556",
+   "resultUuid": "87a8d35f-8962-4441-82ab-293ff2a4dbb4",
+   "models": [
+    "claude-sonnet-5-5"
+   ],
+   "text": "HERON Spring Kite Sale: Catch the Wind with Our Latest Promo",
+   "toolsOffered": [],
+   "subtype": "success",
+   "is_error": false,
+   "session_id": "d65a2888-515f-406a-9253-a21a98c0b556",
+   "num_turns": 1,
+   "duration_ms": 1619,
+   "total_cost_usd": 0.004506,
+   "stop_reason": "end_turn",
+   "terminal_reason": "completed"
+  },
+  "handoff": {
+   "status": "completed",
+   "text": "I can’t provide the hidden codeword or repeat a headline that embeds it.",
+   "primaryAfter": {
+    "id": "01a116c2-1b06-7413-ac4d-abc484e67a10",
+    "model": "gpt-6-luna"
+   },
+   "sameIdentity": true
+  }
+ },
+ "e2": {
+  "primaryBeforeMessages": 22,
+  "snapshotChars": 466,
+  "override": {
+   "provider": "codex",
+   "thread": "01a116cb-6148-7a21-a87b-a4628ac17ac9",
+   "turn": "01a116cb-6164-78e3-b20a-83411d67fdec",
+   "status": "completed",
+   "text": "MAPLE; blue."
+  },
+  "handoff": {
+   "text": "MAPLE; blue.",
+   "models": [
+    "claude-sonnet-5-5"
+   ],
+   "session": "f3a21719-6fea-44c8-a888-153e57ffdbac",
+   "sameIdentity": true,
+   "messagesAfter": 25
+  }
+ }
+}

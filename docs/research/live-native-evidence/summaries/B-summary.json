@@ -1,0 +1,127 @@
+{
+ "model": "gpt-6-luna",
+ "thread": "01a116c3-3f96-7f12-b8e4-91fe69967840",
+ "generate": {
+  "turnId": "01a116c3-3fc5-7aa3-8d14-503734f0737f",
+  "status": "completed",
+  "error": null,
+  "text": "I’m generating the illustration now.\nCreated a flat red paper kite illustration on a plain cream background, with no text.",
+  "itemTypes": [
+   "userMessage",
+   "agentMessage",
+   "imageGeneration",
+   "agentMessage"
+  ],
+  "images": [
+   {
+    "label": "v1-generated-0",
+    "id": "exec-f22de3fb-98b1-4ebe-b168-379d224f5f35",
+    "status": "completed",
+    "savedPath": "~/.codex/generated_images/01a116c3-3f96-7f12-b8e4-91fe69967840/exec-f22de3fb-98b1-4ebe-b168-379d224f5f35.png",
+    "revisedPrompt": "A small, simple flat vector-style illustration of a red paper kite with a thin string and a tiny bow tail, centered on a plain warm cream background. Clean geometric shapes, minimal, crisp edges, subtle no/very minimal shading, ample empty space. No text, no letters, no watermark.",
+    "transparentBackground": false,
+    "failure": null,
+    "resultChars": 1411284,
+    "copiedTo": "/tmp/fb-live-evidence/evidence/artifacts/v1-generated-0.png",
+    "bytes": 1058461,
+    "sha256": "e41a6e3da742e31166613ab103c6a6c02302a45ed998cc6f4995cef278f510bf",
+    "file": "PNG image data, 1254 x 1254, 8-bit/color RGB, non-interlaced",
+    "resultMatchesSavedFile": true
+   }
+  ]
+ },
+ "edit": {
+  "turnId": "01a116c3-d222-7f13-8a37-6b61af7b4f57",
+  "status": "completed",
+  "error": null,
+  "text": "I’m recoloring the kite blue while preserving the reference composition and cream background.\nDone—the kite is blue, with the composition and cream background preserved.",
+  "referenceSha256": "e41a6e3da742e31166613ab103c6a6c02302a45ed998cc6f4995cef278f510bf",
+  "itemTypes": [
+   "userMessage",
+   "agentMessage",
+   "imageGeneration",
+   "agentMessage"
+  ],
+  "images": [
+   {
+    "label": "v2-edited-0",
+    "id": "exec-1901cd41-a42d-4218-af32-bcb9d08393f8",
+    "status": "completed",
+    "savedPath": "~/.codex/generated_images/01a116c3-3f96-7f12-b8e4-91fe69967840/exec-1901cd41-a42d-4218-af32-bcb9d08393f8.png",
+    "revisedPrompt": "Edit the provided reference image. Keep the image composition, dimensions, plain warm cream background, kite shape, its position and size, the curved dark string and its three small bows, and all linework/shading exactly as close to the reference as possible. Change only the red paper kite body and the three red tail bows to a clear medium blue, retaining the same facet shading and outlines. No text, no added objects.",
+    "transparentBackground": false,
+    "failure": null,
+    "resultChars": 1949032,
+    "copiedTo": "/tmp/fb-live-evidence/evidence/artifacts/v2-edited-0.png",
+    "bytes": 1461773,
+    "sha256": "de407a0ebb7a2f21088aac3652fc77680d73cc0c1fc4ba7b6ba4dbaed92310db",
+    "file": "PNG image data, 1254 x 1254, 8-bit/color RGB, non-interlaced",
+    "resultMatchesSavedFile": true
+   }
+  ]
+ },
+ "afterRestart": {
+  "turns": [
+   {
+    "id": "01a116c3-3fc5-7aa3-8d14-503734f0737f",
+    "status": "completed"
+   },
+   {
+    "id": "01a116c3-d222-7f13-8a37-6b61af7b4f57",
+    "status": "completed"
+   }
+  ],
+  "imageItems": [
+   {
+    "turn": "01a116c3-3fc5-7aa3-8d14-503734f0737f",
+    "id": "exec-f22de3fb-98b1-4ebe-b168-379d224f5f35",
+    "status": "completed",
+    "savedPath": "~/.codex/generated_images/01a116c3-3f96-7f12-b8e4-91fe69967840/exec-f22de3fb-98b1-4ebe-b168-379d224f5f35.png",
+    "savedPathExists": true,
+    "resultChars": 1411284,
+    "resultSha256": "e41a6e3da742e31166613ab103c6a6c02302a45ed998cc6f4995cef278f510bf"
+   },
+   {
+    "turn": "01a116c3-d222-7f13-8a37-6b61af7b4f57",
+    "id": "exec-1901cd41-a42d-4218-af32-bcb9d08393f8",
+    "status": "completed",
+    "savedPath": "~/.codex/generated_images/01a116c3-3f96-7f12-b8e4-91fe69967840/exec-1901cd41-a42d-4218-af32-bcb9d08393f8.png",
+    "savedPathExists": true,
+    "resultChars": 1949032,
+    "resultSha256": "de407a0ebb7a2f21088aac3652fc77680d73cc0c1fc4ba7b6ba4dbaed92310db"
+   }
+  ],
+  "userImageInputs": [
+   {
+    "turn": "01a116c3-d222-7f13-8a37-6b61af7b4f57",
+    "type": "localImage",
+    "detail": null,
+    "path": "/tmp/fb-live-evidence/evidence/artifacts/v1-generated-0.png"
+   }
+  ]
+ },
+ "rateLimitsAfter": {
+  "limitId": "codex",
+  "limitName": null,
+  "normalModelSlug": null,
+  "primary": {
+   "usedPercent": 3,
+   "windowDurationMins": 300,
+   "resetsAt": 1791400944
+  },
+  "secondary": {
+   "usedPercent": 1,
+   "windowDurationMins": 10080,
+   "resetsAt": 1791954140
+  },
+  "credits": {
+   "hasCredits": false,
+   "unlimited": false,
+   "balance": "0"
+  },
+  "individualLimit": null,
+  "spendControlReached": false,
+  "planType": "plus",
+  "rateLimitReachedType": null
+ }
+}
