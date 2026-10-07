@@ -62,7 +62,7 @@ _Avoid_: Artifact, attachment
 The working files associated with a particular card's agent work.
 
 **Frameboard harness configuration**:
-The instructions, skills, tools, connectors, and hooks selected for a provider across Frameboard's card chats. Selecting a capability is distinct from granting permission for its actions or authority to change a card.
+The instructions, skills, tools, connectors, and hooks selected for a provider across Frameboard's card chats. It is either an isolated selection or, by explicit choice, the provider's full native setup without isolation. Selecting a capability is distinct from granting permission for its actions or authority to change a card.
 
 **Summary session**:
 A separate conversation with the outgoing provider that summarizes a frozen source from a card chat. It retains selected instructions and skills while excluding action capabilities and leaving the primary conversation unchanged.

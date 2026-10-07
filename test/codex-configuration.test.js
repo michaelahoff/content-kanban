@@ -62,3 +62,36 @@ test('provider selection survives SQLite reopen, with conflict protection and un
   assert.deepEqual(original.selection, selection);
   assert.equal(store.events(ctx).at(-1).type, 'configuration_changed');
 });
+
+test('opt-in full Codex setup inherits native integrations without isolation claims; switching modes holds old work', async () => {
+  const integrations = { ...discovery, configuredMcpServers: ['codex_apps'], items: [...discovery.items,
+    { id: 'mcp:codex_apps', kind: 'mcp', name: 'codex_apps', selectable: false, reason: 'MCP isolation is unverified.' },
+    { id: 'plugin:sites', kind: 'plugin', name: 'sites', selectable: false, reason: 'Plugin isolation is unverified.' },
+    { id: 'instruction:/home/native/AGENTS.md', kind: 'instruction', name: 'AGENTS.md', nativeId: '/home/native/AGENTS.md', contentHash: 'one', selectable: true }] };
+  assert.equal(compileConfiguration(selection, integrations).supported, false);
+  const inherited = { ...selection, inherited: true };
+  const frozen = compileConfiguration(inherited, integrations);
+  assert.equal(frozen.supported, true, frozen.reasons.join(' '));
+  assert.equal(frozen.inherited, true);
+  assert.deepEqual(frozen.nativeOptions.config, {}, 'Native skills, MCP servers, plugins, hooks and project guidance stay as Codex configures them.');
+  assert.equal(frozen.nativeOptions.sandbox, 'workspace-write');
+  assert.notEqual(frozen.id, compileConfiguration(selection, discovery).id);
+  const newer = { ...integrations, items: [...integrations.items, { id: 'plugin:new', kind: 'plugin', name: 'new' }] };
+  assert.deepEqual(queuedConfigurationDecision(frozen, inherited, newer), { status: 'ready' });
+  assert.equal(queuedConfigurationDecision(frozen, selection, integrations).status, 'held');
+  assert.equal(queuedConfigurationDecision(compileConfiguration(selection, discovery), inherited, discovery).status, 'held');
+  const native = { instructionSources: ['/home/native/AGENTS.md'], sandbox: { type: 'workspaceWrite', networkAccess: false }, approvalPolicy: 'on-request', approvalsReviewer: 'user' };
+  const opened = await openConfiguredThread({ openThread: async () => ({ threadId: 'one', native }) }, { frozen, discovery: integrations, currentSelection: inherited, cwd: '/card', model: 'gpt-6-luna' });
+  assert.equal(opened.binding.configurationId, frozen.id);
+  native.sandbox.networkAccess = true;
+  await assert.rejects(openConfiguredThread({ openThread: async () => ({ threadId: 'one', native }) }, { frozen, discovery: integrations, currentSelection: inherited, cwd: '/card', model: 'gpt-6-luna' }), { kind: 'configuration-unavailable' });
+});
+
+test('the inherited mode is an explicit saved choice', async (t) => {
+  const dataDir = await mkdtemp(path.join(tmpdir(), 'frameboard-provider-'));
+  const store = await openStore({ dataDir });
+  t.after(async () => { store.close(); await rm(dataDir, { recursive: true, force: true }); });
+  const ctx = { ...store.owner, actor: 'user:test' };
+  assert.throws(() => store.saveProviderConfiguration(ctx, { revision: 0, selection: { ...selection, inherited: 'yes' } }), { status: 400 });
+  assert.equal(store.saveProviderConfiguration(ctx, { revision: 0, selection: { ...selection, inherited: true } }).selection.inherited, true);
+});

@@ -36,8 +36,13 @@ export async function configurationDiscovery(adapter, { cwd } = {}) {
   return { ...discovery, cwd: discovery.cwd ?? cwd ?? process.cwd(), items: items.map((item) => ({ ...item, checked: false })), mandatoryBehavior };
 }
 
+// Isolated (default): every optional native item is excluded or blocks work.
+// Inherited (explicit opt-in, ADR 0002): Codex loads its own instructions,
+// skills, MCP servers, plugins/connectors and hooks, exactly as it would
+// outside Frameboard. No isolation is claimed; permissions stay separate.
 export function compileConfiguration(selection, discovery, dynamicTools = []) {
-  const selected = [...new Set(selection.selected ?? [])].sort();
+  const inherited = selection.inherited === true;
+  const selected = inherited ? [] : [...new Set(selection.selected ?? [])].sort();
   const reasons = [];
   const items = discovery.items;
   for (const id of selected) {
@@ -45,7 +50,7 @@ export function compileConfiguration(selection, discovery, dynamicTools = []) {
     if (!item) reasons.push(`The selected item ${id} is unavailable.`);
     else if (!item.selectable) reasons.push(`${item.name}: ${item.reason}`);
   }
-  for (const item of items) {
+  if (!inherited) for (const item of items) {
     if (item.kind === 'instruction' && !selected.includes(item.id)) reasons.push(`Unselected global instructions ${item.nativeId} cannot be excluded by this installed harness.`);
     // Disabling these controls is not yet sufficient evidence of isolation.
     if (['mcp', 'plugin', 'hook'].includes(item.kind)) reasons.push(`${item.name}: ${item.reason}`);
@@ -55,7 +60,7 @@ export function compileConfiguration(selection, discovery, dynamicTools = []) {
   const nativeOptions = {
     developerInstructions: [cardInstructions, selection.instructions ?? ''].filter(Boolean).join('\n\n'),
     sandbox: 'workspace-write', approvalPolicy: 'on-request', approvalsReviewer: 'user',
-    config: {
+    config: inherited ? {} : {
       project_doc_max_bytes: 0, 'skills.bundled.enabled': false,
       'skills.config': discovery.skills.map((s) => ({ path: s.id, enabled: false })).sort((a, b) => a.path.localeCompare(b.path)),
       'features.apps': false, 'features.plugins': false, 'features.hooks': false,
@@ -63,22 +68,25 @@ export function compileConfiguration(selection, discovery, dynamicTools = []) {
     },
     dynamicTools: structuredClone(dynamicTools),
   };
+  const inventory = items.map(({ id, kind, contentHash }) => ({ id, kind, ...(contentHash ? { contentHash } : {}) })).sort((a, b) => a.id.localeCompare(b.id));
   const value = {
     provider: 'codex', workspace: discovery.cwd, harness: discovery.harness.userAgent, selected,
-    instructions: selection.instructions ?? '',
-    inventory: items.map(({ id, kind, contentHash }) => ({ id, kind, ...(contentHash ? { contentHash } : {}) })).sort((a, b) => a.id.localeCompare(b.id)),
+    instructions: selection.instructions ?? '', ...(inherited ? { inherited } : { inventory }),
     nativeOptions, supported: reasons.length === 0, reasons: [...new Set(reasons)],
   };
-  return freeze({ ...value, id: hash(canonical(value)) });
+  // An inherited snapshot records what Codex reported at queue time, but newly
+  // discovered native items do not change it: Codex owns that inventory.
+  return freeze({ ...value, ...(inherited ? { inventory } : {}), id: hash(canonical(value)) });
 }
 
 // Call immediately before dispatch. Never mutate the queued snapshot. Newly
 // discovered skills must be disabled too; warm native state cannot prove this.
 export function queuedConfigurationDecision(frozen, currentSelection, discovery) {
   if (!frozen.supported) return { status: 'held', reason: frozen.reasons.join(' ') };
+  if (Boolean(frozen.inherited) !== (currentSelection.inherited === true)) return { status: 'held', reason: 'The queued configuration used a different Codex setup mode. Explicitly cancel or resubmit under the current mode.' };
   const removed = frozen.selected.filter((id) => !currentSelection.selected.includes(id));
   if (removed.length || frozen.instructions !== currentSelection.instructions) return { status: 'held', reason: 'The queued configuration includes removed or changed guidance. Explicitly cancel or resubmit under the new configuration.' };
-  const checked = compileConfiguration({ selected: frozen.selected, instructions: frozen.instructions }, discovery, frozen.nativeOptions.dynamicTools);
+  const checked = compileConfiguration({ selected: frozen.selected, instructions: frozen.instructions, inherited: frozen.inherited }, discovery, frozen.nativeOptions.dynamicTools);
   if (!checked.supported || checked.id !== frozen.id) return { status: 'held', reason: checked.reasons.join(' ') || 'The installed configuration inventory changed. Explicitly cancel or resubmit after reviewing the new discovery.' };
   return { status: 'ready' };
 }
@@ -92,7 +100,7 @@ export async function openConfiguredThread(adapter, { frozen, discovery, current
   const opened = await adapter.openThread({ threadId, cwd, model, modelProvider, threadConfig: frozen.nativeOptions });
   const expectedSources = frozen.inventory.filter((item) => item.kind === 'instruction' && frozen.selected.includes(item.id)).map((item) => item.id.slice('instruction:'.length));
   const actual = opened.native.instructionSources ?? [];
-  if (canonical([...expectedSources].sort()) !== canonical([...actual].sort())) fail('configuration-unavailable', 'Codex loaded instruction sources outside the frozen selection. Nothing will be submitted.');
+  if (!frozen.inherited && canonical([...expectedSources].sort()) !== canonical([...actual].sort())) fail('configuration-unavailable', 'Codex loaded instruction sources outside the frozen selection. Nothing will be submitted.');
   if (opened.native.sandbox.type !== 'workspaceWrite' || opened.native.sandbox.networkAccess || opened.native.approvalPolicy !== 'on-request' || opened.native.approvalsReviewer !== 'user') fail('configuration-unavailable', 'Codex did not apply the ordinary sandbox and approval baseline. Nothing will be submitted.');
   return { ...opened, configurationId: frozen.id, binding: { threadId: opened.threadId, provider: 'codex', cwd, configurationId: frozen.id } };
 }

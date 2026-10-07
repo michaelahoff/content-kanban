@@ -81,7 +81,7 @@ Full history browsing and card restoration controls are scheduled for Phase 3. E
 
 ### Codex adapter foundation (Phase 1.2)
 
-Open **Codex settings** from the board to save provider guidance and explicitly discover the installed harness. Optional discoveries start unchecked. Opening settings does not start Codex. Unsupported MCP/plugin/hook and native skill selections display their isolation limits.
+Open **Codex settings** from the board to save provider guidance and explicitly discover the installed harness. Optional discoveries start unchecked. Opening settings does not start Codex. Unsupported MCP/plugin/hook and native skill selections display their isolation limits. Or choose **Use my full Codex setup (not isolated)** to run card chats with your global instructions, skills, MCP servers, plugins/connectors and hooks, as Codex does elsewhere. Connectors can then act outside Frameboard; sandbox, approvals and card acceptance still apply. See [ADR 0002](docs/adr/0002-opt-in-inherited-codex-setup.md).
 
 `npm run test:native` runs opt-in, credential-free installed Codex protocol/persistence/configuration gates against a local fixture. It does not verify model entitlement. See [implementation evidence and supported boundaries](docs/implementation/phase-1-codex.md).
 

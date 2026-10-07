@@ -11,7 +11,7 @@ async function request(method, url, value) {
 function showAvailability(effective) {
   const target = $('#availability'); target.replaceChildren();
   const heading = document.createElement('strong');
-  heading.textContent = effective.supported ? 'This configuration passes the installed configuration checks.' : 'This configuration is unavailable.';
+  heading.textContent = !effective.supported ? 'This configuration is unavailable.' : effective.inherited ? 'Your full Codex setup will be used. It is not isolated.' : 'This configuration passes the installed configuration checks.';
   target.append(heading);
   for (const reason of effective.reasons) { const p = document.createElement('p'); p.textContent = reason; target.append(p); }
   if (effective.supported) { const p = document.createElement('p'); p.textContent = 'Model access is checked when you submit. Card chat controls arrive in the next milestone.'; target.append(p); }
@@ -29,11 +29,16 @@ function showItems() {
     const description = document.createElement('small'); description.textContent = item.reason || item.description || item.nativeId; label.append(description); target.append(label);
   }
 }
+function showMode() {
+  $('#isolated-items').disabled = $('#inherited').checked;
+  $('#isolated-items').title = $('#inherited').checked ? 'Your full Codex setup is used; individual selection does not apply.' : '';
+}
+$('#inherited').addEventListener('change', () => { showMode(); $('#availability').textContent = 'Codex setup changed. Save, then discover again to validate.'; });
 $('#instructions').addEventListener('input', () => { $('#availability').textContent = 'Instructions changed. Save, then discover again to validate.'; });
 $('#configuration').addEventListener('submit', async (event) => {
   event.preventDefault(); $('#save').disabled = true;
   try {
-    settings = await request('PUT', '/api/providers/codex', { revision: settings.revision, selection: { instructions: $('#instructions').value, selected: [...selected] } });
+    settings = await request('PUT', '/api/providers/codex', { revision: settings.revision, selection: { instructions: $('#instructions').value, selected: [...selected], inherited: $('#inherited').checked } });
     $('#status').textContent = 'Selection saved. Discover again to validate it before use.';
     $('#availability').textContent = '';
   } catch (error) { $('#status').textContent = error.message; }
@@ -45,7 +50,8 @@ $('#discover').addEventListener('click', async () => {
     const result = await request('POST', '/api/providers/codex/discover');
     discovery = result.discovery; showItems();
     // Server validation refers to saved selection. Never label an unsaved edit as verified.
-    const savedMatches = settings.selection.instructions === $('#instructions').value && JSON.stringify([...selected].sort()) === JSON.stringify([...settings.selection.selected].sort());
+    const savedMatches = settings.selection.instructions === $('#instructions').value && Boolean(settings.selection.inherited) === $('#inherited').checked
+      && JSON.stringify([...selected].sort()) === JSON.stringify([...settings.selection.selected].sort());
     if (savedMatches) showAvailability(result.effective);
     else $('#availability').textContent = 'Save your edited selection, then discover again to validate it.';
     $('#status').textContent = `${discovery.harness.userAgent}. ${discovery.models.length} models listed; account access is checked on submission.`;
@@ -55,6 +61,7 @@ $('#discover').addEventListener('click', async () => {
 try {
   settings = await request('GET', '/api/providers/codex');
   selected = new Set(settings.selection.selected); $('#instructions').value = settings.selection.instructions;
+  $('#inherited').checked = settings.selection.inherited === true; showMode();
   for (const behavior of settings.mandatoryBehavior) { const li = document.createElement('li'); li.textContent = behavior; $('#mandatory').append(li); }
   $('#status').textContent = 'Saved settings loaded. Discover when you are ready to review installed capabilities.'; $('#save').disabled = false;
 } catch (error) { $('#status').textContent = error.message; $('#discover').disabled = true; }

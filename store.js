@@ -490,11 +490,13 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
     saveProviderConfiguration(ctx, input) {
       check(isObject(input) && Number.isInteger(input.revision), 'Configuration needs its current revision.');
       check(isObject(input.selection) && isText(input.selection.instructions, 50000) && Array.isArray(input.selection.selected)
-        && input.selection.selected.length <= 500 && input.selection.selected.every((id) => isText(id, 4000)), 'Invalid provider selection.');
+        && input.selection.selected.length <= 500 && input.selection.selected.every((id) => isText(id, 4000))
+        && (input.selection.inherited === undefined || typeof input.selection.inherited === 'boolean'), 'Invalid provider selection.');
       return transaction(() => {
         const current = this.providerConfiguration(ctx);
         if (current.revision !== input.revision) fail(409, 'Configuration changed in another tab. Reload before saving.');
-        const selection = { instructions: input.selection.instructions, selected: [...new Set(input.selection.selected)].sort() };
+        const selection = { instructions: input.selection.instructions, selected: [...new Set(input.selection.selected)].sort(),
+          ...(input.selection.inherited ? { inherited: true } : {}) };
         const revision = current.revision + 1;
         const at = now();
         run(`INSERT INTO provider_configurations (workspace_id, provider, revision, selection, updated_at) VALUES (?, 'codex', ?, ?, ?)
