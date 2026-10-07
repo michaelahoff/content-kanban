@@ -3,12 +3,40 @@
 import { configurationDiscovery, queuedConfigurationDecision, openConfiguredThread } from './codex-configuration.js';
 import { submissionText } from './public/chat-context.js';
 import { automaticDecision, nativeDecision } from './native-requests.js';
+import { outputProvenance } from './store-images.js';
 
 export function createChatWorker({ store, adapter, service, ctx }) {
   const live = new Map();
   const retained = new Set();
   const requests = new Map();
-  let closed = false; let scheduled = false;
+  const importing = new Set();
+  let closed = false; let scheduled = false; let nativeHome = null;
+  // Native transcript rows keep image provenance, not the base64 payload.
+  const transcriptData = (native) => {
+    if (native.type !== 'imageGeneration') return native;
+    const { result, ...rest } = native;
+    return { ...rest, resultReturned: Boolean(result) };
+  };
+  async function saveOutput(output, native) {
+    if (closed || importing.has(output.id)) return;
+    importing.add(output.id);
+    const automation = { ...ctx, actor: `automation:${output.attemptId}` };
+    try {
+      nativeHome ??= (await adapter.discover({})).harness.codexHome;
+      const version = await service.importNative(native, nativeHome);
+      if (!closed) store.images.imported(automation, output.id, version, 'native-image-generation');
+    } catch (error) {
+      if (!closed) store.images.importFailed(automation, output.id, error.status ? error.message : `Saving failed: ${error.message}`);
+    } finally { importing.delete(output.id); }
+  }
+  function capture(attempt, submission, native, location) {
+    const output = store.images.capture(ctx, attempt.id, { nativeId: native.id, kind: 'imageGeneration',
+      generationStatus: native.status === 'completed' ? 'completed' : native.status ?? 'unknown', name: `Generated image ${native.id}`.slice(0, 500),
+      provenance: outputProvenance(submission, 'native-image-generation', { toolPrompt: native.revisedPrompt ?? null,
+        native: { ...location, itemId: native.id, status: native.status, savedPath: native.savedPath ?? null,
+          transparentBackground: native.transparentBackground ?? null, failure: native.failure ?? null } }) });
+    if (output.importStatus === 'pending') void saveOutput(output, native);
+  }
   function flush(work) {
     if (closed) return;
     for (const item of work.items.values()) if (item.dirty) {
@@ -60,10 +88,11 @@ export function createChatWorker({ store, adapter, service, ctx }) {
     } else if (event.type === 'item-started' || event.type === 'item-completed') {
       const native = event.item; const old = work.items.get(native.id);
       if (old?.completed && event.type === 'item-started') return;
-      const item = { id: native.id, kind: native.type, text: native.text ?? old?.text ?? '', data: native,
+      const item = { id: native.id, kind: native.type, text: native.text ?? old?.text ?? '', data: transcriptData(native),
         completed: event.type === 'item-completed' || Boolean(old?.completed), dirty: true };
       if (native.type === 'userMessage') return; // The immutable submission is its source of truth.
       work.items.set(item.id, item); flush(work);
+      if (native.type === 'imageGeneration' && event.type === 'item-completed') capture(work.attempt, work.submission, native, { threadId: work.threadId, turnId: event.turnId ?? work.turnId });
     } else if (event.type === 'turn-completed') {
       end(work, event.status === 'completed' ? 'completed' : event.status === 'interrupted' ? 'interrupted' : 'failed', event.error?.message ?? '');
     } else if (event.type === 'process-exited' || event.type === 'target-unavailable') {
@@ -110,6 +139,7 @@ export function createChatWorker({ store, adapter, service, ctx }) {
       const cwd = service.workspace(submission.cardId);
       const discovery = await configurationDiscovery(adapter, { cwd });
       if (closed) return;
+      nativeHome = discovery.harness.codexHome;
       if (store.chats.attempt(attempt.id)?.status === 'interrupt-requested') { end(work, 'interrupted'); return; }
       const decision = queuedConfigurationDecision(submission.configuration, store.providerConfiguration(ctx).selection, discovery);
       if (decision.status !== 'ready') { store.chats.hold(ctx, attempt.id, decision.reason); release(work); return; }
@@ -167,7 +197,8 @@ export function createChatWorker({ store, adapter, service, ctx }) {
   }
   async function reconcile() {
     store.chats.invalidateAfterRestart(ctx);
-    for (const { attempt, conversation } of store.chats.unfinished(ctx)) {
+    store.images.interruptedImports(ctx);
+    for (const { attempt, submission, conversation } of store.chats.unfinished(ctx)) {
       if (closed) return;
       try {
         if (!conversation.binding?.threadId) throw new Error('Native identity was not recorded; delivery cannot be established.');
@@ -181,8 +212,10 @@ export function createChatWorker({ store, adapter, service, ctx }) {
           seen.add(cursor);
         } while (!match && cursor);
         if (!match) throw new Error('No matching native turn. Non-delivery is not proven at this milestone; this submission remains held.');
-        for (const item of match.items ?? []) if (item.type !== 'userMessage') store.chats.item(ctx, attempt.id,
-          { id: item.id, kind: item.type, text: item.text ?? '', data: item, completed: match.status === 'completed' });
+        for (const item of match.items ?? []) if (item.type !== 'userMessage') {
+          store.chats.item(ctx, attempt.id, { id: item.id, kind: item.type, text: item.text ?? '', data: transcriptData(item), completed: match.status === 'completed' });
+          if (item.type === 'imageGeneration') capture(attempt, submission, item, { threadId: conversation.binding.threadId, turnId: match.id });
+        }
         const status = match.status === 'completed' ? 'completed' : match.status === 'interrupted' ? 'interrupted' : match.status === 'failed' ? 'failed' : 'uncertain';
         store.chats.reconcile(ctx, attempt.id, status, status === 'uncertain' ? 'Native delivery was accepted but has no terminal result. Reconciliation is required.' : 'Recovered after restart.');
       } catch (error) {
@@ -194,8 +227,30 @@ export function createChatWorker({ store, adapter, service, ctx }) {
   // Unfinished rows fence their own cards while read-only recovery proceeds.
   // An unavailable old conversation must not delay independent ready cards.
   wake();
+  // Retry saving reads the same item from native history (read-only), or its
+  // reported saved file. It never resumes the conversation or starts a turn.
+  async function nativeItem({ threadId, turnId, itemId }) {
+    let cursor = null; const seen = new Set();
+    do {
+      const page = await adapter.listTurns({ threadId, cursor });
+      const turn = page.data.find((entry) => entry.id === turnId);
+      if (turn) return turn.items?.find((item) => item.id === itemId && item.type === 'imageGeneration') ?? null;
+      cursor = page.nextCursor;
+      if (cursor && seen.has(cursor)) return null;
+      seen.add(cursor);
+    } while (cursor);
+    return null;
+  }
   return {
     wake,
+    async retrySave(cardId, outputId) {
+      const output = store.images.beginRetry(ctx, cardId, outputId);
+      if (output.importStatus === 'imported') return output;
+      let native = null;
+      try { native = await nativeItem(output.native); } catch { /* Native history is unavailable; use the reported file. */ }
+      await saveOutput(output, native ?? { result: '', savedPath: output.native.savedPath });
+      return store.images.output(outputId);
+    },
     stop(cardId) { const result = store.chats.stop(ctx, cardId); wake(); return result; },
     answer(cardId, requestId, response) {
       const pending = requests.get(requestId);

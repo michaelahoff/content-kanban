@@ -147,7 +147,8 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
       const versions = Object.fromEntries(all('SELECT field, version FROM card_field_versions WHERE card_id = ?', cardId).map((row) => [row.field, row.version]));
       return { cardRevision: card.revision, composerRevision: row.composer_revision, conversationId: current(cardId).id,
         prompt: JSON.parse(row.composer).prompt, model: JSON.parse(row.composer).model,
-        authority: JSON.parse(row.composer).authority, context: selectedContext(card, JSON.parse(row.composer).selections, versions) };
+        authority: JSON.parse(row.composer).authority, context: selectedContext(card, JSON.parse(row.composer).selections, versions,
+          all("SELECT image_id AS id, name, id AS outputId FROM chat_outputs WHERE card_id = ? AND import_status = 'imported'", cardId)) };
     },
     findSubmission(ctx, cardId, id) {
       retainedCard(ctx, cardId);

@@ -11,6 +11,7 @@ import { readLegacyBoard } from './legacy-board.js';
 import { emptyGraph, promptGraph, validateGraph, executeGraph, assignmentsFor } from './public/flow-graph.js';
 import { chatMigration, createChatStore } from './store-chat.js';
 import { protectionMigration, createProtectionStore } from './store-protection.js';
+import { imagesMigration, createImageStore } from './store-images.js';
 
 export const imageIdPattern = /^[a-f0-9-]{36}\.(png|jpg|webp|gif|avif)$/;
 export const laneColors = ['lavender', 'blue', 'amber', 'green', 'pink', 'gray', 'teal', 'cyan', 'orange', 'red', 'purple', 'lime'];
@@ -117,7 +118,7 @@ const migrations = [`
     workspace_id TEXT NOT NULL REFERENCES workspaces(id), provider TEXT NOT NULL,
     revision INTEGER NOT NULL, selection TEXT NOT NULL, updated_at TEXT NOT NULL,
     PRIMARY KEY (workspace_id, provider));
-`, chatMigration, protectionMigration];
+`, chatMigration, protectionMigration, imagesMigration];
 
 const now = () => new Date().toISOString();
 const fail = (status, message) => { throw Object.assign(new Error(message), { status }); };
@@ -457,11 +458,26 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
   const chats = createChatStore({ all, get, run, transaction, retainedCard, requireCard, recordChange, now });
 
   const protection = createProtectionStore({ all, get, run, transaction, requireCard, retainedCard, recordChange, now,
-    updateCard: (...args) => api.updateCard(...args), transitionCard: (...args) => api.transitionCard(...args), item: (...args) => chats.item(...args) });
+    updateCard: (...args) => api.updateCard(...args), transitionCard: (...args) => api.transitionCard(...args), item: (...args) => chats.item(...args), registerOutput: (...args) => images.registered(...args) });
+  // Adoption appends one exact version to the gallery. It never assigns a
+  // role, and an already adopted version is not added again.
+  function adoptImage(ctx, cardId, image, data) {
+    const card = requireCard(ctx, cardId);
+    if (card.images.some((entry) => entry.id === image.id)) return { card, adopted: false };
+    if (protection.leased(cardId, 'images')) fail(409, 'This card has an unsaved gallery change. Save or discard it, then add the image again.');
+    check(card.images.length < 200, 'A card can hold up to 200 images.');
+    const at = now();
+    run('UPDATE cards SET images = ?, revision = revision + 1, updated_at = ? WHERE id = ?', JSON.stringify([...card.images, image]), at, cardId);
+    insertEvent(ctx.workspaceId, card, 'image_adopted', ctx.actor, { data: { ...data, imageId: image.id }, at });
+    recordSavedState(ctx, cardId, 'image_adopted', at);
+    return { card: requireCard(ctx, cardId), adopted: true };
+  }
+  const images = createImageStore({ all, get, run, transaction, retainedCard, recordChange, now, adopt: adoptImage });
   const api = {
     owner,
     chats,
     protection,
+    images,
     close: () => db.close(),
 
     providerConfiguration(ctx, provider = 'codex') {

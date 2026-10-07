@@ -115,7 +115,7 @@ test('registered rendered images are originating-workspace outputs, never automa
   assert.deepEqual(saved.images, []); assert.equal(saved.imageRoles.cover, null);
   await f.ok('POST', `/api/cards/${card.id}/chat/stop`, {});
   const output = (await f.chat(card.id)).items.find((i) => i.kind === 'registeredImage');
-  assert.equal(output.data.provider, 'codex'); assert.equal(output.data.creationMethod, 'rendered');
+  assert.equal(output.data.provider, 'codex'); assert.equal(output.data.creationMethod, 'code-rendered');
   assert.equal((await f.codex.tool(send, 'register_image', { path: 'rendered.png' })).success, false);
   assert.ok(!(await f.ok('GET', '/api/chat-activity')).entries.some((e) => e.cardId === card.id && e.state === 'done'));
 });

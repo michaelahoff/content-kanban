@@ -45,6 +45,14 @@ export class ControlledCodex {
     this.emit(send.threadId, { type: 'item-completed', turnId: send.turnId, item });
     this.emit(send.threadId, { type: 'turn-completed', turnId: send.turnId, status, turn });
   }
+  // Completes one native imageGeneration item, as app-server reports it.
+  // notify: false records it only in native history, as when the app crashed.
+  image(send, { id = randomUUID(), result = '', savedPath = null, status = 'completed', revisedPrompt = null, failure = null } = {}, { notify = true } = {}) {
+    const item = { type: 'imageGeneration', id, status, result, savedPath, revisedPrompt, failure };
+    this.threads.get(send.threadId).turns.find((turn) => turn.id === send.turnId).items.push(item);
+    if (notify) this.emit(send.threadId, { type: 'item-completed', turnId: send.turnId, item });
+    return item;
+  }
   async interrupt(input) {
     this.interrupts.push(input);
     if (this.autoInterrupt) {

@@ -1,6 +1,6 @@
 import http from 'node:http';
-import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openStore, imageIdPattern } from './store.js';
@@ -8,6 +8,7 @@ import { createCodexAdapter } from './codex-adapter.js';
 import { configurationDiscovery, compileConfiguration, mandatoryBehavior } from './codex-configuration.js';
 import { createChatService } from './chat-service.js';
 import { createChatWorker } from './chat-worker.js';
+import { imageFormat, storeImage, verifiedImage, maxImageBytes } from './image-files.js';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const imageTypes = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif', 'image/avif': 'avif' };
@@ -26,15 +27,6 @@ async function body(req, limit) {
     chunks.push(chunk);
   }
   return Buffer.concat(chunks);
-}
-
-function isImage(bytes, type) {
-  if (type === 'image/png') return bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
-  if (type === 'image/jpeg') return bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255;
-  if (type === 'image/gif') return /^GIF8[79]a/.test(bytes.toString('ascii', 0, 6));
-  if (type === 'image/webp') return bytes.toString('ascii', 0, 4) === 'RIFF' && bytes.toString('ascii', 8, 12) === 'WEBP';
-  if (type === 'image/avif') return bytes.toString('ascii', 4, 8) === 'ftyp' && /avif|avis/.test(bytes.toString('ascii', 8, 32));
-  return false;
 }
 
 export function youtubeVideoId(value) {
@@ -63,7 +55,7 @@ async function fetchYoutube(videoId, fetchImpl) {
     try { response = await get(`https://i.ytimg.com/vi/${videoId}/${size}.jpg`); } catch { throw unreachable(); }
     if (!response.ok) continue;
     const bytes = Buffer.from(await response.arrayBuffer());
-    if (isImage(bytes, 'image/jpeg')) return { title: String(title || '').slice(0, 500), thumbnail: bytes };
+    if (imageFormat(bytes) === 'jpg') return { title: String(title || '').slice(0, 500), thumbnail: bytes };
   }
   throw Object.assign(new Error('YouTube did not return a thumbnail for this video.'), { status: 502 });
 }
@@ -104,9 +96,11 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
     ['POST', /^\/api\/cards\/([^/]+)\/chat\/accept-text$/, async (ctx, req, id) => store.protection.acceptText(ctx, id, await read(req))],
     ['POST', /^\/api\/cards\/([^/]+)\/chat\/proposals\/[^/]+\/accept$/, async (ctx, req, id, url) => store.protection.accept(ctx, id, url.pathname.split('/').at(-2), await read(req))],
     ['POST', /^\/api\/cards\/([^/]+)\/chat\/proposals\/[^/]+\/preview$/, (ctx, req, id, url) => store.protection.previewProposal(ctx, id, url.pathname.split('/').at(-2))],
+    ['POST', /^\/api\/cards\/([^/]+)\/chat\/outputs\/[^/]+\/adopt$/, (ctx, req, id, url) => store.images.adopt(ctx, id, url.pathname.split('/').at(-2))],
+    ['POST', /^\/api\/cards\/([^/]+)\/chat\/outputs\/[^/]+\/retry-save$/, (ctx, req, id, url) => worker.retrySave(id, url.pathname.split('/').at(-2))],
     ['GET', /^\/api\/chat-activity$/, (ctx) => ({ entries: store.chats.indicators(ctx) })],
     ['POST', /^\/api\/cards\/([^/]+)\/chat\/revoke-grants$/, (ctx, req, id) => store.chats.clearGrants(ctx, id)],
-    ['GET', /^\/api\/cards\/([^/]+)\/chat$/, (ctx, req, id) => ({ ...store.chats.snapshot(ctx, id), proposals: store.protection.proposals(ctx, id) })],
+    ['GET', /^\/api\/cards\/([^/]+)\/chat$/, (ctx, req, id) => ({ ...store.chats.snapshot(ctx, id), proposals: store.protection.proposals(ctx, id), outputs: store.images.outputs(ctx, id).map((output) => ({ ...output, available: Boolean(output.imageId) && existsSync(path.join(imagesDir, output.imageId)) })) })],
     ['PUT', /^\/api\/cards\/([^/]+)\/chat\/composer$/, async (ctx, req, id) => store.chats.saveComposer(ctx, id, await read(req))],
     ['POST', /^\/api\/cards\/([^/]+)\/chat\/preview$/, (ctx, req, id) => chat.preview(ctx, id)],
     ['POST', /^\/api\/cards\/([^/]+)\/chat\/discover$/, (ctx, req, id) => codexAction(() => chat.discover(ctx, id))],
@@ -161,38 +155,37 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
       if (url.pathname === '/api/images' && req.method === 'POST') {
         const type = req.headers['content-type'];
         assert(Object.hasOwn(imageTypes, type || ''), 'Use a PNG, JPEG, WebP, GIF, or AVIF image.');
-        const bytes = await body(req, 20 * 1024 * 1024);
-        assert(isImage(bytes, type), 'This file does not contain a supported image.');
-        const id = `${randomUUID()}.${imageTypes[type]}`;
-        await writeFile(path.join(imagesDir, id), bytes);
-        return send(res, 201, { id });
+        const bytes = await body(req, maxImageBytes);
+        assert(imageFormat(bytes) === imageTypes[type], 'This file does not contain a supported image.');
+        const version = store.images.record(currentUser(req), await storeImage(imagesDir, bytes), 'upload');
+        return send(res, 201, { id: version.id, hash: version.hash });
       }
       if (url.pathname === '/api/youtube' && req.method === 'POST') {
         const videoId = youtubeVideoId((await json(req, 16 * 1024))?.url);
         assert(videoId, 'Enter a YouTube video URL, such as https://www.youtube.com/watch?v=…');
         const { title, thumbnail } = await fetchYoutube(videoId, fetchImpl);
-        const id = `${randomUUID()}.jpg`;
-        await writeFile(path.join(imagesDir, id), thumbnail);
+        const { id } = store.images.record(currentUser(req), await storeImage(imagesDir, thumbnail), 'youtube');
         return send(res, 201, { title, image: { id, name: `${title || videoId} thumbnail.jpg`.slice(0, 500) } });
       }
       if (url.pathname.startsWith('/api/')) return send(res, routes.some(([, pattern]) => pattern.test(url.pathname)) ? 405 : 404, { error: 'Not found.' });
       if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, { error: 'Method not allowed.' });
-      let filename;
+      let bytes;
       let type;
       if (url.pathname.startsWith('/images/')) {
         const id = url.pathname.slice(8);
         if (!imageIdPattern.test(id)) return send(res, 404, { error: 'Image not found.' });
-        filename = path.join(imagesDir, id);
+        // Recorded versions are served only when their bytes match the hash.
+        // Images from before the hashed store have no recorded hash.
+        bytes = await verifiedImage(imagesDir, id, store.images.version(id)?.hash);
         type = Object.entries(imageTypes).find(([, extension]) => extension === id.split('.').pop())[0];
         res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
       } else {
         const file = publicFiles.get(url.pathname);
         if (!file) return send(res, 404, { error: 'Not found.' });
-        filename = path.join(root, 'public', file);
+        bytes = await readFile(path.join(root, 'public', file));
         type = `${staticTypes[path.extname(file)]}; charset=utf-8`;
         res.setHeader('Cache-Control', 'no-cache');
       }
-      const bytes = await readFile(filename);
       res.writeHead(200, { 'Content-Type': type, 'Content-Length': bytes.length });
       res.end(req.method === 'HEAD' ? undefined : bytes);
     } catch (error) {

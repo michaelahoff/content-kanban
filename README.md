@@ -44,7 +44,7 @@ The server listens only on this computer (`127.0.0.1`). Board editing works offl
 
 **Stop the server and back up the whole `data/` directory.** To restore a backup, stop the server, replace `data/` with your backup, and restart. This preserves app history and workspace files; it does not include native conversations outside `data/` or guarantee native resume. Verified native backup/restore comes in the later release gate. Set `DATA_DIR` to use a different storage location. On the first start with an older `board.json`, the server transfers its board to SQLite in one transaction and keeps the original file as `board.json.migrated`.
 
-Deleting a card hides it from the board while retaining its saved data and history. Removing an image removes its association with the card. Original uploaded files remain in `data/images/`, so deleting cards does not reclaim image storage. This also keeps in-progress uploads and backups from losing files.
+Deleting a card hides it from the board while retaining its saved data and history. Removing an image removes its association with the card. Uploaded and chat-produced images are immutable, hash-recorded versions in `data/images/`; deleting cards or removing gallery images does not reclaim image storage, so chat history keeps its image versions. Damaged image bytes are refused rather than shown or sent.
 
 Saves use SQLite transactions and check each card's content revision. If another tab saved the same card, your draft stays in memory and other cards can still save. Choose **Review** to open the conflicted card, copy anything you want to keep, then choose **Use saved version** and confirm to discard that card's unsaved changes. You can paste your copied edits into the saved version afterward. Temporary save failures show a retry button. Wait for **All changes saved** before closing the app.
 
@@ -94,3 +94,9 @@ Choose **Discover**, select an available model, and compose a prompt. Expand **W
 **Stop** preserves partial output and invalidates requests. **Start fresh context** retains previous history, resets grants and explicitly cancels queued old work; it waits for acknowledged interruption and starts no native turn until Send. Changed configuration holds queued work until cancel/resubmit, and changed native configuration needs deliberate fresh context. Ambiguous delivery stays held and is never automatically resent.
 
 This is a development milestone. Card tools, full grants/input handling, native image adoption, complete recovery/streaming and verified backups remain required before the Phase 1 daily-use release. See [the workbench implementation and evidence](docs/implementation/phase-1-workbench.md).
+
+### Native images and gallery adoption (Phase 1.5)
+
+Ask for images in a card chat prompt. Codex native image outputs and images Codex registers from its card workspace stay in the chat with their provider, method, tool prompt and exact references. **Add to gallery** adds one version to the card without choosing Display, Original or Inspiration; choose roles afterward in the editor. Adding the same version again does nothing. **Edit** attaches that exact version to the next prompt while keeping your other references. If an image was generated but could not be saved, **Retry saving** imports the same output without asking Codex to generate again. A failed generation or usage limit needs a deliberate new request.
+
+The real-account generation/edit acceptance check is still outstanding. See [the image implementation and evidence](docs/implementation/phase-1-images.md).

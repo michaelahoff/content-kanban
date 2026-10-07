@@ -54,6 +54,10 @@ The user's acceptance of an image from a card chat into its card's gallery, dist
 **Image version**:
 A particular retained image used as a reference or produced in a card chat. An edited result is a new version that preserves its relationship to the source image.
 
+**Image output**:
+An image version produced in a card chat, either by native image generation or by an explicitly registered rendered file, kept with its producing provider, creation method and references. Generation and saving it into Frameboard are tracked separately; neither adopts it.
+_Avoid_: Artifact, attachment
+
 **Card workspace**:
 The working files associated with a particular card's agent work.
 

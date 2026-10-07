@@ -26,7 +26,7 @@ const fail = (status, message) => { throw Object.assign(new Error(message), { st
 const check = (value, message) => { if (!value) fail(400, message); };
 const object = (v) => v && typeof v === 'object' && !Array.isArray(v);
 
-export function createProtectionStore({ all, get, run, transaction, requireCard, retainedCard, recordChange, now, updateCard, transitionCard, item }) {
+export function createProtectionStore({ all, get, run, transaction, requireCard, retainedCard, recordChange, now, updateCard, transitionCard, item, registerOutput }) {
   const leases = new Map();
   const reviews = new Map();
   const versions = (id) => Object.fromEntries(all('SELECT field, version FROM card_field_versions WHERE card_id = ?', id).map((r) => [r.field, r.version]));
@@ -139,8 +139,9 @@ export function createProtectionStore({ all, get, run, transaction, requireCard,
           check(target, 'Choose a lane in this project.');
           result = { proposalId: proposal(ctx, a, 'move', { toStageId: input.toStageId, placementVersion: card.placementVersion, fieldVersions: versions(card.id) }) };
         } else if (tool === 'register_image' && artifact) {
-          item(ctx, a.id, { id: `registered-${callId}`, kind: 'registeredImage', text: artifact.name, data: artifact, completed: true });
-          result = { image: artifact, adopted: false };
+          const output = registerOutput(ctx, a.id, callId, artifact);
+          item(ctx, a.id, { id: `registered-${callId}`, kind: 'registeredImage', text: output.name, data: output, completed: true });
+          result = { image: { id: output.imageId, hash: output.hash, name: output.name }, outputId: output.id, adopted: false };
         } else fail(400, 'Unknown card tool.');
         run('INSERT INTO card_tool_calls VALUES (?, ?, ?, ?, ?)', a.id, callId, tool, JSON.stringify(input), JSON.stringify(result));
         recordChange({ ...ctx, actor: `automation:${a.id}` }, 'chat', a.card_id, 'card_tool_called', { projectId: card.projectId, data: { tool, callId, ...provenance(a, false) } });

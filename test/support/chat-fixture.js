@@ -24,6 +24,7 @@ export async function fixture(t) {
     const response = await fetch(`http://127.0.0.1:${app.address().port}${url}`, { method, headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
     return { status: response.status, body: await response.json() };
   };
+  const raw = (url, init) => fetch(`http://127.0.0.1:${app.address().port}${url}`, init);
   const ok = async (...args) => { const result = await call(...args); assert.ok(result.status < 300, JSON.stringify(result)); return result.body; };
   const close = () => new Promise((resolve) => app.close(resolve));
   t.after(async () => { await close(); await rm(dataDir, { recursive: true, force: true }); });
@@ -36,5 +37,5 @@ export async function fixture(t) {
     return ok('PUT', `/api/cards/${id}/chat/composer`, { ...composer, prompt, model, ...extra });
   };
   const queue = (id, composer, submissionId = randomUUID()) => ok('POST', `/api/cards/${id}/chat/submissions`, { id: submissionId, composerRevision: composer.revision });
-  return { dataDir, codex, call, ok, card, chat, compose, queue, restart: async () => { await close(); await start(); } };
+  return { dataDir, codex, call, raw, ok, card, chat, compose, queue, restart: async () => { await close(); await start(); } };
 }
