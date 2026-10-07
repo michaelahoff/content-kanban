@@ -236,3 +236,23 @@ test('a follow-up reuses the exact read-only image reference without overwriting
   await waitFor(() => f.codex.sends.length === 2);
   assert.equal(f.codex.sends[1].input[1].path, f.codex.sends[0].input[1].path);
 });
+
+test('late previous-turn events before a follow-up receives its native identity cannot complete or populate that follow-up', async (t) => {
+  const f = await fixture(t); const card = await f.card();
+  await f.queue(card.id, await f.compose(card.id)); await waitFor(() => f.codex.sends[0]);
+  const first = f.codex.sends[0]; f.codex.finish(first);
+  f.codex.afterSubscribe = (threadId) => {
+    f.codex.emit(threadId, { type: 'item-completed', turnId: first.turnId, item: { id: 'early-late', type: 'agentMessage', text: 'OLD TURN OUTPUT' } });
+    f.codex.emit(threadId, { type: 'turn-completed', turnId: first.turnId, status: 'completed' });
+  };
+  const follow = await f.queue(card.id, await f.compose(card.id, 'Second active prompt'));
+  await waitFor(() => f.codex.sends.length === 2);
+  const chat = await f.chat(card.id); const second = chat.attempts.find((attempt) => attempt.submissionId === follow.id);
+  assert.equal(second.status, 'running');
+  assert.equal(second.turnId, f.codex.sends[1].turnId);
+  assert.ok(!chat.items.some((item) => item.attemptId === second.id && item.text === 'OLD TURN OUTPUT'));
+  assert.ok(chat.items.some((item) => item.attemptId === chat.attempts[0].id && item.text === 'OLD TURN OUTPUT'));
+  assert.equal((await f.call('POST', `/api/cards/${card.id}/chat/fresh`, {})).status, 409);
+  await f.queue(card.id, await f.compose(card.id, 'Third queued prompt'));
+  assert.equal(f.codex.sends.length, 2);
+});

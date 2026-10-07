@@ -6,6 +6,7 @@ export class ControlledCodex {
     this.home = home; this.threads = new Map(); this.listeners = new Map(); this.sends = []; this.interrupts = [];
     this.instructions = []; this.skills = []; this.running = false; this.autoInterrupt = true;
     this.models = ['test-model', 'other-model']; this.startGate = null;
+    this.afterSubscribe = null;
   }
   async discover({ cwd } = {}) {
     this.running = true;
@@ -23,6 +24,7 @@ export class ControlledCodex {
   subscribe(threadId, handlers) {
     if (!this.listeners.has(threadId)) this.listeners.set(threadId, new Set());
     this.listeners.get(threadId).add(handlers);
+    this.afterSubscribe?.(threadId);
     return () => this.listeners.get(threadId).delete(handlers);
   }
   emit(threadId, event) {

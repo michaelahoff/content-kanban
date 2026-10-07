@@ -32,6 +32,15 @@ function newItem(id) {
     pending, sending: false, models: [], error: '', timer: null, saving: null };
 }
 function active(item) { return item.snapshot?.attempts.some((attempt) => ['dispatching', 'accepted', 'running', 'interrupt-requested'].includes(attempt.status)); }
+function updateComposerControls(item) {
+  if (selected !== item.id || !$('#chat-prompt')) return;
+  const locked = item.sending || Boolean(item.pending);
+  document.querySelectorAll('#chat-composer input, #chat-composer textarea').forEach((input) => { input.disabled = locked; });
+  $('#chat-model').disabled = locked || active(item);
+  $('[data-action="chat-send"]').disabled = item.sending;
+  $('[data-action="chat-stop"]').disabled = !active(item);
+  $('[data-action="chat-fresh"]').disabled = active(item);
+}
 function applyLayout() {
   const dialog = $('#card-dialog'); if (!dialog?.open) return;
   dialog.classList.toggle('with-chat', !hidden);
@@ -118,11 +127,9 @@ async function refresh(item) {
     item.composer = snapshot.composer;
   }
   if (selected !== item.id || !$('#card-chat')) return;
-  if (!$('#chat-prompt') || changed) renderComposer(item);
+  if (!$('#chat-prompt') || changed || item.gallerySignature !== JSON.stringify(locateCard(item.id)?.card.images)) renderComposer(item);
   renderTranscript(item);
-  $('#chat-model').disabled = active(item) || item.sending || Boolean(item.pending);
-  $('[data-action="chat-stop"]').disabled = !active(item);
-  $('[data-action="chat-fresh"]').disabled = active(item);
+  updateComposerControls(item);
   if (item.view.preview) void refreshPreview(item);
   if (!hidden && (item.view.tab === 'chat' || matchMedia('(min-width: 1180px)').matches) && !document.hidden) await send('POST', url(item.id, 'viewed'), {});
 }
@@ -130,23 +137,33 @@ function renderComposer(item) {
   if (!item.composer) return;
   const card = locateCard(item.id)?.card; if (!card) return;
   const composer = item.composer;
+  const focused = $('#chat-composer').contains(document.activeElement) ? document.activeElement : null;
+  const focusId = focused?.id;
+  const selection = focused?.tagName === 'TEXTAREA' ? [focused.selectionStart, focused.selectionEnd, focused.selectionDirection] : null;
+  item.gallerySignature = JSON.stringify(card.images);
+  const images = [...card.images, ...composer.selections.images.filter((id) => !card.images.some((image) => image.id === id))
+    .map((id) => ({ id, name: 'Unavailable reference (removed from gallery)' }))];
   const choices = item.models.length ? item.models : composer.model ? [{ id: composer.model, displayName: composer.model }] : [];
   $('#chat-composer').innerHTML = `<div class="chat-model-row"><label for="chat-model">Model</label><select id="chat-model" ${active(item) ? 'disabled' : ''}><option value="">Choose a model…</option>${choices.map((model) => `<option value="${escape(model.id)}" ${composer.model === model.id ? 'selected' : ''}>${escape(model.displayName)}</option>`).join('')}</select><button class="button small secondary" data-action="chat-discover">Discover</button></div>
-    <details id="chat-context-preview" ${item.view.preview ? 'open' : ''}><summary>What will be sent</summary><p class="chat-hint">Saved card values at Send. Images are attached once with all selected labels.</p><fieldset class="chat-selections"><legend>Card fields</legend>${contextFields(card.template).map((field) => `<label><input type="checkbox" data-chat-field="${field.key}" ${composer.selections.fields.includes(field.key) ? 'checked' : ''}>${escape(field.label)}</label>`).join('')}</fieldset><fieldset class="chat-selections"><legend>Image references</legend>${[['original', 'Original'], ['inspiration', 'Inspiration'], ['cover', 'Display']].map(([role, label]) => `<label><input type="checkbox" data-chat-role="${role}" ${composer.selections.roles.includes(role) ? 'checked' : ''}>${label}</label>`).join('')}${card.images.map((image) => `<label><input type="checkbox" data-chat-image="${image.id}" ${composer.selections.images.includes(image.id) ? 'checked' : ''}>${escape(image.name)}</label>`).join('')}</fieldset><div id="chat-exact-preview"></div></details>
+    <details id="chat-context-preview" ${item.view.preview ? 'open' : ''}><summary>What will be sent</summary><p class="chat-hint">Saved card values at Send. Images are attached once with all selected labels.</p><fieldset class="chat-selections"><legend>Card fields</legend>${contextFields(card.template).map((field) => `<label><input type="checkbox" data-chat-field="${field.key}" ${composer.selections.fields.includes(field.key) ? 'checked' : ''}>${escape(field.label)}</label>`).join('')}</fieldset><fieldset class="chat-selections"><legend>Image references</legend>${[['original', 'Original'], ['inspiration', 'Inspiration'], ['cover', 'Display']].map(([role, label]) => `<label><input type="checkbox" data-chat-role="${role}" ${composer.selections.roles.includes(role) ? 'checked' : ''}>${label}</label>`).join('')}${images.map((image) => `<label><input type="checkbox" data-chat-image="${image.id}" ${composer.selections.images.includes(image.id) ? 'checked' : ''}>${escape(image.name)}</label>`).join('')}</fieldset><div id="chat-exact-preview"></div></details>
     <label class="sr-only" for="chat-prompt">Prompt for this card</label><textarea id="chat-prompt" maxlength="200000" placeholder="Ask about this card…" ${item.pending ? 'disabled' : ''}>${escape(composer.prompt)}</textarea><div class="chat-send-row"><span id="chat-save-state">${item.dirty ? 'Saving draft…' : 'Draft saved'}</span><button class="button small secondary" data-action="chat-stop" ${active(item) ? '' : 'disabled'}>Stop</button><button class="button primary" data-action="chat-send">${item.pending ? 'Retry Send' : 'Send'}</button></div><p class="chat-hint">Codex uses workspace-write / on-request. Reads outside the workspace are possible. <a href="/codex.html" target="_blank" rel="noopener">Configuration and permission limits</a></p>`;
   $('#chat-context-preview').addEventListener('toggle', () => { rememberView(); if ($('#chat-context-preview').open) void refreshPreview(item); });
   if (item.view.preview) void refreshPreview(item);
-  if (item.pending || item.sending) document.querySelectorAll('#chat-composer input, #chat-composer textarea, #chat-composer select').forEach((input) => { input.disabled = true; });
+  updateComposerControls(item);
+  if (focusId) { const input = document.getElementById(focusId); input?.focus(); if (selection) input?.setSelectionRange(...selection); }
+}
+function contextMarkup(context) {
+  return `${context.fields.map((field) => `<p><strong>${escape(field.label)} <small>v${field.version}</small></strong><br>${escape(field.value)}</p>`).join('')}${context.images.map((image) => `<figure><img src="/images/${encodeURIComponent(image.id)}" alt="${escape(image.name)}"><figcaption>${escape(image.labels.join(', '))}: ${escape(image.name)}<br><small>Version ${escape(image.id)} · SHA-256 ${escape(image.hash)}</small></figcaption></figure>`).join('')}`;
 }
 function frozenMarkup(submission) {
-  return `<details class="chat-frozen"><summary>Submitted context · ${escape(submission.model)}</summary><p>${escape(submission.prompt)}</p>${submission.context.fields.map((field) => `<p><strong>${escape(field.label)} <small>v${field.version}</small></strong><br>${escape(field.value)}</p>`).join('')}${submission.context.images.map((image) => `<figure><img src="/images/${encodeURIComponent(image.id)}" alt="${escape(image.name)}"><figcaption>${escape(image.labels.join(', '))}: ${escape(image.name)}<br><small>Version ${escape(image.id)} · SHA-256 ${escape(image.hash)}</small></figcaption></figure>`).join('')}<small>Configuration ${escape(submission.configuration.id)}</small></details>`;
+  return `<details class="chat-frozen"><summary>Submitted context · ${escape(submission.model)}</summary><p>${escape(submission.prompt)}</p>${contextMarkup(submission.context)}<small>Configuration ${escape(submission.configuration.id)}</small></details>`;
 }
 async function refreshPreview(item) {
   if (selected !== item.id || !$('#chat-context-preview')?.open || item.dirty || item.saving) return;
   try {
     const preview = await send('POST', url(item.id, 'preview'), {});
     if (selected !== item.id || !$('#chat-exact-preview')) return;
-    $('#chat-exact-preview').innerHTML = `${preview.context.fields.map((field) => `<p><strong>${escape(field.label)} <small>v${field.version}</small></strong><br>${escape(field.value)}</p>`).join('')}${preview.context.images.map((image) => `<figure><img src="/images/${encodeURIComponent(image.id)}" alt="${escape(image.name)}"><figcaption>${escape(image.labels.join(', '))} · ${escape(image.name)}<br><small>Version ${escape(image.id)} · ${escape(image.hash)}</small></figcaption></figure>`).join('')}`;
+    $('#chat-exact-preview').innerHTML = contextMarkup(preview.context);
   } catch (error) { showError(item, error); }
 }
 function renderTranscript(item) {
@@ -173,8 +190,7 @@ function renderTranscript(item) {
 }
 async function sendPrompt(item) {
   if (item.sending) return;
-  item.sending = true; const button = $('[data-action="chat-send"]'); button.disabled = true;
-  document.querySelectorAll('#chat-composer input, #chat-composer textarea, #chat-composer select').forEach((input) => { input.disabled = true; });
+  item.sending = true; updateComposerControls(item);
   try {
     flushCards(); await enqueue(() => Promise.resolve());
     if (saveStatus().error) throw new Error('Resolve the card save before sending its context.');
@@ -197,7 +213,7 @@ async function sendPrompt(item) {
     if (error.status && (error.status < 500 || error.status === 503)) { item.pending = null; preference(`frameboard-chat-send:${item.id}`, 'null'); }
     showError(item, error);
     if (selected === item.id) renderComposer(item);
-  } finally { item.sending = false; if (button.isConnected) button.disabled = false; }
+  } finally { item.sending = false; updateComposerControls(item); }
 }
 function wireResize() {
   const handle = $('#chat-resizer');

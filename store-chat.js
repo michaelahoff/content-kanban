@@ -101,6 +101,19 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
     const row = get('SELECT card_id FROM chat_submissions WHERE id = ?', id);
     activity(ctx, row.card_id, `submission_${value}`, { submissionId: id, reason });
   }
+  function settleAttempt(ctx, a, result, reason) {
+    const value = a.status === 'interrupt-requested' && result !== 'uncertain' ? 'interrupted' : result;
+    run('UPDATE chat_attempts SET status = ?, completed_at = ?, error = ? WHERE id = ?', value, now(), reason, a.id);
+    invalidateRequests(a.id);
+    status(ctx, a.submissionId, value, reason);
+    return value;
+  }
+  function requestInterruption(ctx, a, reason) {
+    run("UPDATE chat_attempts SET status = 'interrupt-requested' WHERE id = ?", a.id);
+    invalidateRequests(a.id);
+    status(ctx, a.submissionId, 'interrupt-requested', reason);
+    return { ...a, status: 'interrupt-requested' };
+  }
   const api = {
     snapshot(ctx, cardId) {
       const row = ensure(ctx, cardId);
@@ -185,6 +198,10 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
     },
     attempt,
     activeAttempt,
+    turnIds(ctx, cardId) {
+      retainedCard(ctx, cardId);
+      return all('SELECT turn_id FROM chat_attempts WHERE card_id = ? AND turn_id IS NOT NULL', cardId).map((row) => row.turn_id);
+    },
     bind(ctx, attemptId, binding) {
       return transaction(() => {
         const a = attempt(attemptId);
@@ -219,10 +236,7 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
       return transaction(() => {
         const a = attempt(id);
         if (!a || !active.includes(a.status)) return false;
-        const value = a.status === 'interrupt-requested' && result !== 'uncertain' ? 'interrupted' : result;
-        run('UPDATE chat_attempts SET status = ?, completed_at = ?, error = ? WHERE id = ?', value, now(), reason, id);
-        invalidateRequests(id);
-        status(ctx, a.submissionId, value, reason);
+        const value = settleAttempt(ctx, a, result, reason);
         if (value === 'uncertain') {
           run("UPDATE chat_conversations SET state = 'native-unavailable' WHERE id = (SELECT conversation_id FROM chat_submissions WHERE id = ?)", a.submissionId);
         }
@@ -276,10 +290,7 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
       return transaction(() => {
         const a = activeAttempt(cardId);
         if (!a) return null;
-        run("UPDATE chat_attempts SET status = 'interrupt-requested' WHERE id = ?", a.id);
-        invalidateRequests(a.id);
-        status(ctx, a.submissionId, 'interrupt-requested', 'Stopped by the user.');
-        return { ...a, status: 'interrupt-requested' };
+        return requestInterruption(ctx, a, 'Stopped by the user.');
       });
     },
     cancelSubmission(ctx, cardId, id) {
@@ -299,11 +310,7 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
       return transaction(() => {
         for (const row of all("SELECT id FROM chat_submissions WHERE card_id = ? AND status IN ('queued', 'held')", cardId)) status(ctx, row.id, 'cancelled', reason);
         const a = activeAttempt(cardId);
-        if (a) {
-          run("UPDATE chat_attempts SET status = 'interrupt-requested' WHERE id = ?", a.id);
-          invalidateRequests(a.id);
-          status(ctx, a.submissionId, 'interrupt-requested', reason);
-        }
+        if (a) requestInterruption(ctx, a, reason);
       });
     },
     fresh(ctx, cardId, input) {
@@ -338,10 +345,7 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
       return transaction(() => {
         const a = attempt(id);
         if (!a || (!active.includes(a.status) && a.status !== 'uncertain')) return;
-        const value = a.status === 'interrupt-requested' && result !== 'uncertain' ? 'interrupted' : result;
-        run('UPDATE chat_attempts SET status = ?, completed_at = ?, error = ? WHERE id = ?', value, now(), reason, id);
-        invalidateRequests(id);
-        status(ctx, a.submissionId, value, reason);
+        const value = settleAttempt(ctx, a, result, reason);
         run("UPDATE chat_conversations SET state = ? WHERE id = (SELECT conversation_id FROM chat_submissions WHERE id = ?) AND state != 'previous'", value === 'uncertain' || nativeUnavailable ? 'native-unavailable' : 'active', a.submissionId);
       });
     },

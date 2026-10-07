@@ -43,6 +43,7 @@ export function createChatWorker({ store, adapter, service, ctx }) {
     // follow-up starts. Never attribute an old turn's events to the next attempt.
     if (event.turnId && work.turnId && event.turnId !== work.turnId) return;
     if (event.turnId && !work.turnId) {
+      if (!work.dispatching || work.previousTurnIds.has(event.turnId)) return;
       if (live.get(work.submission.cardId) !== work || !['dispatching', 'interrupt-requested'].includes(store.chats.attempt(work.attempt.id)?.status)) return;
       work.turnId = event.turnId;
     }
@@ -99,6 +100,8 @@ export function createChatWorker({ store, adapter, service, ctx }) {
       if (store.chats.attempt(attempt.id)?.status === 'interrupt-requested') { end(work, 'interrupted'); return; }
       const recheck = queuedConfigurationDecision(submission.configuration, store.providerConfiguration(ctx).selection, discovery);
       if (recheck.status !== 'ready') { store.chats.hold(ctx, attempt.id, recheck.reason); release(work); return; }
+      if (store.chats.attempt(attempt.id)?.status !== 'dispatching') { release(work); return; }
+      work.dispatching = true;
       const started = await adapter.startTurn({ threadId: opened.threadId, model: submission.model,
         clientUserMessageId: attempt.id, input: [{ type: 'text', text: submissionText(submission) }, ...images] });
       if (closed) return;
@@ -125,7 +128,9 @@ export function createChatWorker({ store, adapter, service, ctx }) {
         if (live.has(submission.cardId)) continue;
         const claimed = store.chats.claim(ctx, submission.id);
         if (!claimed) continue;
-        const work = { ...claimed, items: new Map(), threadId: null, turnId: null };
+        const previousTurnIds = new Set([...store.chats.turnIds(ctx, submission.cardId),
+          ...[...retained].filter((work) => work.submission.cardId === submission.cardId && work.turnId).map((work) => work.turnId)]);
+        const work = { ...claimed, items: new Map(), threadId: null, turnId: null, dispatching: false, previousTurnIds };
         live.set(submission.cardId, work); retained.add(work);
         work.timer = setInterval(() => flush(work), 500);
         work.timer.unref();
