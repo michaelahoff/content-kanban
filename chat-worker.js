@@ -2,6 +2,7 @@
 // The durable queue owns correctness. Wake-ups only reduce scheduling latency.
 import { configurationDiscovery, queuedConfigurationDecision, openConfiguredThread } from './codex-configuration.js';
 import { submissionText } from './public/chat-context.js';
+import { automaticDecision, nativeDecision } from './native-requests.js';
 
 export function createChatWorker({ store, adapter, service, ctx }) {
   const live = new Map();
@@ -68,6 +69,7 @@ export function createChatWorker({ store, adapter, service, ctx }) {
     } else if (event.type === 'process-exited' || event.type === 'target-unavailable') {
       end(work, 'uncertain', event.error?.message ?? 'The selected target changed. Reconcile this conversation before continuing.');
     } else if (event.type === 'request-invalidated') {
+      store.chats.invalidateRequest(ctx, work.attempt.id, event.requestId);
       for (const [id, pending] of requests) if (pending.work === work && String(pending.nativeId) === String(event.requestId)) requests.delete(id);
     } else if (event.type === 'notification' && event.method === 'thread/compacted') {
       store.chats.item(ctx, work.attempt.id, { id: `compacted-${event.seq}`, kind: 'notice', text: 'Context compacted', completed: true });
@@ -76,8 +78,31 @@ export function createChatWorker({ store, adapter, service, ctx }) {
   function pendingRequest(work, request) {
     if (closed || request.turnId !== work.turnId) return;
     const { respond, requestId, method, ...params } = request;
+    if (method === 'item/fileChange/requestApproval') params.changes = work.items.get(params.itemId)?.data?.changes;
     const id = store.chats.request(ctx, work.attempt.id, { requestId, method, params });
-    if (id) requests.set(id, { work, respond, method, nativeId: requestId });
+    if (id) {
+      const pending = { work, respond, method, params, nativeId: requestId };
+      requests.set(id, pending);
+      const response = automaticDecision(pending, store.chats.requestGrants(ctx, work.submission.cardId));
+      if (response) { store.chats.answerRequest(ctx, work.submission.cardId, id, response); requests.delete(id); respond(response); }
+    } else if (method === 'item/permissions/requestApproval') return { permissions: {}, scope: 'turn' };
+    else if (method === 'item/tool/requestUserInput') return { answers: {} };
+    else return { decision: 'decline' };
+  }
+  async function toolCall(work, request) {
+    try {
+      if (closed || request.turnId !== work.turnId || live.get(work.submission.cardId) !== work) throw new Error('This attempt no longer has card-tool authority.');
+      let artifact;
+      if (request.tool === 'register_image') {
+        if (!['dispatching', 'accepted', 'running'].includes(store.chats.attempt(work.attempt.id)?.status)) throw new Error('This attempt no longer has card-tool authority.');
+        const saved = store.protection.receipt(ctx, work.attempt.id, request.callId, request.tool, request.arguments);
+        if (saved) return { success: true, contentItems: [{ type: 'inputText', text: JSON.stringify(saved) }] };
+        artifact = await service.renderedImage(work.submission.cardId, request.arguments);
+        if (closed) throw new Error('The worker has closed.');
+      }
+      const result = store.protection.tool(ctx, work.attempt.id, request.callId, request.tool, request.arguments, artifact);
+      return { success: true, contentItems: [{ type: 'inputText', text: JSON.stringify(result) }] };
+    } catch (error) { return { success: false, contentItems: [{ type: 'inputText', text: error.message }] }; }
   }
   async function execute(work) {
     try {
@@ -94,7 +119,8 @@ export function createChatWorker({ store, adapter, service, ctx }) {
       if (closed) return;
       work.threadId = opened.threadId;
       if (!store.chats.bind(ctx, attempt.id, opened.binding)) { end(work, 'interrupted'); return; }
-      work.unsubscribe = adapter.subscribe(opened.threadId, { onEvent: (event) => receive(work, event), onRequest: (request) => pendingRequest(work, request) });
+      work.unsubscribe = adapter.subscribe(opened.threadId, { acceptsRequest: (request) => request.turnId === work.turnId,
+        onEvent: (event) => receive(work, event), onRequest: (request) => pendingRequest(work, request), onToolCall: (request) => toolCall(work, request) });
       const images = await service.references(submission);
       if (closed) return;
       if (store.chats.attempt(attempt.id)?.status === 'interrupt-requested') { end(work, 'interrupted'); return; }
@@ -103,6 +129,7 @@ export function createChatWorker({ store, adapter, service, ctx }) {
       if (store.chats.attempt(attempt.id)?.status !== 'dispatching') { release(work); return; }
       work.dispatching = true;
       const started = await adapter.startTurn({ threadId: opened.threadId, model: submission.model,
+        fullAccess: store.chats.requestGrants(ctx, submission.cardId).some((grant) => grant.kind === 'full'),
         clientUserMessageId: attempt.id, input: [{ type: 'text', text: submissionText(submission) }, ...images] });
       if (closed) return;
       work.turnId = started.turnId;
@@ -173,15 +200,10 @@ export function createChatWorker({ store, adapter, service, ctx }) {
     answer(cardId, requestId, response) {
       const pending = requests.get(requestId);
       if (!pending || pending.work.submission.cardId !== cardId) throw Object.assign(new Error('This request is no longer live.'), { status: 409 });
-      // Do not accept native session/rule amendments. Scoped grants are a later
-      // permission milestone; this boundary offers one-operation decisions only.
-      if (!/item\/(commandExecution|fileChange)\/requestApproval$/.test(pending.method)
-        || !response || !['accept', 'decline', 'cancel'].includes(response.decision) || Object.keys(response).length !== 1) {
-        throw Object.assign(new Error('This request needs the later permission/input controls. Stop remains available.'), { status: 400 });
-      }
-      store.chats.answerRequest(ctx, cardId, requestId, response);
+      const decision = nativeDecision(pending, response);
+      store.chats.answerRequest(ctx, cardId, requestId, decision.native, decision.grant);
       requests.delete(requestId);
-      pending.respond(response);
+      pending.respond(decision.native);
       return { ok: true };
     },
     close() {

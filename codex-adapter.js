@@ -82,8 +82,8 @@ export function createCodexAdapter({
           write({ jsonrpc: '2.0', id: message.id, result });
         };
         const handlers = [...(listeners.get(threadId) ?? [])];
-        const handler = handlers.find((h) => message.method === 'item/tool/call' ? h.onToolCall : h.onRequest);
         emit(threadId, { type: 'request', turnId, requestId: message.id, method: message.method, params: message.params });
+        const handler = handlers.find((h) => (!h.acceptsRequest || h.acceptsRequest(message.params)) && (message.method === 'item/tool/call' ? h.onToolCall : h.onRequest));
         const deny = () => {
           if (!current.incoming.has(message.id)) return;
           if (message.method === 'item/tool/call') respond({ success: false, contentItems: [{ type: 'inputText', text: 'Frameboard has no handler for this tool.' }] });
@@ -185,9 +185,18 @@ export function createCodexAdapter({
       const current = await connection();
       // dynamicTools are persisted at start. The resume schema has no registration field.
       const { dynamicTools, ...resumeConfig } = threadConfig;
-      const result = await current.request(threadId ? 'thread/resume' : 'thread/start', threadId
-        ? { ...resumeConfig, threadId, cwd: work, model, ...(modelProvider ? { modelProvider } : {}), excludeTurns: true }
-        : { ...threadConfig, cwd: work, model, ...(modelProvider ? { modelProvider } : {}), allowProviderModelFallback: false });
+      const resumeParams = { ...resumeConfig, threadId, cwd: work, model, ...(modelProvider ? { modelProvider } : {}), excludeTurns: true };
+      let result = await current.request(threadId ? 'thread/resume' : 'thread/start', threadId
+        ? resumeParams : { ...threadConfig, cwd: work, model, ...(modelProvider ? { modelProvider } : {}), allowProviderModelFallback: false });
+      // Turn permissions persist natively, and warm resume ignores sandbox
+      // overrides. Explicitly restore the ordinary baseline before dispatch;
+      // an authorized Full turn opts in again through turn/start.
+      if (threadId && threadConfig.sandbox === 'workspace-write' && threadConfig.approvalPolicy === 'on-request'
+        && (result.sandbox.type !== 'workspaceWrite' || result.sandbox.networkAccess || result.approvalPolicy !== 'on-request')) {
+        await current.request('thread/settings/update', { threadId, approvalPolicy: 'on-request', approvalsReviewer: 'user',
+          sandboxPolicy: { type: 'workspaceWrite', writableRoots: [work], networkAccess: false } });
+        result = await current.request('thread/resume', resumeParams);
+      }
       const id = result.thread.id;
       if ((threadId && id !== threadId) || result.cwd !== work || result.thread.cwd !== work || (modelProvider && result.modelProvider !== modelProvider)) throw new CodexError('binding-mismatch', 'Codex returned a different native binding. Nothing will be submitted.');
       if (!threadId && result.model !== model) throw new CodexError('model-unavailable', 'Codex did not retain the selected model.');
@@ -195,7 +204,7 @@ export function createCodexAdapter({
       current.threads.add(id);
       return { threadId: id, resumed: Boolean(threadId), native: result };
     },
-    async startTurn({ threadId, input, clientUserMessageId, model }) {
+    async startTurn({ threadId, input, clientUserMessageId, model, fullAccess = false }) {
       const binding = bindings.get(threadId); const current = await connection();
       if (!binding || !current.threads.has(threadId)) throw new CodexError('not-open', 'Resume the exact native binding before submitting.');
       if (binding.blocked) throw unavailable(binding.blocked);
@@ -204,7 +213,9 @@ export function createCodexAdapter({
       binding.turnId = 'dispatching';
       try {
         await requireModel(chosen);
-        const result = await current.request('turn/start', { threadId, input, model: chosen, clientUserMessageId });
+        const result = await current.request('turn/start', { threadId, input, model: chosen, clientUserMessageId,
+          approvalPolicy: fullAccess ? 'never' : 'on-request', sandboxPolicy: fullAccess ? { type: 'dangerFullAccess' }
+            : { type: 'workspaceWrite', writableRoots: [binding.cwd], networkAccess: false } });
         binding.model = chosen;
         // Completion may precede the RPC response; do not resurrect a finished turn.
         if (binding.turnId === 'dispatching') binding.turnId = result.turn.id;

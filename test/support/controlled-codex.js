@@ -53,12 +53,20 @@ export class ControlledCodex {
     }
     return {};
   }
-  request(send, method = 'item/commandExecution/requestApproval') {
+  request(send, method = 'item/commandExecution/requestApproval', params = {}) {
     const requestId = randomUUID(); const results = [];
     const request = { requestId, threadId: send.threadId, turnId: send.turnId, method,
-      command: 'outside sandbox', respond: (result) => results.push(result) };
-    for (const handler of this.listeners.get(send.threadId) ?? []) handler.onRequest?.(request);
+      command: 'outside sandbox', cwd: this.threads.get(send.threadId).cwd, ...params, respond: (result) => results.push(result) };
+    for (const handler of this.listeners.get(send.threadId) ?? []) if (!handler.acceptsRequest || handler.acceptsRequest(request)) handler.onRequest?.(request);
     return { requestId, results };
+  }
+  async tool(send, tool, args = {}, callId = randomUUID()) {
+    const results = [];
+    for (const handler of this.listeners.get(send.threadId) ?? []) if (handler.onToolCall && (!handler.acceptsRequest || handler.acceptsRequest({ turnId: send.turnId }))) {
+      const result = await handler.onToolCall({ threadId: send.threadId, turnId: send.turnId, callId, tool, arguments: args });
+      if (result !== undefined) results.push(result);
+    }
+    return results.at(-1);
   }
   async listTurns({ threadId, cursor }) {
     if (!this.threads.has(threadId)) throw Object.assign(new Error('No rollout found.'), { kind: 'native-unavailable' });

@@ -12,6 +12,8 @@ let lastCardTrigger;
 onCardFieldsChange((card, keys) => {
   renderBoard();
   if (state.cardId !== card.id || !cardDialog.open) return;
+  if (keys.some((key) => ['images', 'imageRoles'].includes(key))) renderImages();
+  if (keys.includes('placement')) $('#card-lane').value = card.stageId;
   for (const key of keys) {
     const input = $(`#${fieldInputId(key)}`);
     if (input) input.value = key === 'title' ? card.title : card.fields[key];

@@ -1,6 +1,6 @@
 import { $, escape, toast, smallForm } from './ui.js';
 import { request, send, enqueue } from './api.js';
-import { state, locateCard, flushCards, saveStatus } from './state.js';
+import { state, locateCard, flushCards, saveStatus, refreshSavedCard } from './state.js';
 import { contextFields } from './chat-context.js';
 
 const chats = new Map();
@@ -73,7 +73,7 @@ export function mountChat(cardId) {
   while (dialog.firstChild) editor.append(dialog.firstChild);
   dialog.append(editor);
   dialog.insertAdjacentHTML('afterbegin', `<div class="workbench-tabs" role="tablist" aria-label="Card workbench"><button role="tab" data-action="workbench-tab" data-tab="editor">Editor</button><button role="tab" data-action="workbench-tab" data-tab="chat">Chat</button></div>`);
-  dialog.insertAdjacentHTML('beforeend', `<div id="chat-resizer" role="separator" tabindex="0" aria-label="Resize chat" aria-orientation="vertical"></div><aside id="card-chat" aria-label="Card chat"><div class="chat-header"><div><h2>Card chat</h2><span>Codex · Current conversation</span></div><button class="button small secondary" data-action="chat-fresh">Start fresh context</button></div><div id="chat-error" role="alert" hidden></div><div id="chat-transcript" class="chat-transcript" aria-label="Conversation history"></div><div id="chat-requests"></div><div id="chat-composer" class="chat-composer"></div></aside>`);
+  dialog.insertAdjacentHTML('beforeend', `<div id="chat-resizer" role="separator" tabindex="0" aria-label="Resize chat" aria-orientation="vertical"></div><aside id="card-chat" aria-label="Card chat"><div class="chat-header"><div><h2>Card chat</h2><span>Codex · Current conversation</span></div><button class="button small secondary" data-action="chat-fresh">Start fresh context</button></div><div id="chat-error" role="alert" hidden></div><div id="chat-transcript" class="chat-transcript" aria-label="Conversation history"></div><div id="chat-requests"></div><div id="chat-proposals"></div><div id="chat-grants"></div><div id="chat-composer" class="chat-composer"></div></aside>`);
   $('.editor-header-right').insertAdjacentHTML('afterbegin', '<button class="button small secondary" data-action="toggle-chat" aria-expanded="true">Hide chat</button>');
   setDialogMode();
   if (item.snapshot) { renderComposer(item); renderTranscript(item); }
@@ -127,6 +127,8 @@ async function refresh(item) {
     item.composer = snapshot.composer;
   }
   if (selected !== item.id || !$('#card-chat')) return;
+  if (!snapshot.deleted) refreshSavedCard((await request(`/api/cards/${encodeURIComponent(item.id)}`)).card);
+  if (selected !== item.id || !$('#card-chat')) return;
   if (!$('#chat-prompt') || changed || item.gallerySignature !== JSON.stringify(locateCard(item.id)?.card.images)) renderComposer(item);
   renderTranscript(item);
   updateComposerControls(item);
@@ -145,8 +147,8 @@ function renderComposer(item) {
     .map((id) => ({ id, name: 'Unavailable reference (removed from gallery)' }))];
   const choices = item.models.length ? item.models : composer.model ? [{ id: composer.model, displayName: composer.model }] : [];
   $('#chat-composer').innerHTML = `<div class="chat-model-row"><label for="chat-model">Model</label><select id="chat-model" ${active(item) ? 'disabled' : ''}><option value="">Choose a model…</option>${choices.map((model) => `<option value="${escape(model.id)}" ${composer.model === model.id ? 'selected' : ''}>${escape(model.displayName)}</option>`).join('')}</select><button class="button small secondary" data-action="chat-discover">Discover</button></div>
-    <details id="chat-context-preview" ${item.view.preview ? 'open' : ''}><summary>What will be sent</summary><p class="chat-hint">Saved card values at Send. Images are attached once with all selected labels.</p><fieldset class="chat-selections"><legend>Card fields</legend>${contextFields(card.template).map((field) => `<label><input type="checkbox" data-chat-field="${field.key}" ${composer.selections.fields.includes(field.key) ? 'checked' : ''}>${escape(field.label)}</label>`).join('')}</fieldset><fieldset class="chat-selections"><legend>Image references</legend>${[['original', 'Original'], ['inspiration', 'Inspiration'], ['cover', 'Display']].map(([role, label]) => `<label><input type="checkbox" data-chat-role="${role}" ${composer.selections.roles.includes(role) ? 'checked' : ''}>${label}</label>`).join('')}${images.map((image) => `<label><input type="checkbox" data-chat-image="${image.id}" ${composer.selections.images.includes(image.id) ? 'checked' : ''}>${escape(image.name)}</label>`).join('')}</fieldset><div id="chat-exact-preview"></div></details>
-    <label class="sr-only" for="chat-prompt">Prompt for this card</label><textarea id="chat-prompt" maxlength="200000" placeholder="Ask about this card…" ${item.pending ? 'disabled' : ''}>${escape(composer.prompt)}</textarea><div class="chat-send-row"><span id="chat-save-state">${item.dirty ? 'Saving draft…' : 'Draft saved'}</span><button class="button small secondary" data-action="chat-stop" ${active(item) ? '' : 'disabled'}>Stop</button><button class="button primary" data-action="chat-send">${item.pending ? 'Retry Send' : 'Send'}</button></div><p class="chat-hint">Codex uses workspace-write / on-request. Reads outside the workspace are possible. <a href="/codex.html" target="_blank" rel="noopener">Configuration and permission limits</a></p>`;
+    <details id="chat-context-preview" ${item.view.preview ? 'open' : ''}><summary>What will be sent</summary><p class="chat-hint">Saved card values at Send. Images are attached once with all selected labels.</p><fieldset class="chat-selections"><legend>Card fields</legend>${contextFields(card.template).map((field) => `<label><input type="checkbox" data-chat-field="${field.key}" ${composer.selections.fields.includes(field.key) ? 'checked' : ''}>${escape(field.label)}</label>`).join('')}</fieldset><fieldset class="chat-selections"><legend>Image references</legend>${[['original', 'Original'], ['inspiration', 'Inspiration'], ['cover', 'Display']].map(([role, label]) => `<label><input type="checkbox" data-chat-role="${role}" ${composer.selections.roles.includes(role) ? 'checked' : ''}>${label}</label>`).join('')}${images.map((image) => `<label><input type="checkbox" data-chat-image="${image.id}" ${composer.selections.images.includes(image.id) ? 'checked' : ''}>${escape(image.name)}</label>`).join('')}</fieldset><fieldset class="chat-selections"><legend>Allow requested text edits</legend><p>Only check fields you explicitly ask Codex to edit. Suggestions remain proposals.</p>${contextFields(card.template).map((field) => `<label><input type="checkbox" data-chat-authority="${field.key}" ${composer.authority.fields.includes(field.key) ? 'checked' : ''}>${escape(field.label)}</label>`).join('')}</fieldset><div id="chat-exact-preview"></div></details>
+    <label class="sr-only" for="chat-prompt">Prompt for this card</label><textarea id="chat-prompt" maxlength="200000" placeholder="Ask about this card…" ${item.pending ? 'disabled' : ''}>${escape(composer.prompt)}</textarea><div class="chat-send-row"><span id="chat-save-state">${item.dirty ? 'Saving draft…' : 'Draft saved'}</span><button class="button small secondary" data-action="chat-stop" ${active(item) ? '' : 'disabled'}>Stop</button><button class="button primary" data-action="chat-send">${item.pending ? 'Retry Send' : 'Send'}</button></div><p class="chat-hint">Codex can write in its workspace and run sandboxed commands without network access automatically. Escape requests need approval. Outside reads are possible. Full native access keeps card acceptance rules. <a href="/codex.html" target="_blank" rel="noopener">Configuration and permission limits</a></p>`;
   $('#chat-context-preview').addEventListener('toggle', () => { rememberView(); if ($('#chat-context-preview').open) void refreshPreview(item); });
   if (item.view.preview) void refreshPreview(item);
   updateComposerControls(item);
@@ -175,7 +177,7 @@ function renderTranscript(item) {
     const submissions = snapshot.submissions.filter((submission) => submission.conversationId === conversation.id);
     return `<div class="chat-divider">${conversation.state === 'previous' ? 'Previous conversation' : conversation.state === 'native-unavailable' ? 'Native context unavailable · history retained' : 'Current conversation'}</div>${submissions.map((submission) => {
       const attempts = snapshot.attempts.filter((attempt) => attempt.submissionId === submission.id);
-      return `<article class="chat-submission"><div class="chat-prompt-sent">${escape(submission.prompt)}</div>${frozenMarkup(submission)}<p class="chat-status">${escape(submission.status)}${submission.reason ? ` · ${escape(submission.reason)}` : ''}</p>${attempts.map((attempt) => `${attempt.previousAttemptId ? '<div class="chat-divider">Retry · original inputs retained</div>' : ''}${snapshot.items.filter((entry) => entry.attemptId === attempt.id).map((entry) => `<div class="chat-item ${entry.kind === 'notice' ? 'chat-notice' : ''}">${escape(entry.text || ({ imageGeneration: 'Image output retained; image import and adoption are a later milestone.', dynamicToolCall: 'Tool result', commandExecution: 'Command execution' }[entry.kind] ?? entry.kind))}${!entry.completed && entry.kind === 'agentMessage' ? '<small>Partial response</small>' : ''}</div>`).join('')}`).join('')}${['queued', 'held'].includes(submission.status) ? `<button class="button small secondary" data-action="chat-cancel" data-id="${escape(submission.id)}">Cancel submission</button>` : ''}${['failed', 'interrupted'].includes(submission.status) && conversation.state === 'active' ? `<button class="button small secondary" data-action="chat-retry" data-id="${escape(submission.id)}">Retry original submission</button>` : ''}</article>`;
+      return `<article class="chat-submission"><div class="chat-prompt-sent">${escape(submission.prompt)}</div>${frozenMarkup(submission)}<p class="chat-status">${escape(submission.status)}${submission.reason ? ` · ${escape(submission.reason)}` : ''}</p>${attempts.map((attempt) => `${attempt.previousAttemptId ? '<div class="chat-divider">Retry · original inputs retained</div>' : ''}${snapshot.items.filter((entry) => entry.attemptId === attempt.id).map((entry) => `<div data-item-sequence="${entry.sequence}" class="chat-item ${entry.kind === 'notice' ? 'chat-notice' : ''}">${escape(entry.text || ({ imageGeneration: 'Image output retained; image import and adoption are a later milestone.', dynamicToolCall: 'Tool result', commandExecution: 'Command execution' }[entry.kind] ?? entry.kind))}${!entry.completed && entry.kind === 'agentMessage' ? '<small>Partial response</small>' : ''}${entry.kind === 'agentMessage' ? `<button class="button small secondary" data-action="chat-use-text" data-sequence="${entry.sequence}">Use selected reply text</button>` : ''}${entry.kind === 'registeredImage' ? `<img class="chat-output-image" src="/images/${encodeURIComponent(entry.data.id)}" alt="${escape(entry.data.name)}"><small>Rendered by ${escape(entry.data.provider)} · retained in chat</small>` : ''}</div>`).join('')}`).join('')}${['queued', 'held'].includes(submission.status) ? `<button class="button small secondary" data-action="chat-cancel" data-id="${escape(submission.id)}">Cancel submission</button>` : ''}${['failed', 'interrupted'].includes(submission.status) && conversation.state === 'active' ? `<button class="button small secondary" data-action="chat-retry" data-id="${escape(submission.id)}">Retry original submission</button>` : ''}</article>`;
     }).join('')}`;
   }).join('');
   if (timeline.dataset.rendered !== html) {
@@ -185,8 +187,60 @@ function renderTranscript(item) {
     openDetails.forEach((index) => { const node = timeline.querySelectorAll('details')[index]; if (node) node.open = true; });
     timeline.scrollTop = nearEnd && !item.view.scroll ? timeline.scrollHeight : scroll;
   }
-  $('#chat-requests').innerHTML = snapshot.requests.filter((request) => request.status === 'pending').map((request) => `<div class="chat-request"><strong>? Input needed</strong><p>${escape(request.params.command ?? request.method)}</p>${/item\/(commandExecution|fileChange)\/requestApproval$/.test(request.method) ? `<button class="button small secondary" data-action="chat-answer" data-id="${escape(request.id)}" data-decision="accept">Allow once</button><button class="button small secondary" data-action="chat-answer" data-id="${escape(request.id)}" data-decision="decline">Deny</button>` : '<p>Stop to cancel this request. Additional input controls are not available yet.</p>'}</div>`).join('');
+  renderRequests(item);
+  renderProposals(item);
+  const current = snapshot.conversations.find((c) => c.state !== 'previous');
+  $('#chat-grants').innerHTML = current?.grants.length ? `<p class="chat-hint">${current.grants.some((g) => g.kind === 'full') ? 'Full native access for this conversation. Remaining requests are approved individually; full sandbox mode begins with the next response. Stop active work before revoking.' : `${current.grants.length} exact operation allowance(s)`}. Card acceptance still applies. <button class="button small secondary" data-action="chat-revoke-grants">Revoke allowances</button></p>` : '';
   if ($('#chat-save-state')) $('#chat-save-state').textContent = item.dirty || item.saving ? 'Saving draft…' : 'Draft saved';
+}
+function renderRequests(item) {
+  const html = item.snapshot.requests.filter((r) => r.status === 'pending').map((r) => {
+    const input = r.method === 'item/tool/requestUserInput';
+    const supported = /^item\/(commandExecution|fileChange|permissions)\/requestApproval$/.test(r.method);
+    const scoped = r.method === 'item/commandExecution/requestApproval' && r.params.command && r.params.cwd
+      || r.method === 'item/permissions/requestApproval' && r.params.permissions && r.params.cwd
+      || r.method === 'item/fileChange/requestApproval' && r.params.changes?.length;
+    const detail = input ? r.params.questions?.map((q) => q.question).join('\n')
+      : [r.params.command, r.params.cwd, r.params.reason, r.params.permissions ? JSON.stringify(r.params.permissions, null, 2) : '', r.params.changes ? JSON.stringify(r.params.changes, null, 2) : ''].filter(Boolean).join('\n');
+    return `<div class="chat-request"><strong>? ${escape(locateCard(item.id)?.card.title || 'This card')} · Input needed</strong><pre>${escape(detail || r.method)}</pre>${input ? `<button class="button small secondary" data-action="chat-input" data-id="${escape(r.id)}">Answer questions</button>` : supported ? `<button class="button small secondary" data-action="chat-answer" data-id="${escape(r.id)}" data-decision="accept">Allow once</button>${scoped ? `<button class="button small secondary" data-action="chat-answer" data-id="${escape(r.id)}" data-decision="accept" data-scope="conversation">Allow this exact operation for conversation</button>` : ''}<button class="button small secondary" data-action="chat-full-access" data-id="${escape(r.id)}">Full native access…</button><button class="button small secondary" data-action="chat-answer" data-id="${escape(r.id)}" data-decision="decline">Deny</button>` : '<p>This request is unsupported. Stop remains available.</p>'}</div>`;
+  }).join('');
+  const panel = $('#chat-requests'); if (panel.dataset.rendered !== html) { panel.innerHTML = html; panel.dataset.rendered = html; }
+}
+function renderProposals(item) {
+  const html = (item.snapshot.proposals ?? []).filter((p) => p.status === 'pending').map((p) => `<div class="chat-request"><strong>Card proposal · ${p.kind === 'move' ? 'Lane move' : 'Text changes'}</strong><p>${escape(p.kind === 'move' ? 'Requires your acceptance' : Object.keys(p.payload.fields).join(', '))}</p><button class="button small secondary" data-action="chat-proposal" data-id="${escape(p.id)}">Review proposal</button></div>`).join('');
+  const panel = $('#chat-proposals'); if (panel.dataset.rendered !== html) { panel.innerHTML = html; panel.dataset.rendered = html; }
+}
+async function answerInput(item, id) {
+  const r = item.snapshot.requests.find((r) => r.id === id && r.status === 'pending');
+  if (!r) throw new Error('This request is no longer pending.');
+  smallForm({ title: 'Answer this card’s questions', fields: r.params.questions.map((q, index) => `<label class="form-label" for="chat-question-${index}">${escape(q.question)}</label>${q.options?.length ? `<p>${q.options.map((o) => `${escape(o.label)}: ${escape(o.description)}`).join('<br>')}</p>` : ''}<input class="form-input" id="chat-question-${index}" name="answer-${index}" type="${q.isSecret ? 'password' : 'text'}" maxlength="200000" required autocomplete="off">`).join(''), submit: 'Send answers', onSubmit: async (data) => {
+    const answers = Object.fromEntries(r.params.questions.map((q, index) => [q.id, { answers: [String(data.get(`answer-${index}`))] }]));
+    await send('POST', url(item.id, 'answer'), { requestId: id, response: { answers } }); await refresh(item);
+  } });
+}
+async function reviewProposal(item, id) {
+  const preview = await send('POST', url(item.id, `proposals/${id}/preview`), {});
+  const p = item.snapshot.proposals.find((p) => p.id === id);
+  const lanes = locateCard(item.id)?.project.lanes ?? [];
+  const label = (key) => contextFields(locateCard(item.id).card.template).find((f) => f.key === key)?.label ?? key;
+  smallForm({ title: 'Review card proposal', fields: p.kind === 'move'
+    ? `<p>${escape(lanes.find((l) => l.id === preview.fromStageId)?.name ?? 'Current lane')} → ${escape(lanes.find((l) => l.id === preview.payload.toStageId)?.name ?? 'Missing lane')}</p>`
+    : Object.entries(preview.payload.fields).map(([key, value]) => `<label><input type="checkbox" name="field" value="${escape(key)}" checked> ${escape(label(key))}</label><p>Current</p><pre class="chat-review-text">${escape(preview.before[key])}</pre><p>Proposed</p><pre class="chat-review-text">${escape(value)}</pre>`).join(''), submit: p.kind === 'move' ? 'Accept lane move' : 'Apply selected fields', onSubmit: async (data) => {
+      await send('POST', url(item.id, `proposals/${id}/accept`), { reviewId: preview.reviewId, fields: data.getAll('field'), baseVersions: preview.baseVersions, placementVersion: preview.placementVersion });
+      await refresh(item);
+    }, extra: `<button class="button secondary" type="button" data-action="chat-reject-proposal" data-id="${escape(id)}">Reject proposal</button>` });
+}
+function useSelectedText(item, sequence) {
+  const selection = window.getSelection(); const text = selection?.toString() ?? '';
+  const entry = item.snapshot.items.find((i) => i.sequence === sequence);
+  const source = selection?.anchorNode?.parentElement?.closest('[data-item-sequence]');
+  if (!text || !entry?.text.includes(text) || Number(source?.dataset.itemSequence) !== sequence) throw new Error('Select text within this reply first.');
+  const card = locateCard(item.id).card;
+  smallForm({ title: 'Use selected reply text', fields: `<label class="form-label" for="chat-text-field">Destination</label><select class="form-input" id="chat-text-field" name="field">${contextFields(card.template).map((f) => `<option value="${f.key}">${escape(f.label)}</option>`).join('')}</select><label class="form-label" for="chat-text-mode">Action</label><select class="form-input" id="chat-text-mode" name="mode"><option value="replace">Replace</option><option value="append">Append</option></select><pre class="chat-review-text">${escape(text)}</pre>`, submit: 'Preview result', onSubmit: async (data) => {
+    const input = { itemSequence: sequence, text, field: String(data.get('field')), mode: String(data.get('mode')) };
+    const preview = await send('POST', url(item.id, 'text-preview'), input);
+    setTimeout(() => smallForm({ title: 'Apply reviewed text?', fields: `<p>Destination: ${escape(input.field)} · ${escape(input.mode)}</p><pre class="chat-review-text">${escape(preview.value)}</pre>`, submit: 'Apply text', onSubmit: async () => { await send('POST', url(item.id, 'accept-text'), { ...input, ...preview }); await refresh(item); } }), 0);
+  } });
 }
 async function sendPrompt(item) {
   if (item.sending) return;
@@ -253,6 +307,11 @@ export function initializeChats(callbacks) {
   document.addEventListener('change', (event) => {
     const item = chats.get(selected); if (!item?.composer) return;
     const target = event.target;
+    if (target.dataset.chatAuthority) {
+      const fields = new Set(item.composer.authority.fields);
+      if (target.checked) fields.add(target.dataset.chatAuthority); else fields.delete(target.dataset.chatAuthority);
+      item.composer.authority.fields = [...fields]; composerChanged(item); return;
+    }
     if (target.id === 'chat-model') { item.composer.model = target.value || null; composerChanged(item); return; }
     for (const [attribute, key] of [['chatField', 'fields'], ['chatRole', 'roles'], ['chatImage', 'images']]) if (target.dataset[attribute]) {
       const set = new Set(item.composer.selections[key]);
@@ -286,7 +345,13 @@ export function initializeChats(callbacks) {
       }
       if (action === 'chat-stop') { await send('POST', url(item.id, 'stop'), {}); await refresh(item); }
       if (action === 'chat-cancel' || action === 'chat-retry') { await send('POST', url(item.id, action === 'chat-cancel' ? 'cancel' : 'retry'), { submissionId: target.dataset.id }); await refresh(item); }
-      if (action === 'chat-answer') { await send('POST', url(item.id, 'answer'), { requestId: target.dataset.id, response: { decision: target.dataset.decision } }); await refresh(item); }
+      if (action === 'chat-answer') { await send('POST', url(item.id, 'answer'), { requestId: target.dataset.id, response: { decision: target.dataset.decision, scope: target.dataset.scope ?? 'once' } }); await refresh(item); }
+      if (action === 'chat-input') await answerInput(item, target.dataset.id);
+      if (action === 'chat-proposal') await reviewProposal(item, target.dataset.id);
+      if (action === 'chat-reject-proposal') { await send('POST', url(item.id, `proposals/${target.dataset.id}/accept`), { reject: true }); $('#form-dialog').close(); await refresh(item); }
+      if (action === 'chat-use-text') useSelectedText(item, Number(target.dataset.sequence));
+      if (action === 'chat-revoke-grants') { await send('POST', url(item.id, 'revoke-grants'), {}); await refresh(item); }
+      if (action === 'chat-full-access') smallForm({ title: 'Allow full native access?', description: 'Approve remaining native requests individually. From the next response Codex runs without its sandbox or approval prompts for this conversation. It can reach app storage and anything your account can reach. Card acceptance keeps its own rules. Stop active work before revoking; fresh context resets the allowance.', submit: 'Allow full native access', onSubmit: async () => { await send('POST', url(item.id, 'answer'), { requestId: target.dataset.id, response: { decision: 'accept', scope: 'full' } }); await refresh(item); } });
       if (action === 'chat-fresh') smallForm({ title: 'Start empty fresh context?', description: 'Retain this conversation as previous history and reset its permissions. Cancel any queued or held submissions for the old conversation. No native conversation or turn starts until Send.', submit: 'Start fresh and cancel queued work', onSubmit: async () => { await saveComposer(item); item.snapshot = await send('POST', url(item.id, 'fresh'), { cancelQueued: true }); renderTranscript(item); } });
     } catch (error) { if (item) showError(item, error); else toast(error.message); }
     finally { if (action === 'chat-discover' && target.isConnected) target.disabled = false; }

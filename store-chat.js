@@ -276,14 +276,36 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
         return requestId;
       });
     },
-    answerRequest(ctx, cardId, requestId, response) {
+    invalidateRequest(ctx, attemptId, nativeId) {
+      transaction(() => {
+        const a = attempt(attemptId); if (!a) return;
+        retainedCard(ctx, a.cardId);
+        const updated = run("UPDATE chat_requests SET status = 'invalidated' WHERE attempt_id = ? AND native_id = ? AND status = 'pending'", attemptId, String(nativeId));
+        if (updated.changes) activity({ ...ctx, actor: 'system:native-request' }, a.cardId, 'request_invalidated', { requestId: `${attemptId}:${nativeId}` });
+      });
+    },
+    answerRequest(ctx, cardId, requestId, response, grant = null) {
       return transaction(() => {
         retainedCard(ctx, cardId);
         const row = get('SELECT r.* FROM chat_requests r JOIN chat_attempts a ON a.id = r.attempt_id WHERE r.id = ? AND a.card_id = ?', requestId, cardId);
         if (!row || row.status !== 'pending' || !['dispatching', 'accepted', 'running'].includes(attempt(row.attempt_id)?.status)) fail(409, 'This request was invalidated or has already been answered.');
         run("UPDATE chat_requests SET status = 'answered', response = ? WHERE id = ?", JSON.stringify(response), requestId);
+        if (grant) {
+          const conversation = get('SELECT v.* FROM chat_conversations v JOIN chat_submissions s ON s.conversation_id = v.id JOIN chat_attempts a ON a.submission_id = s.id WHERE a.id = ?', row.attempt_id);
+          if (conversation.state !== 'active') fail(409, 'This conversation no longer accepts grants.');
+          const grants = JSON.parse(conversation.grants);
+          if (!grants.some((g) => JSON.stringify(g) === JSON.stringify(grant))) grants.push(grant);
+          run('UPDATE chat_conversations SET grants = ? WHERE id = ?', JSON.stringify(grants), conversation.id);
+        }
         activity(ctx, cardId, 'request_answered', { requestId });
       });
+    },
+    requestGrants(ctx, cardId) { retainedCard(ctx, cardId); return current(cardId).grants; },
+    clearGrants(ctx, cardId) {
+      requireCard(ctx, cardId);
+      if (activeAttempt(cardId) && current(cardId).grants.some((g) => g.kind === 'full')) fail(409, 'Stop the active response and wait for acknowledged interruption before revoking Full native access.');
+      transaction(() => { run("UPDATE chat_conversations SET grants = '[]' WHERE id = ?", current(cardId).id); activity(ctx, cardId, 'grants_revoked'); });
+      return { ok: true };
     },
     stop(ctx, cardId) {
       retainedCard(ctx, cardId);

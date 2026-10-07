@@ -2,7 +2,7 @@
 // Responses peer. This is real registration/dispatch, not account/model proof.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createCodexAdapter } from '../codex-adapter.js';
@@ -14,6 +14,20 @@ import { randomUUID } from 'node:crypto';
 
 const enabled = process.env.FRAMEBOARD_NATIVE_TEST === '1';
 const schema = enabled ? installedCodexSchema() : null;
+
+test('installed native: full access executes outside-workspace commands and ordinary follow-up restores the sandbox', { skip: !enabled, timeout: 45000 }, async (t) => {
+  const f = await nativeFixture(t); const opened = await f.open();
+  const outside = await mkdtemp('/var/tmp/frameboard-native-permission-');
+  t.after(() => rm(outside, { recursive: true, force: true }));
+  const fullFile = path.join(outside, 'full.txt'); const ordinaryFile = path.join(outside, 'ordinary.txt');
+  f.peer.respond({ functionCall: { name: 'exec_command', arguments: { cmd: `printf full > '${fullFile}'`, yield_time_ms: 1000 } } });
+  await f.turn(opened.threadId, { tool: false, fullAccess: true });
+  assert.equal(await readFile(fullFile, 'utf8'), 'full');
+  await f.open(opened.threadId);
+  f.peer.respond({ functionCall: { name: 'exec_command', arguments: { cmd: `printf ordinary > '${ordinaryFile}'`, yield_time_ms: 1000 } } });
+  await f.turn(opened.threadId, { tool: false, fullAccess: false });
+  await assert.rejects(readFile(ordinaryFile), { code: 'ENOENT' });
+});
 
 test('installed native: durable HTTP worker follows up after process/app restart with the exact binding and frozen context', { skip: !enabled, timeout: 45000 }, async (t) => {
   const f = await nativeFixture(t);
@@ -91,7 +105,7 @@ async function nativeFixture(t) {
     bindings.set(opened.threadId, structuredClone(opened.binding));
     return opened;
   }
-  async function turn(threadId, { tool = true, model, text = 'native gate', clientUserMessageId = 'native-attempt' } = {}) {
+  async function turn(threadId, { tool = true, model, text = 'native gate', clientUserMessageId = 'native-attempt', fullAccess = false } = {}) {
     const before = peer.requests.length; const events = [];
     let complete;
     const done = new Promise((resolve) => { complete = resolve; });
@@ -104,7 +118,7 @@ async function nativeFixture(t) {
     });
     if (tool) peer.respond({ functionCall: { name: 'fb_card_tool', arguments: {} } });
     try {
-      const start = await adapter.startTurn({ threadId, input: [{ type: 'text', text }], clientUserMessageId, ...(model ? { model } : {}) });
+      const start = await adapter.startTurn({ threadId, input: [{ type: 'text', text }], clientUserMessageId, fullAccess, ...(model ? { model } : {}) });
       const terminal = await done;
       assert.equal(terminal.status, 'completed');
       const requests = peer.requests.slice(before);

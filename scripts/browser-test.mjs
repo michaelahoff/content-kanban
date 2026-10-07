@@ -648,8 +648,10 @@ try {
   const nextLane = await evaluate(`Array.from(document.querySelector('#card-lane').options).find(option => option.value !== document.querySelector('#card-lane').value).value`);
   await select('#card-lane', nextLane);
   await saved();
+  const beforeIntro = (await (await fetch(`${base}/api/cards/${conflictId}`)).json()).card;
   await fill('#card-intro', 'This text must not disappear after a conflict.');
-  await waitFor(`document.querySelector('#editor-save-error')?.textContent.includes('another tab') && !document.querySelector('#editor-save-error').hidden`);
+  await fetch(`${base}/api/cards/${conflictId}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ revision: beforeIntro.revision, fields: { intro: 'Other tab intro' } }) });
+  await waitFor(`document.querySelector('#editor-save-error')?.textContent.includes('Unsaved conflicts') && !document.querySelector('#editor-save-error').hidden`);
   assert.equal(await evaluate(`document.querySelector('#card-intro').value`), 'This text must not disappear after a conflict.');
   assert.equal((await (await fetch(`${base}/api/cards/${conflictId}`)).json()).card.title, 'Edited in another tab');
   console.log('PASS moving a stale card preserves conflict protection and unsaved edits');

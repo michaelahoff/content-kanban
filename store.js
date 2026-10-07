@@ -10,6 +10,7 @@ import { templates, defaultTemplate, emptyFields, emptyImageRoles } from './publ
 import { readLegacyBoard } from './legacy-board.js';
 import { emptyGraph, promptGraph, validateGraph, executeGraph, assignmentsFor } from './public/flow-graph.js';
 import { chatMigration, createChatStore } from './store-chat.js';
+import { protectionMigration, createProtectionStore } from './store-protection.js';
 
 export const imageIdPattern = /^[a-f0-9-]{36}\.(png|jpg|webp|gif|avif)$/;
 export const laneColors = ['lavender', 'blue', 'amber', 'green', 'pink', 'gray', 'teal', 'cyan', 'orange', 'red', 'purple', 'lime'];
@@ -116,7 +117,7 @@ const migrations = [`
     workspace_id TEXT NOT NULL REFERENCES workspaces(id), provider TEXT NOT NULL,
     revision INTEGER NOT NULL, selection TEXT NOT NULL, updated_at TEXT NOT NULL,
     PRIMARY KEY (workspace_id, provider));
-`, chatMigration];
+`, chatMigration, protectionMigration];
 
 const now = () => new Date().toISOString();
 const fail = (status, message) => { throw Object.assign(new Error(message), { status }); };
@@ -152,7 +153,7 @@ const savedStateFrom = (row) => ({
 });
 
 // Applies a partial content update to a card and checks the result.
-function cardContent(templateId, input, current) {
+function cardContent(templateId, input, current, validateMembership = true) {
   const template = templates[templateId];
   const next = { title: current.title, fields: { ...current.fields }, images: current.images, imageRoles: { ...current.imageRoles } };
   if ('title' in input) {
@@ -185,7 +186,7 @@ function cardContent(templateId, input, current) {
       next.imageRoles[role] = imageId;
     }
   }
-  for (const [role, imageId] of Object.entries(next.imageRoles)) {
+  for (const [role, imageId] of validateMembership ? Object.entries(next.imageRoles) : []) {
     check(imageId === null || next.images.some((image) => image.id === imageId), role === 'cover' ? 'The display image must belong to the card.' : 'Flagged images must belong to the card.');
   }
   return next;
@@ -411,7 +412,8 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
   }
   function withLastMove(card) {
     const move = get('SELECT id, created_at, undone_at FROM card_moves WHERE card_id = ? ORDER BY id DESC LIMIT 1', card.id);
-    return { ...card, lastMove: move && !move.undone_at ? { id: move.id, createdAt: move.created_at } : null };
+    return { ...card, fieldVersions: Object.fromEntries(all('SELECT field, version FROM card_field_versions WHERE card_id = ?', card.id).map((r) => [r.field, r.version])),
+      placementVersion: get('SELECT placement_version FROM cards WHERE id = ?', card.id).placement_version, lastMove: move && !move.undone_at ? { id: move.id, createdAt: move.created_at } : null };
   }
   const orderedCards = (stageId, except = '') => all('SELECT id FROM cards WHERE stage_id = ? AND deleted_at IS NULL AND id != ? ORDER BY position', stageId, except);
   function undoAnchor(stageId, cardId, placement) {
@@ -454,9 +456,12 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
 
   const chats = createChatStore({ all, get, run, transaction, retainedCard, requireCard, recordChange, now });
 
-  return {
+  const protection = createProtectionStore({ all, get, run, transaction, requireCard, retainedCard, recordChange, now,
+    updateCard: (...args) => api.updateCard(...args), transitionCard: (...args) => api.transitionCard(...args), item: (...args) => chats.item(...args) });
+  const api = {
     owner,
     chats,
+    protection,
     close: () => db.close(),
 
     providerConfiguration(ctx, provider = 'codex') {
@@ -654,6 +659,34 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
       check(isObject(input), 'Invalid card.');
       check(input.editingSessionId === undefined || (typeof input.editingSessionId === 'string' && idPattern.test(input.editingSessionId)), 'Invalid editing session ID.');
       const card = requireCard(ctx, id);
+      const fieldSave = input.changes !== undefined;
+      let conflicts = [];
+      if (input.changes !== undefined) {
+        check(isObject(input.changes) && isObject(input.baseVersions), 'Changed fields need their base versions.');
+        // Validate gallery membership and roles together; a role may name an
+        // image being added in this same save.
+        const requested = { fields: {} };
+        for (const [key, value] of Object.entries(input.changes)) {
+          if (['title', 'images', 'imageRoles'].includes(key)) requested[key] = value; else requested.fields[key] = value;
+        }
+        cardContent(card.template, requested, card, false);
+        const patch = {}; const fields = {};
+        for (const [key, value] of Object.entries(input.changes)) {
+          check(Object.hasOwn(card.fieldVersions, key) && Number.isInteger(input.baseVersions[key]), 'Unknown field or missing field version.');
+          if (key === 'imageRoles') check(Number.isInteger(input.baseVersions.images), 'Image role edits need the gallery base version.');
+          if (input.baseVersions[key] !== card.fieldVersions[key] || key === 'imageRoles' && input.baseVersions.images !== card.fieldVersions.images) { conflicts.push(key); continue; }
+          if (['title', 'images', 'imageRoles'].includes(key)) patch[key] = value; else fields[key] = value;
+        }
+        if (conflicts.some((key) => ['images', 'imageRoles'].includes(key))) {
+          // Gallery membership and roles cannot be partially combined with a
+          // newer gallery; retain that pair while still saving matching text.
+          for (const key of ['images', 'imageRoles']) if (Object.hasOwn(input.changes, key)) {
+            delete patch[key]; if (!conflicts.includes(key)) conflicts.push(key);
+          }
+        }
+        if (!Object.keys(patch).length && !Object.keys(fields).length) return { ...card, conflicts };
+        input = { ...patch, fields, revision: card.revision, editingSessionId: input.editingSessionId };
+      }
       check(Number.isInteger(input.revision), 'Card updates need the revision they were based on.');
       if (input.revision !== card.revision) fail(409, 'This card changed in another tab. Copy any unsaved text, then reload to get the latest version.');
       const content = cardContent(card.template, input, card);
@@ -672,7 +705,7 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
         } else recordChange(ctx, 'card', id, 'updated', { projectId: card.projectId, data: { revision: card.revision + 1 }, at });
         recordSavedState(ctx, id, imagesChanged ? 'images_changed'
           : ctx.actor.startsWith('user:') ? 'editing_session' : 'fields_changed', at, input.editingSessionId ?? null);
-        return requireCard(ctx, id);
+        return { ...requireCard(ctx, id), ...(fieldSave ? { conflicts } : {}) };
       });
     },
 
@@ -740,7 +773,8 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
       const card = requireCard(ctx, id);
       const move = get('SELECT * FROM card_moves WHERE card_id = ? ORDER BY id DESC LIMIT 1', id);
       if (!move || move.undone_at || move.id !== input.moveId) fail(409, 'This is no longer the card’s last move. Reload to see its current position.');
-      if (card.revision !== input.revision) fail(409, 'This card changed in another tab. Reload before undoing its move.');
+      if (input.fieldVersions === undefined && card.revision !== input.revision) fail(409, 'This card changed in another tab. Reload before undoing its move.');
+      if (input.placementVersion !== undefined && input.placementVersion !== card.placementVersion) fail(409, 'The card placement changed. Reload before undoing.');
       const before = JSON.parse(move.before_card);
       const after = JSON.parse(move.after_card);
       const source = activeStages(requireProject(ctx, card.projectId).flow_id).find((stage) => stage.id === before.stageId);
@@ -751,7 +785,8 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
       const current = { ...card.fields, title: card.title };
       const keys = Object.keys(previous).filter((key) => previous[key] !== applied[key]);
       for (const key of keys) {
-        if (current[key] !== applied[key]) fail(409, `Cannot undo: ${key} was edited after this move. Your edits have been kept.`);
+        if ((input.fieldVersions && (input.fieldVersions[key] !== card.fieldVersions[key] || after.fieldVersions?.[key] !== undefined && after.fieldVersions[key] !== card.fieldVersions[key]))
+          || protection.leased(id, key) || current[key] !== applied[key]) fail(409, `Cannot undo: ${key} was edited after this move. Your edits have been kept.`);
       }
       return transaction(() => {
         const at = now();
@@ -790,4 +825,5 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
       return all('SELECT * FROM activity_log WHERE workspace_id = ? AND id > ? ORDER BY id LIMIT ?', ctx.workspaceId, since, limit).map(changeFrom);
     },
   };
+  return api;
 }

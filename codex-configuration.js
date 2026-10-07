@@ -8,7 +8,7 @@ import { CodexError } from './codex-adapter.js';
 export const cardInstructions = 'You are working in a Frameboard card workspace. Use Frameboard card tools for card changes. Tool availability does not grant authority to edit card fields, adopt images, change image roles, or move cards. Follow the authority frozen in each submission and request approval when required.';
 export const mandatoryBehavior = [
   'Your installed Codex manages sign-in and conversation history. A listed model is not proof of account access.',
-  'Codex uses workspace-write permissions for the card workspace and asks you for approval when required. Native tools remain available; selecting guidance does not approve its actions.',
+  'Codex uses workspace-write / on-request: workspace writes and sandboxed commands without network access can run automatically. Sandbox escapes require approval. Reads outside the workspace are possible. Frameboard grants answer individual requests without writing native global rules. Full native access retains card acceptance and cannot promise OS isolation.',
   'Generated images remain in the conversation until you accept them into the card gallery. Choosing image roles requires separate acceptance.',
   'Codex 0.160.1 cannot enforce the required restrictions for an automatic transfer summary. You can write a summary or start without one.',
 ];

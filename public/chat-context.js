@@ -24,5 +24,5 @@ export function selectedContext(card, selections, versions) {
   return { fields, images: [...images.values()] };
 }
 export function submissionText(submission) {
-  return `${submission.prompt}\n\nSubmitted card context:\n${submission.context.fields.map((field) => `${field.label}:\n${field.value}`).join('\n\n')}${submission.context.images.length ? `\n\nImage references:\n${submission.context.images.map((image) => `${image.labels.join(', ')}: ${image.name} (version ${image.id}, SHA-256 ${image.hash})`).join('\n')}` : ''}`;
+  return `${submission.prompt}\n\nCard text-edit authority: ${submission.authority.fields.length ? submission.authority.fields.join(', ') : 'none; suggest changes as proposals'}. Use edit_fields only for explicitly requested edits in that scope. Suggestions, lane moves, image adoption and image roles require acceptance.\n\nSubmitted card context:\n${submission.context.fields.map((field) => `${field.label} (field ${field.key}, version ${field.version}):\n${field.value}`).join('\n\n')}${submission.context.images.length ? `\n\nImage references:\n${submission.context.images.map((image) => `${image.labels.join(', ')}: ${image.name} (version ${image.id}, SHA-256 ${image.hash})`).join('\n')}` : ''}`;
 }

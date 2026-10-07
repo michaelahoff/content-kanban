@@ -73,7 +73,12 @@ test('schema migration preserves available facts, feed cursors, deleted cards an
     const history = upgraded.getCard(f.ctx, card.id).events;
     assert.deepEqual(history.slice(0, oldHistory.length), oldHistory);
     assert.equal(history.at(-1).note, 'Known note');
-    assert.deepEqual(upgraded.getCard(f.ctx, card.id).card, oldCard);
+    const migratedCard = upgraded.getCard(f.ctx, card.id).card;
+    const { fieldVersions, placementVersion, ...migratedContent } = migratedCard;
+    const { fieldVersions: discardedVersions, placementVersion: discardedPlacement, ...oldContent } = oldCard;
+    assert.deepEqual(migratedContent, oldContent);
+    assert.ok(Object.values(fieldVersions).every((version) => version === oldCard.revision));
+    assert.equal(placementVersion, 1, 'Migration starts a placement baseline without inventing old versions');
     assert.equal(feed.filter((entry) => entry.type === 'moved').length, 1, 'Known history/feed pairs are coalesced');
     const baseline = upgraded.savedCardStates(f.ctx, card.id);
     assert.equal(baseline.length, 1);

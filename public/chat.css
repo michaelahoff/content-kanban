@@ -53,6 +53,11 @@
 .chat-request { padding: 12px 18px; font-size: 12px; background: #302c1f; border-top: 1px solid #665d3e; }
 .chat-request p { margin: 8px 0; overflow-wrap: anywhere; }
 .chat-request .button { margin-right: 8px; }
+.chat-request pre, .chat-review-text { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; max-height: 240px; overflow: auto; }
+#chat-requests, #chat-proposals { max-height: 28%; overflow: auto; flex-shrink: 0; }
+#chat-grants { padding-inline: 18px; }
+.chat-item > .button { display: block; margin-top: 8px; }
+.chat-output-image { display: block; max-width: 100%; max-height: 250px; margin-block: 8px; }
 .chat-activity { display: block; color: #a5c9ff; font-size: 10px; margin-top: 7px; }
 .chat-activity.working { animation: chat-working 2s ease-in-out infinite; }
 .chat-activity.done { color: #97d8b3; }

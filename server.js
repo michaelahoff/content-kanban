@@ -99,8 +99,14 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
     }
   };
   const routes = [
+    ['PUT', /^\/api\/cards\/([^/]+)\/draft-lease$/, async (ctx, req, id) => store.protection.lease(ctx, id, await read(req))],
+    ['POST', /^\/api\/cards\/([^/]+)\/chat\/text-preview$/, async (ctx, req, id) => store.protection.previewAcceptance(ctx, id, await read(req))],
+    ['POST', /^\/api\/cards\/([^/]+)\/chat\/accept-text$/, async (ctx, req, id) => store.protection.acceptText(ctx, id, await read(req))],
+    ['POST', /^\/api\/cards\/([^/]+)\/chat\/proposals\/[^/]+\/accept$/, async (ctx, req, id, url) => store.protection.accept(ctx, id, url.pathname.split('/').at(-2), await read(req))],
+    ['POST', /^\/api\/cards\/([^/]+)\/chat\/proposals\/[^/]+\/preview$/, (ctx, req, id, url) => store.protection.previewProposal(ctx, id, url.pathname.split('/').at(-2))],
     ['GET', /^\/api\/chat-activity$/, (ctx) => ({ entries: store.chats.indicators(ctx) })],
-    ['GET', /^\/api\/cards\/([^/]+)\/chat$/, (ctx, req, id) => store.chats.snapshot(ctx, id)],
+    ['POST', /^\/api\/cards\/([^/]+)\/chat\/revoke-grants$/, (ctx, req, id) => store.chats.clearGrants(ctx, id)],
+    ['GET', /^\/api\/cards\/([^/]+)\/chat$/, (ctx, req, id) => ({ ...store.chats.snapshot(ctx, id), proposals: store.protection.proposals(ctx, id) })],
     ['PUT', /^\/api\/cards\/([^/]+)\/chat\/composer$/, async (ctx, req, id) => store.chats.saveComposer(ctx, id, await read(req))],
     ['POST', /^\/api\/cards\/([^/]+)\/chat\/preview$/, (ctx, req, id) => chat.preview(ctx, id)],
     ['POST', /^\/api\/cards\/([^/]+)\/chat\/discover$/, (ctx, req, id) => codexAction(() => chat.discover(ctx, id))],
