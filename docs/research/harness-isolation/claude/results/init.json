@@ -1,0 +1,54 @@
+{
+  "initKeys": [
+    "commands",
+    "agents",
+    "output_style",
+    "available_output_styles",
+    "user_output_styles_dir",
+    "models",
+    "account",
+    "pid",
+    "current_permission_mode",
+    "feedback_mode",
+    "analytics_disabled",
+    "remote_control_auto_enable",
+    "remote_control_auto_connect_default",
+    "remote_control_available",
+    "remote_control_auto_on_by_default",
+    "ide_rc_auto_enable_gate",
+    "fast_mode_state",
+    "fast_mode_disabled_reason",
+    "session_state",
+    "capabilities"
+  ],
+  "commands": [
+    {
+      "name": "frameboard-selected:selected-guide",
+      "description": "(frameboard-selected) Benign selected-guide sentinel for isolated configuration testing."
+    },
+    {
+      "name": "frameboard-selected:unselected-guide",
+      "description": "(frameboard-selected) Benign unselected-guide sentinel for isolated configuration testing."
+    }
+  ],
+  "context": {
+    "memoryFiles": [],
+    "skills": {
+      "totalSkills": 3,
+      "includedSkills": 1,
+      "tokens": 35,
+      "skillFrontmatter": [
+        {
+          "name": "frameboard-selected:selected-guide",
+          "source": "plugin",
+          "pluginName": "frameboard-selected",
+          "tokens": 35
+        }
+      ]
+    },
+    "mcpTools": []
+  },
+  "mcp": [],
+  "initSelected": true,
+  "initUnselected": true
+}

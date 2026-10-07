@@ -1,0 +1,25 @@
+{
+  "observations": [
+    {
+      "label": "empty-sources-inherit-connectors",
+      "mcpServerCount": 2,
+      "mcpToolCount": 0,
+      "accountConnectorServerCount": 2,
+      "memoryFileCount": 0
+    },
+    {
+      "label": "strict-suppresses-connectors",
+      "mcpServerCount": 0,
+      "mcpToolCount": 0,
+      "accountConnectorServerCount": 0,
+      "memoryFileCount": 0
+    },
+    {
+      "label": "disable-setting-suppresses-connectors",
+      "mcpServerCount": 0,
+      "mcpToolCount": 0,
+      "accountConnectorServerCount": 0,
+      "memoryFileCount": 0
+    }
+  ]
+}

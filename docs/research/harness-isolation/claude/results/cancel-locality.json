@@ -1,0 +1,78 @@
+{
+  "events": [
+    {
+      "type": "system",
+      "subtype": "init",
+      "session_id": "754ecd04-66ad-4a1b-91f8-13ee50c48721",
+      "tools": [],
+      "mcp_servers": [],
+      "skills": [
+        "design",
+        "doctor",
+        "plugin-authoring"
+      ],
+      "permissionMode": "default"
+    },
+    {
+      "type": "system",
+      "subtype": "status",
+      "session_id": "754ecd04-66ad-4a1b-91f8-13ee50c48721"
+    },
+    {
+      "type": "rate_limit_event",
+      "session_id": "754ecd04-66ad-4a1b-91f8-13ee50c48721"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "754ecd04-66ad-4a1b-91f8-13ee50c48721"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "754ecd04-66ad-4a1b-91f8-13ee50c48721"
+    },
+    {
+      "type": "system",
+      "subtype": "thinking_tokens",
+      "session_id": "754ecd04-66ad-4a1b-91f8-13ee50c48721"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "754ecd04-66ad-4a1b-91f8-13ee50c48721"
+    },
+    {
+      "type": "user",
+      "session_id": "754ecd04-66ad-4a1b-91f8-13ee50c48721"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "754ecd04-66ad-4a1b-91f8-13ee50c48721"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "754ecd04-66ad-4a1b-91f8-13ee50c48721"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "754ecd04-66ad-4a1b-91f8-13ee50c48721"
+    },
+    {
+      "type": "result",
+      "session_id": "754ecd04-66ad-4a1b-91f8-13ee50c48721",
+      "subtype": "error_during_execution",
+      "is_error": true,
+      "num_turns": 2,
+      "total_cost_usd": 0.0010119999999999999,
+      "stop_reason": null
+    }
+  ],
+  "cancelledId": "754ecd04-66ad-4a1b-91f8-13ee50c48721",
+  "primaryId": "b29a514f-2288-41e9-a8d2-f981e11cb8bc",
+  "primaryTranscriptCountAfterResume": 13,
+  "primaryContainsCancelRequest": false,
+  "hookCalls": [
+    "UserPromptSubmit",
+    "UserPromptSubmit",
+    "UserPromptSubmit"
+  ],
+  "mcpCalls": []
+}

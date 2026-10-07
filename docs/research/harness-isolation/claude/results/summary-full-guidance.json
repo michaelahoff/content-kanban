@@ -1,0 +1,148 @@
+{
+  "inspection": {
+    "initKeys": [
+      "commands",
+      "agents",
+      "output_style",
+      "available_output_styles",
+      "user_output_styles_dir",
+      "models",
+      "account",
+      "pid",
+      "current_permission_mode",
+      "hooks_applied",
+      "feedback_mode",
+      "analytics_disabled",
+      "remote_control_auto_enable",
+      "remote_control_auto_connect_default",
+      "remote_control_available",
+      "remote_control_auto_on_by_default",
+      "ide_rc_auto_enable_gate",
+      "fast_mode_state",
+      "fast_mode_disabled_reason",
+      "session_state",
+      "capabilities"
+    ],
+    "commands": [],
+    "context": {
+      "memoryFiles": [],
+      "mcpTools": []
+    },
+    "mcp": [],
+    "initSelected": false,
+    "initUnselected": false
+  },
+  "events": [
+    {
+      "type": "system",
+      "subtype": "init",
+      "session_id": "52238817-c2d8-4d6c-b4bf-52b0392fd79a",
+      "tools": [],
+      "mcp_servers": [],
+      "skills": [
+        "design",
+        "doctor",
+        "plugin-authoring"
+      ],
+      "permissionMode": "default"
+    },
+    {
+      "type": "system",
+      "subtype": "status",
+      "session_id": "52238817-c2d8-4d6c-b4bf-52b0392fd79a"
+    },
+    {
+      "type": "rate_limit_event",
+      "session_id": "52238817-c2d8-4d6c-b4bf-52b0392fd79a"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "52238817-c2d8-4d6c-b4bf-52b0392fd79a"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "52238817-c2d8-4d6c-b4bf-52b0392fd79a"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "52238817-c2d8-4d6c-b4bf-52b0392fd79a"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "52238817-c2d8-4d6c-b4bf-52b0392fd79a"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "52238817-c2d8-4d6c-b4bf-52b0392fd79a"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "52238817-c2d8-4d6c-b4bf-52b0392fd79a"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "52238817-c2d8-4d6c-b4bf-52b0392fd79a"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "52238817-c2d8-4d6c-b4bf-52b0392fd79a"
+    },
+    {
+      "type": "assistant",
+      "session_id": "52238817-c2d8-4d6c-b4bf-52b0392fd79a",
+      "uuid": "e631fbca-8f1c-4928-aa1e-3f3d044009c1",
+      "content": [
+        {
+          "type": "text",
+          "text": "The user asked for a remembered label, and the assistant replied with \"PRIMARY_ALPHA.\""
+        }
+      ]
+    },
+    {
+      "type": "stream_event",
+      "session_id": "52238817-c2d8-4d6c-b4bf-52b0392fd79a"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "52238817-c2d8-4d6c-b4bf-52b0392fd79a"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "52238817-c2d8-4d6c-b4bf-52b0392fd79a"
+    },
+    {
+      "type": "rate_limit_event",
+      "session_id": "52238817-c2d8-4d6c-b4bf-52b0392fd79a"
+    },
+    {
+      "type": "result",
+      "session_id": "52238817-c2d8-4d6c-b4bf-52b0392fd79a",
+      "subtype": "success",
+      "is_error": false,
+      "num_turns": 1,
+      "total_cost_usd": 0.004146,
+      "stop_reason": "end_turn"
+    }
+  ],
+  "observedInitialize": [
+    {
+      "requestKeys": [
+        "subtype",
+        "hooks",
+        "systemPrompt",
+        "systemPromptSnapshot",
+        "skills"
+      ],
+      "selectedDeveloper": true,
+      "selectedGuidance": true,
+      "fullSelectedGuidance": true,
+      "unselectedGuidance": false,
+      "nativeSkills": [],
+      "hookEventNames": []
+    }
+  ],
+  "selectedSkillGuidanceHash": "d83ecba27df08de6e3a6bf8071d9e88b5bb8956c1c6fdef89df4f7cc690b6d4f",
+  "primaryUnchanged": true,
+  "primaryBeforeHash": "2e9ca1f715b158bbddf8f44bc81d3f36e86117030766634592996c3cf2ae9410",
+  "primaryAfterHash": "2e9ca1f715b158bbddf8f44bc81d3f36e86117030766634592996c3cf2ae9410"
+}

@@ -1,0 +1,510 @@
+{
+  "installedVersion": "codex-cli 0.160.1",
+  "inference": "credential-free loopback mock Responses",
+  "cases": [
+    {
+      "label": "primary selected guidance/catalog and benign nested shell",
+      "status": "completed",
+      "requests": [
+        {
+          "path": "/v1/responses",
+          "authorizationPresent": false,
+          "bodyKeys": [
+            "model",
+            "input",
+            "tool_choice",
+            "parallel_tool_calls",
+            "reasoning",
+            "store",
+            "stream",
+            "include",
+            "prompt_cache_key",
+            "text",
+            "client_metadata"
+          ],
+          "inputItemTypes": [
+            "additional_tools",
+            "message",
+            "message",
+            "message",
+            "message",
+            "message",
+            "message"
+          ],
+          "tools": [],
+          "additionalToolNames": [
+            "functions.exec",
+            "functions.wait",
+            "functions.request_user_input_async",
+            "collaboration.followup_task",
+            "collaboration.interrupt_agent",
+            "collaboration.list_agents",
+            "collaboration.send_message",
+            "collaboration.spawn_agent",
+            "collaboration.wait_agent"
+          ],
+          "codeModeTools": [
+            "apply_patch",
+            "create_goal",
+            "exec_command",
+            "fb_selected_tool",
+            "get_goal",
+            "update_goal",
+            "view_image",
+            "write_stdin",
+            "clock__curr_time"
+          ],
+          "selectedInstruction": true,
+          "repoInstruction": false,
+          "selectedSkillGuidance": false,
+          "replacementInstruction": false,
+          "toolRejectionPresent": false,
+          "nativeSummaryMarker": true,
+          "fileSentinelReturned": false,
+          "clientMetadataKeys": [
+            "thread_id",
+            "x-codex-window-id",
+            "turn_id",
+            "x-codex-turn-metadata",
+            "session_id",
+            "root_turn_id",
+            "x-codex-installation-id"
+          ],
+          "toolOutputKinds": []
+        },
+        {
+          "path": "/v1/responses",
+          "authorizationPresent": false,
+          "bodyKeys": [
+            "model",
+            "input",
+            "tool_choice",
+            "parallel_tool_calls",
+            "reasoning",
+            "store",
+            "stream",
+            "include",
+            "prompt_cache_key",
+            "text",
+            "client_metadata"
+          ],
+          "inputItemTypes": [
+            "additional_tools",
+            "message",
+            "message",
+            "message",
+            "message",
+            "message",
+            "message",
+            "custom_tool_call",
+            "custom_tool_call_output"
+          ],
+          "tools": [],
+          "additionalToolNames": [
+            "functions.exec",
+            "functions.wait",
+            "functions.request_user_input_async",
+            "collaboration.followup_task",
+            "collaboration.interrupt_agent",
+            "collaboration.list_agents",
+            "collaboration.send_message",
+            "collaboration.spawn_agent",
+            "collaboration.wait_agent"
+          ],
+          "codeModeTools": [
+            "apply_patch",
+            "create_goal",
+            "exec_command",
+            "fb_selected_tool",
+            "get_goal",
+            "update_goal",
+            "view_image",
+            "write_stdin",
+            "clock__curr_time"
+          ],
+          "selectedInstruction": true,
+          "repoInstruction": false,
+          "selectedSkillGuidance": false,
+          "replacementInstruction": false,
+          "toolRejectionPresent": false,
+          "nativeSummaryMarker": true,
+          "fileSentinelReturned": true,
+          "clientMetadataKeys": [
+            "x-codex-installation-id",
+            "session_id",
+            "turn_id",
+            "thread_id",
+            "x-codex-window-id",
+            "root_turn_id",
+            "x-codex-turn-metadata"
+          ],
+          "toolOutputKinds": [
+            {
+              "type": "custom_tool_call_output",
+              "unknown": false,
+              "syntax": false,
+              "containsFixture": true
+            }
+          ]
+        }
+      ],
+      "itemTypes": [
+        "userMessage",
+        "commandExecution",
+        "agentMessage"
+      ],
+      "error": null
+    },
+    {
+      "label": "summary retains selected text skill but requests no optional capabilities",
+      "status": "completed",
+      "requests": [
+        {
+          "path": "/v1/responses",
+          "authorizationPresent": false,
+          "bodyKeys": [
+            "model",
+            "input",
+            "tool_choice",
+            "parallel_tool_calls",
+            "reasoning",
+            "store",
+            "stream",
+            "include",
+            "prompt_cache_key",
+            "text",
+            "client_metadata"
+          ],
+          "inputItemTypes": [
+            "additional_tools",
+            "message",
+            "message",
+            "message",
+            "message",
+            "message",
+            "message"
+          ],
+          "tools": [],
+          "additionalToolNames": [
+            "functions.exec",
+            "functions.wait",
+            "functions.request_user_input_async",
+            "collaboration.followup_task",
+            "collaboration.interrupt_agent",
+            "collaboration.list_agents",
+            "collaboration.send_message",
+            "collaboration.spawn_agent",
+            "collaboration.wait_agent"
+          ],
+          "codeModeTools": [
+            "create_goal",
+            "get_goal",
+            "update_goal",
+            "clock__curr_time"
+          ],
+          "selectedInstruction": true,
+          "repoInstruction": false,
+          "selectedSkillGuidance": false,
+          "replacementInstruction": false,
+          "toolRejectionPresent": false,
+          "nativeSummaryMarker": true,
+          "fileSentinelReturned": false,
+          "clientMetadataKeys": [
+            "x-codex-turn-metadata",
+            "thread_id",
+            "session_id",
+            "x-codex-window-id",
+            "root_turn_id",
+            "turn_id",
+            "x-codex-installation-id"
+          ],
+          "toolOutputKinds": []
+        }
+      ],
+      "itemTypes": [
+        "userMessage",
+        "agentMessage"
+      ],
+      "error": null
+    },
+    {
+      "label": "summary forced forbidden shell call",
+      "status": "completed",
+      "requests": [
+        {
+          "path": "/v1/responses",
+          "authorizationPresent": false,
+          "bodyKeys": [
+            "model",
+            "input",
+            "tool_choice",
+            "parallel_tool_calls",
+            "reasoning",
+            "store",
+            "stream",
+            "include",
+            "prompt_cache_key",
+            "text",
+            "client_metadata"
+          ],
+          "inputItemTypes": [
+            "additional_tools",
+            "message",
+            "message",
+            "message",
+            "message",
+            "message",
+            "message",
+            "message",
+            "message"
+          ],
+          "tools": [],
+          "additionalToolNames": [
+            "functions.exec",
+            "functions.wait",
+            "functions.request_user_input_async",
+            "collaboration.followup_task",
+            "collaboration.interrupt_agent",
+            "collaboration.list_agents",
+            "collaboration.send_message",
+            "collaboration.spawn_agent",
+            "collaboration.wait_agent"
+          ],
+          "codeModeTools": [
+            "create_goal",
+            "get_goal",
+            "update_goal",
+            "clock__curr_time"
+          ],
+          "selectedInstruction": true,
+          "repoInstruction": false,
+          "selectedSkillGuidance": false,
+          "replacementInstruction": false,
+          "toolRejectionPresent": false,
+          "nativeSummaryMarker": true,
+          "fileSentinelReturned": false,
+          "clientMetadataKeys": [
+            "thread_id",
+            "x-codex-window-id",
+            "turn_id",
+            "root_turn_id",
+            "x-codex-turn-metadata",
+            "session_id",
+            "x-codex-installation-id"
+          ],
+          "toolOutputKinds": []
+        },
+        {
+          "path": "/v1/responses",
+          "authorizationPresent": false,
+          "bodyKeys": [
+            "model",
+            "input",
+            "tool_choice",
+            "parallel_tool_calls",
+            "reasoning",
+            "store",
+            "stream",
+            "include",
+            "prompt_cache_key",
+            "text",
+            "client_metadata"
+          ],
+          "inputItemTypes": [
+            "additional_tools",
+            "message",
+            "message",
+            "message",
+            "message",
+            "message",
+            "message",
+            "message",
+            "message",
+            "custom_tool_call",
+            "custom_tool_call_output"
+          ],
+          "tools": [],
+          "additionalToolNames": [
+            "functions.exec",
+            "functions.wait",
+            "functions.request_user_input_async",
+            "collaboration.followup_task",
+            "collaboration.interrupt_agent",
+            "collaboration.list_agents",
+            "collaboration.send_message",
+            "collaboration.spawn_agent",
+            "collaboration.wait_agent"
+          ],
+          "codeModeTools": [
+            "create_goal",
+            "get_goal",
+            "update_goal",
+            "clock__curr_time"
+          ],
+          "selectedInstruction": true,
+          "repoInstruction": false,
+          "selectedSkillGuidance": false,
+          "replacementInstruction": false,
+          "toolRejectionPresent": false,
+          "nativeSummaryMarker": true,
+          "fileSentinelReturned": false,
+          "clientMetadataKeys": [
+            "thread_id",
+            "x-codex-turn-metadata",
+            "session_id",
+            "x-codex-window-id",
+            "root_turn_id",
+            "x-codex-installation-id",
+            "turn_id"
+          ],
+          "toolOutputKinds": [
+            {
+              "type": "custom_tool_call_output",
+              "unknown": true,
+              "syntax": false,
+              "containsFixture": false
+            }
+          ]
+        }
+      ],
+      "itemTypes": [
+        "userMessage",
+        "agentMessage"
+      ],
+      "error": null
+    },
+    {
+      "label": "warm resume override test",
+      "status": "completed",
+      "requests": [
+        {
+          "path": "/v1/responses",
+          "authorizationPresent": false,
+          "bodyKeys": [
+            "model",
+            "input",
+            "tool_choice",
+            "parallel_tool_calls",
+            "reasoning",
+            "store",
+            "stream",
+            "include",
+            "prompt_cache_key",
+            "text",
+            "client_metadata"
+          ],
+          "inputItemTypes": [
+            "additional_tools",
+            "message",
+            "message",
+            "message",
+            "message",
+            "message",
+            "message",
+            "custom_tool_call",
+            "custom_tool_call_output",
+            "message",
+            "message"
+          ],
+          "tools": [],
+          "additionalToolNames": [
+            "functions.exec",
+            "functions.wait",
+            "functions.request_user_input_async",
+            "collaboration.followup_task",
+            "collaboration.interrupt_agent",
+            "collaboration.list_agents",
+            "collaboration.send_message",
+            "collaboration.spawn_agent",
+            "collaboration.wait_agent"
+          ],
+          "codeModeTools": [
+            "apply_patch",
+            "create_goal",
+            "exec_command",
+            "fb_selected_tool",
+            "get_goal",
+            "update_goal",
+            "view_image",
+            "write_stdin",
+            "clock__curr_time"
+          ],
+          "selectedInstruction": true,
+          "repoInstruction": false,
+          "selectedSkillGuidance": false,
+          "replacementInstruction": false,
+          "toolRejectionPresent": false,
+          "nativeSummaryMarker": true,
+          "fileSentinelReturned": true,
+          "clientMetadataKeys": [
+            "x-codex-turn-metadata",
+            "thread_id",
+            "session_id",
+            "x-codex-window-id",
+            "turn_id",
+            "root_turn_id",
+            "x-codex-installation-id"
+          ],
+          "toolOutputKinds": [
+            {
+              "type": "custom_tool_call_output",
+              "unknown": false,
+              "syntax": false,
+              "containsFixture": true
+            }
+          ]
+        }
+      ],
+      "itemTypes": [
+        "userMessage",
+        "agentMessage"
+      ],
+      "error": null
+    }
+  ],
+  "layerTypes": [
+    "sessionFlags",
+    "user",
+    "system"
+  ],
+  "inheritedMcpCount": 0,
+  "discoveredSkillCount": 55,
+  "controls": [
+    "features.tool_registry.turn_metadata_includes_tool_info",
+    "project_doc_max_bytes",
+    "features.plugins",
+    "features.apps",
+    "features.hooks",
+    "features.skip_host_skill_discovery",
+    "skills.bundled.enabled",
+    "cloud.skills.enabled",
+    "web_search",
+    "features.image_generation",
+    "features.code_mode",
+    "features.code_mode_only",
+    "features.multi_agent",
+    "features.multi_agent_v2",
+    "features.current_time_reminder",
+    "features.sleep_tool",
+    "features.token_budget",
+    "features.send_message_to_user_async",
+    "tools.update_plan.enabled",
+    "tools.experimental_request_user_input",
+    "notify",
+    "skills.config"
+  ],
+  "mcpServerDisableCount": 0,
+  "primaryIdentity": "01a11707-14b6-7992-bfd4-4f7575aee069",
+  "summaryIdentity": "01a11707-17f7-7710-a805-effef65e4a29",
+  "primaryHistoryAndMetadataUnchanged": true,
+  "primaryTurnCountBefore": 1,
+  "primaryTurnCountAfter": 1,
+  "resumeReturnsSameIdentity": true,
+  "warnings": [],
+  "probeValidationNotes": [
+    "One configuration-type correction: tools.experimental_request_user_input requires {enabled:false}, not false.",
+    "Responses Lite uses input.additional_tools; top-level tools absence is not zero-tool proof.",
+    "Fixture custom-tool call encoding corrected from function_call to custom_tool_call before positive-control assertions.",
+    "Only final corrected capture is retained. No subscription-backed model turns or account credentials were used."
+  ]
+}

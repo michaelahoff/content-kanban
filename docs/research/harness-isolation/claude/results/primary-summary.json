@@ -1,0 +1,411 @@
+{
+  "primaryId": "b29a514f-2288-41e9-a8d2-f981e11cb8bc",
+  "primaryBefore": {
+    "initKeys": [
+      "commands",
+      "agents",
+      "output_style",
+      "available_output_styles",
+      "user_output_styles_dir",
+      "models",
+      "account",
+      "pid",
+      "current_permission_mode",
+      "hooks_applied",
+      "sdk_mcp_manifests_parked",
+      "feedback_mode",
+      "analytics_disabled",
+      "remote_control_auto_enable",
+      "remote_control_auto_connect_default",
+      "remote_control_available",
+      "remote_control_auto_on_by_default",
+      "ide_rc_auto_enable_gate",
+      "fast_mode_state",
+      "fast_mode_disabled_reason",
+      "session_state",
+      "capabilities"
+    ],
+    "commands": [
+      {
+        "name": "frameboard-selected:selected-guide",
+        "description": "(frameboard-selected) Benign selected-guide sentinel for isolated configuration testing."
+      },
+      {
+        "name": "frameboard-selected:unselected-guide",
+        "description": "(frameboard-selected) Benign unselected-guide sentinel for isolated configuration testing."
+      }
+    ],
+    "context": {
+      "memoryFiles": [],
+      "skills": {
+        "totalSkills": 3,
+        "includedSkills": 1,
+        "tokens": 35,
+        "skillFrontmatter": [
+          {
+            "name": "frameboard-selected:selected-guide",
+            "source": "plugin",
+            "pluginName": "frameboard-selected",
+            "tokens": 35
+          }
+        ]
+      },
+      "mcpTools": [
+        {
+          "name": "mcp__selected__echo",
+          "serverName": "selected",
+          "tokens": 102,
+          "isLoaded": false
+        }
+      ]
+    },
+    "mcp": [
+      {
+        "name": "selected",
+        "status": "connected",
+        "tools": [
+          "echo"
+        ]
+      }
+    ],
+    "initSelected": true,
+    "initUnselected": true
+  },
+  "primaryEvents": [
+    {
+      "type": "system",
+      "subtype": "init",
+      "session_id": "b29a514f-2288-41e9-a8d2-f981e11cb8bc",
+      "tools": [
+        "Read",
+        "Skill",
+        "mcp__selected__echo"
+      ],
+      "mcp_servers": [
+        {
+          "name": "selected",
+          "status": "connected",
+          "source": "sdk"
+        }
+      ],
+      "skills": [
+        "frameboard-selected:selected-guide",
+        "frameboard-selected:unselected-guide",
+        "design",
+        "doctor",
+        "plugin-authoring"
+      ],
+      "permissionMode": "default"
+    },
+    {
+      "type": "system",
+      "subtype": "status",
+      "session_id": "b29a514f-2288-41e9-a8d2-f981e11cb8bc"
+    },
+    {
+      "type": "rate_limit_event",
+      "session_id": "b29a514f-2288-41e9-a8d2-f981e11cb8bc"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "b29a514f-2288-41e9-a8d2-f981e11cb8bc"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "b29a514f-2288-41e9-a8d2-f981e11cb8bc"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "b29a514f-2288-41e9-a8d2-f981e11cb8bc"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "b29a514f-2288-41e9-a8d2-f981e11cb8bc"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "b29a514f-2288-41e9-a8d2-f981e11cb8bc"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "b29a514f-2288-41e9-a8d2-f981e11cb8bc"
+    },
+    {
+      "type": "assistant",
+      "session_id": "b29a514f-2288-41e9-a8d2-f981e11cb8bc",
+      "uuid": "44330cae-5839-4700-9088-121aa091660b",
+      "content": [
+        {
+          "type": "tool_use",
+          "id": "toolu_01JQpuuUyvjAWW7utjMYY4H3",
+          "name": "Skill",
+          "input": {
+            "skill": "frameboard-selected:selected-guide"
+          },
+          "caller": {
+            "type": "direct"
+          }
+        }
+      ]
+    },
+    {
+      "type": "stream_event",
+      "session_id": "b29a514f-2288-41e9-a8d2-f981e11cb8bc"
+    },
+    {
+      "type": "user",
+      "session_id": "b29a514f-2288-41e9-a8d2-f981e11cb8bc"
+    },
+    {
+      "type": "user",
+      "session_id": "b29a514f-2288-41e9-a8d2-f981e11cb8bc"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "b29a514f-2288-41e9-a8d2-f981e11cb8bc"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "b29a514f-2288-41e9-a8d2-f981e11cb8bc"
+    },
+    {
+      "type": "system",
+      "subtype": "status",
+      "session_id": "b29a514f-2288-41e9-a8d2-f981e11cb8bc"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "b29a514f-2288-41e9-a8d2-f981e11cb8bc"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "b29a514f-2288-41e9-a8d2-f981e11cb8bc"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "b29a514f-2288-41e9-a8d2-f981e11cb8bc"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "b29a514f-2288-41e9-a8d2-f981e11cb8bc"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "b29a514f-2288-41e9-a8d2-f981e11cb8bc"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "b29a514f-2288-41e9-a8d2-f981e11cb8bc"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "b29a514f-2288-41e9-a8d2-f981e11cb8bc"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "b29a514f-2288-41e9-a8d2-f981e11cb8bc"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "b29a514f-2288-41e9-a8d2-f981e11cb8bc"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "b29a514f-2288-41e9-a8d2-f981e11cb8bc"
+    },
+    {
+      "type": "assistant",
+      "session_id": "b29a514f-2288-41e9-a8d2-f981e11cb8bc",
+      "uuid": "8cc9e342-61c0-4110-9049-5055afb48ba4",
+      "content": [
+        {
+          "type": "text",
+          "text": "PRIMARY_ALPHA is my one-sentence reply, sent after invoking the selected-guide skill."
+        }
+      ]
+    },
+    {
+      "type": "stream_event",
+      "session_id": "b29a514f-2288-41e9-a8d2-f981e11cb8bc"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "b29a514f-2288-41e9-a8d2-f981e11cb8bc"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "b29a514f-2288-41e9-a8d2-f981e11cb8bc"
+    },
+    {
+      "type": "result",
+      "session_id": "b29a514f-2288-41e9-a8d2-f981e11cb8bc",
+      "subtype": "success",
+      "is_error": false,
+      "num_turns": 3,
+      "total_cost_usd": 0.0129072,
+      "stop_reason": "end_turn"
+    }
+  ],
+  "summaryBefore": {
+    "initKeys": [
+      "commands",
+      "agents",
+      "output_style",
+      "available_output_styles",
+      "user_output_styles_dir",
+      "models",
+      "account",
+      "pid",
+      "current_permission_mode",
+      "hooks_applied",
+      "feedback_mode",
+      "analytics_disabled",
+      "remote_control_auto_enable",
+      "remote_control_auto_connect_default",
+      "remote_control_available",
+      "remote_control_auto_on_by_default",
+      "ide_rc_auto_enable_gate",
+      "fast_mode_state",
+      "fast_mode_disabled_reason",
+      "session_state",
+      "capabilities"
+    ],
+    "commands": [],
+    "context": {
+      "memoryFiles": [],
+      "mcpTools": []
+    },
+    "mcp": [],
+    "initSelected": false,
+    "initUnselected": false
+  },
+  "summaryAfter": {
+    "initKeys": [
+      "commands",
+      "agents",
+      "output_style",
+      "available_output_styles",
+      "user_output_styles_dir",
+      "models",
+      "account",
+      "pid",
+      "current_permission_mode",
+      "hooks_applied",
+      "feedback_mode",
+      "analytics_disabled",
+      "remote_control_auto_enable",
+      "remote_control_auto_connect_default",
+      "remote_control_available",
+      "remote_control_auto_on_by_default",
+      "ide_rc_auto_enable_gate",
+      "fast_mode_state",
+      "fast_mode_disabled_reason",
+      "session_state",
+      "capabilities"
+    ],
+    "commands": [],
+    "context": {
+      "memoryFiles": [],
+      "mcpTools": []
+    },
+    "mcp": [],
+    "initSelected": false,
+    "initUnselected": false
+  },
+  "summaryEvents": [
+    {
+      "type": "system",
+      "subtype": "init",
+      "session_id": "d7dffce1-bad6-469a-9fc6-7c40fbd47745",
+      "tools": [],
+      "mcp_servers": [],
+      "skills": [
+        "design",
+        "doctor",
+        "plugin-authoring"
+      ],
+      "permissionMode": "default"
+    },
+    {
+      "type": "system",
+      "subtype": "status",
+      "session_id": "d7dffce1-bad6-469a-9fc6-7c40fbd47745"
+    },
+    {
+      "type": "rate_limit_event",
+      "session_id": "d7dffce1-bad6-469a-9fc6-7c40fbd47745"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "d7dffce1-bad6-469a-9fc6-7c40fbd47745"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "d7dffce1-bad6-469a-9fc6-7c40fbd47745"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "d7dffce1-bad6-469a-9fc6-7c40fbd47745"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "d7dffce1-bad6-469a-9fc6-7c40fbd47745"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "d7dffce1-bad6-469a-9fc6-7c40fbd47745"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "d7dffce1-bad6-469a-9fc6-7c40fbd47745"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "d7dffce1-bad6-469a-9fc6-7c40fbd47745"
+    },
+    {
+      "type": "assistant",
+      "session_id": "d7dffce1-bad6-469a-9fc6-7c40fbd47745",
+      "uuid": "ec1a8648-c503-409d-abd5-a41f9890930b",
+      "content": [
+        {
+          "type": "text",
+          "text": "The user asked for a transfer summary, and the assistant replied that PRIMARY_ALPHA is the remembered label."
+        }
+      ]
+    },
+    {
+      "type": "stream_event",
+      "session_id": "d7dffce1-bad6-469a-9fc6-7c40fbd47745"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "d7dffce1-bad6-469a-9fc6-7c40fbd47745"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "d7dffce1-bad6-469a-9fc6-7c40fbd47745"
+    },
+    {
+      "type": "result",
+      "session_id": "d7dffce1-bad6-469a-9fc6-7c40fbd47745",
+      "subtype": "success",
+      "is_error": false,
+      "num_turns": 1,
+      "total_cost_usd": 0.0041530000000000004,
+      "stop_reason": "end_turn"
+    }
+  ],
+  "primaryTranscript": {
+    "beforeCount": 4,
+    "afterCount": 4,
+    "beforeHash": "547fefcb354a22af9ae12d8530ce067ff0085322e2f96a7ef8ea23e81e91a132",
+    "afterHash": "547fefcb354a22af9ae12d8530ce067ff0085322e2f96a7ef8ea23e81e91a132",
+    "unchanged": true
+  },
+  "primaryPermissionMode": "default",
+  "primaryHookCallsBeforeSummary": 1,
+  "primaryHookCallsAfterSummary": 1,
+  "projectHookSentinelPresent": false,
+  "mcpCalls": []
+}

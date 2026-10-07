@@ -1,0 +1,154 @@
+[
+  {
+    "label": "baseline",
+    "hookResponseKeys": [
+      "events",
+      "hooks",
+      "eventCatalog",
+      "policy"
+    ],
+    "hooksPolicy": {
+      "disabledByPolicy": false,
+      "managedOnly": false,
+      "pluginOnly": false,
+      "allDisabled": true,
+      "policyHookCount": 0
+    },
+    "hookRows": [
+      {
+        "event": "SessionStart",
+        "source": "flagSettings",
+        "type": "command",
+        "disabled": true,
+        "selectedSentinel": true
+      }
+    ],
+    "settingsResponseKeys": [
+      "effective",
+      "sources",
+      "applied"
+    ],
+    "selectedSettingsObserved": true,
+    "markerPresent": false,
+    "effectiveControls": {
+      "disableClaudeAiConnectors": true,
+      "syncClaudeAiSkills": false,
+      "syncClaudeAiPlugins": false,
+      "autoMemoryEnabled": false,
+      "disableBundledSkills": true,
+      "disableAllHooks": true
+    },
+    "appliedKeys": [
+      "model",
+      "effort",
+      "advisor",
+      "ultracode",
+      "ultracodeRequested",
+      "ultracodeAvailable"
+    ],
+    "settingsSourceNames": [
+      "0"
+    ]
+  },
+  {
+    "label": "selected-hook-enabled",
+    "hookResponseKeys": [
+      "events",
+      "hooks",
+      "eventCatalog",
+      "policy"
+    ],
+    "hooksPolicy": {
+      "disabledByPolicy": false,
+      "managedOnly": false,
+      "pluginOnly": false,
+      "allDisabled": false,
+      "policyHookCount": 0
+    },
+    "hookRows": [
+      {
+        "event": "SessionStart",
+        "source": "flagSettings",
+        "type": "command",
+        "selectedSentinel": true
+      }
+    ],
+    "settingsResponseKeys": [
+      "effective",
+      "sources",
+      "applied"
+    ],
+    "selectedSettingsObserved": true,
+    "markerPresent": true,
+    "effectiveControls": {
+      "disableClaudeAiConnectors": true,
+      "syncClaudeAiSkills": false,
+      "syncClaudeAiPlugins": false,
+      "autoMemoryEnabled": false,
+      "disableBundledSkills": true,
+      "disableAllHooks": false
+    },
+    "appliedKeys": [
+      "model",
+      "effort",
+      "advisor",
+      "ultracode",
+      "ultracodeRequested",
+      "ultracodeAvailable"
+    ],
+    "settingsSourceNames": [
+      "0"
+    ]
+  },
+  {
+    "label": "selected-hook-disabled",
+    "hookResponseKeys": [
+      "events",
+      "hooks",
+      "eventCatalog",
+      "policy"
+    ],
+    "hooksPolicy": {
+      "disabledByPolicy": false,
+      "managedOnly": false,
+      "pluginOnly": false,
+      "allDisabled": true,
+      "policyHookCount": 0
+    },
+    "hookRows": [
+      {
+        "event": "SessionStart",
+        "source": "flagSettings",
+        "type": "command",
+        "disabled": true,
+        "selectedSentinel": true
+      }
+    ],
+    "settingsResponseKeys": [
+      "effective",
+      "sources",
+      "applied"
+    ],
+    "selectedSettingsObserved": true,
+    "markerPresent": false,
+    "effectiveControls": {
+      "disableClaudeAiConnectors": true,
+      "syncClaudeAiSkills": false,
+      "syncClaudeAiPlugins": false,
+      "autoMemoryEnabled": false,
+      "disableBundledSkills": true,
+      "disableAllHooks": true
+    },
+    "appliedKeys": [
+      "model",
+      "effort",
+      "advisor",
+      "ultracode",
+      "ultracodeRequested",
+      "ultracodeAvailable"
+    ],
+    "settingsSourceNames": [
+      "0"
+    ]
+  }
+]

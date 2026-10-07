@@ -1,0 +1,149 @@
+{
+  "before": {
+    "initKeys": [
+      "commands",
+      "agents",
+      "output_style",
+      "available_output_styles",
+      "user_output_styles_dir",
+      "models",
+      "account",
+      "pid",
+      "current_permission_mode",
+      "hooks_applied",
+      "feedback_mode",
+      "analytics_disabled",
+      "remote_control_auto_enable",
+      "remote_control_auto_connect_default",
+      "remote_control_available",
+      "remote_control_auto_on_by_default",
+      "ide_rc_auto_enable_gate",
+      "fast_mode_state",
+      "fast_mode_disabled_reason",
+      "session_state",
+      "capabilities"
+    ],
+    "commands": [],
+    "context": {
+      "memoryFiles": [],
+      "mcpTools": []
+    },
+    "mcp": [],
+    "initSelected": false,
+    "initUnselected": false
+  },
+  "after": {
+    "initKeys": [
+      "commands",
+      "agents",
+      "output_style",
+      "available_output_styles",
+      "user_output_styles_dir",
+      "models",
+      "account",
+      "pid",
+      "current_permission_mode",
+      "hooks_applied",
+      "feedback_mode",
+      "analytics_disabled",
+      "remote_control_auto_enable",
+      "remote_control_auto_connect_default",
+      "remote_control_available",
+      "remote_control_auto_on_by_default",
+      "ide_rc_auto_enable_gate",
+      "fast_mode_state",
+      "fast_mode_disabled_reason",
+      "session_state",
+      "capabilities"
+    ],
+    "commands": [],
+    "context": {
+      "memoryFiles": [],
+      "mcpTools": []
+    },
+    "mcp": [],
+    "initSelected": false,
+    "initUnselected": false
+  },
+  "events": [
+    {
+      "type": "system",
+      "subtype": "init",
+      "session_id": "b29a514f-2288-41e9-a8d2-f981e11cb8bc",
+      "tools": [],
+      "mcp_servers": [],
+      "skills": [
+        "design",
+        "doctor",
+        "plugin-authoring"
+      ],
+      "permissionMode": "default"
+    },
+    {
+      "type": "system",
+      "subtype": "status",
+      "session_id": "b29a514f-2288-41e9-a8d2-f981e11cb8bc"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "b29a514f-2288-41e9-a8d2-f981e11cb8bc"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "b29a514f-2288-41e9-a8d2-f981e11cb8bc"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "b29a514f-2288-41e9-a8d2-f981e11cb8bc"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "b29a514f-2288-41e9-a8d2-f981e11cb8bc"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "b29a514f-2288-41e9-a8d2-f981e11cb8bc"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "b29a514f-2288-41e9-a8d2-f981e11cb8bc"
+    },
+    {
+      "type": "assistant",
+      "session_id": "b29a514f-2288-41e9-a8d2-f981e11cb8bc",
+      "uuid": "52287e8b-19b9-4787-98cd-ca00064b4f83",
+      "content": [
+        {
+          "type": "text",
+          "text": "The earliest PRIMARY_ label was PRIMARY_ALPHA."
+        }
+      ]
+    },
+    {
+      "type": "stream_event",
+      "session_id": "b29a514f-2288-41e9-a8d2-f981e11cb8bc"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "b29a514f-2288-41e9-a8d2-f981e11cb8bc"
+    },
+    {
+      "type": "stream_event",
+      "session_id": "b29a514f-2288-41e9-a8d2-f981e11cb8bc"
+    },
+    {
+      "type": "rate_limit_event",
+      "session_id": "b29a514f-2288-41e9-a8d2-f981e11cb8bc"
+    },
+    {
+      "type": "result",
+      "session_id": "b29a514f-2288-41e9-a8d2-f981e11cb8bc",
+      "subtype": "success",
+      "is_error": false,
+      "num_turns": 1,
+      "total_cost_usd": 0.025263400000000002,
+      "stop_reason": "end_turn"
+    }
+  ],
+  "sameSessionId": true
+}
