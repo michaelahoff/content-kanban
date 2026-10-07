@@ -2,7 +2,7 @@
 
 Decision ticket: [Design fresh context and reviewed summary transfer](https://github.com/michaelahoff/content-kanban/issues/14).
 
-Open `public/fresh-context.prototype.html` directly in a browser. One self-contained file; no server, packages, native provider calls, persistence, or production functionality. The model uses simulated events and two cards to expose per-card isolation. The artifact is deliberately outside the main branch.
+Open `public/fresh-context.prototype.html` directly in a browser. One self-contained file; no server, packages, native provider calls, persistence, or production functionality. The model uses simulated events and two cards to expose per-card isolation. It opens at an approved pending-summary state with a newly triggered graph held; Reset demo or any other walkthrough returns to a known initial state. The artifact is deliberately outside the main branch.
 
 ## Question
 
@@ -14,17 +14,26 @@ What sequence lets the user deliberately leave an outgoing native conversation, 
 - Send an approved summary with the first ordinary prompt, not through a summary-only destination turn. Starting fresh context itself makes no destination request.
 - Block a stale summary until it is regenerated or explicitly discarded. Starting without a summary remains possible.
 
-## Proposed behavior awaiting human decisions
+## Additional choices confirmed in the live discussion
 
 - Summary source: completed visible current-conversation text, including graph and temporary-override entries; exact source checkpoint and artifact references; no earlier conversations, hidden state, raw tool logs, credentials, grants or image bytes. Surface size omissions.
 - Active and queued old work: finish, or explicitly stop/cancel; wait for confirmed interruption before switching. No silent retargeting or cancellation on other cards.
-- A pending transfer belongs to the first manual primary-provider prompt. Hold new lane-graph execution and temporary overrides until that prompt or removal of the transfer.
+- A pending transfer belongs to the first manual primary-provider prompt. Hold new lane-graph execution and temporary overrides until that prompt or removal of the transfer. The precise release condition for a failed/uncertain first send is under review.
 - Dedicated summary operation without card mutation or native action tools where supported; restrictions must be explicit when unavailable.
 
-Some follow-through decisions (pending-summary editing, late source events, graph holds, limits, retry provenance and restart behavior) will be refined after these answers. This document is evidence of exploration, not a resolution.
+## Final edges awaiting human answers
+
+- Use a separate, restricted summary-only session with the outgoing provider/model and exact visible-text snapshot. Preserve the original native primary conversation; unsupported restrictions fall back to manual/no summary. Disclose source-size limits rather than silently truncate.
+- Keep a pending summary editable/inspectable after selecting fresh context. Recovered newer source messages invalidate it even after switching; refresh/review or discard before Send. Restored drafts do not auto-send.
+- Hold new graph execution/overrides through failed or uncertain first transfer delivery. Keep the exact first submission; retry only explicitly, reconcile uncertain outcomes, and never consume/deliver the summary twice by accident.
+
+These three refinements are illustrated in the demo as proposals, awaiting the human. No final resolution has been recorded.
 
 ## Walkthroughs
 
+- Pending summary plus graph: edit/reapprove a pending transfer; new graph work stays held until the first manual primary submission is resolved.
+- Late source after switch: a recovered old-source message makes the pending summary stale; refreshed manual review is required.
+- Uncertain first Send: retain the identified submission; no automatic resend or graph release; explicitly reconcile.
 - Reviewed transfer: generate with Codex, inspect/edit, approve Claude fresh context, submit the first prompt once.
 - Newer source: a recovered completed message makes a reviewed draft stale; transfer blocks until refresh or discard.
 - Active and queued work: interruption must be acknowledged; old queued work is explicitly cancelled and late output cannot revive it.
@@ -37,3 +46,5 @@ The native-state, failure, completion and cancellation controls are simulation c
 ## Validation so far
 
 Desktop (728px) and narrow (375px) previews initialize with no console errors. At narrow width the summary-review state retains the outgoing primary identity, an unsent draft and two source messages; no destination submission exists and the other card remains running. Additional walkthrough inspection follows the pending decisions.
+
+The refined nine simulated walkthroughs initialize without console errors. The pending-summary graph scenario releases one held graph only after the first manual turn completes; uncertain first delivery blocks a second send until reconciliation. Every scenario preserves the other card’s running state. These checks do not establish native support or persistence guarantees.
