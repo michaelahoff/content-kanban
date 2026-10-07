@@ -49,6 +49,21 @@ function commandChain(commands) {
   return graph;
 }
 
+// Recreate the old recording tables before a fixture is downgraded. Current
+// writes live only in activity_log, whereas these fixtures exercise older apps.
+function removeHistoryMilestone(db) {
+  db.exec('PRAGMA foreign_keys = OFF;');
+  db.exec(`
+    INSERT INTO card_events (id, workspace_id, project_id, card_id, type, actor, from_stage_id, to_stage_id, note, data, created_at)
+      SELECT card_event_id, workspace_id, project_id, entity_id, type, actor, from_stage_id, to_stage_id, note, data, created_at
+      FROM activity_log WHERE card_event_id IS NOT NULL;
+    INSERT INTO workspace_changes (id, workspace_id, entity, entity_id, project_id, type, actor, data, created_at)
+      SELECT id, workspace_id, entity, entity_id, project_id, type, actor, data, created_at FROM activity_log;
+    DROP TABLE saved_card_states;
+    DROP TABLE activity_log;
+  `);
+}
+
 test('one Set field node saves multiple assignments and applies them together in row order', async (t) => {
   const f = await fixture(t);
   const graph = promptGraph('Original');
@@ -151,6 +166,7 @@ test('existing lane prompt settings upgrade to a connected Set field graph witho
     card = await first.ok('POST', `/api/projects/${projectId}/cards`, { stageId, fields: { prompt: 'Existing card prompt' } });
   } finally { await first.close(); }
   const db = new DatabaseSync(path.join(dataDir, 'frameboard.db'));
+  removeHistoryMilestone(db);
   db.exec("DROP TABLE card_moves; ALTER TABLE stages DROP COLUMN entry_graph; UPDATE meta SET value = '2' WHERE key = 'schema_version';");
   db.prepare('UPDATE stages SET entry_prompt = ? WHERE id = ?').run('Existing lane prompt', stageId);
   db.close();
@@ -231,6 +247,7 @@ test('upgrading a database adds disabled lane entry prompts without changing its
     card = await first.ok('POST', `/api/projects/${workspace.projects[0].id}/cards`, { stageId: workspace.flows[0].stages[0].id, fields: { prompt: 'Saved before upgrade' } });
   } finally { await first.close(); }
   const db = new DatabaseSync(path.join(dataDir, 'frameboard.db'));
+  removeHistoryMilestone(db);
   db.exec("DROP TABLE card_moves; ALTER TABLE stages DROP COLUMN entry_graph; ALTER TABLE stages DROP COLUMN entry_prompt; UPDATE meta SET value = '1' WHERE key = 'schema_version';");
   db.close();
   const reopened = await start(dataDir);
@@ -719,6 +736,7 @@ test('schema upgrade enables future undo without inventing snapshots for older m
   const card = await f.card();
   await f.ok('POST', `/api/cards/${card.id}/transitions`, { action: 'move', toStageId: f.stages[1].id });
   const db = new DatabaseSync(path.join(f.dataDir, 'frameboard.db'));
+  removeHistoryMilestone(db);
   db.exec("DROP TABLE card_moves; UPDATE meta SET value = '3' WHERE key = 'schema_version';");
   db.close();
   const reopened = await start(f.dataDir);

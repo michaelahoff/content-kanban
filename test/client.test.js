@@ -378,3 +378,64 @@ test('undo refreshes changed fields and a failed undo does not block other card 
   await f.idle();
   assert.equal((await f.call('GET', `/api/cards/${other.id}`)).card.title, 'Independent edit');
 });
+
+test('editor sessions group saves, flush on close and split when another card is selected', async (t) => {
+  const f = await fixture(t);
+  const first = await f.card();
+  const second = await f.card();
+  const states = async (card) => (await f.call('GET', `/api/cards/${card.id}/states`)).states;
+  f.client.beginCardEditing(first.id);
+  first.title = 'First save';
+  f.client.cardChanged(first);
+  f.client.flushCards();
+  await f.idle();
+  first.fields.intro = 'Second save';
+  f.client.cardChanged(first);
+  // Closing flushes the unsent draft before ending its session.
+  f.client.endCardEditing(first.id);
+  f.client.beginCardEditing(second.id);
+  await f.idle();
+  let saved = await states(first);
+  assert.deepEqual(saved.map((entry) => entry.source), ['created', 'editing_session']);
+  assert.equal(saved.at(-1).snapshot.fields.intro, 'Second save');
+  assert.ok(saved.at(-1).closedAt);
+  f.client.endCardEditing(second.id);
+  f.client.beginCardEditing(first.id);
+  first.title = 'Reopened';
+  f.client.cardChanged(first);
+  f.client.endCardEditing(first.id);
+  await f.idle();
+  saved = await states(first);
+  assert.equal(saved.length, 3);
+  assert.equal(saved[1].snapshot.title, 'First save');
+  assert.equal(saved[2].snapshot.title, 'Reopened');
+  assert.ok(saved[2].closedAt);
+});
+
+test('closing during an in-flight save retains subsequent typing in a separate checkpoint', async (t) => {
+  const f = await fixture(t);
+  const card = await f.card();
+  f.client.beginCardEditing(card.id);
+  let release;
+  let saving = false;
+  const held = new Promise((resolve) => { release = resolve; });
+  const nativeFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    const response = await nativeFetch(url, options);
+    if (options?.method === 'PATCH' && !saving) { saving = true; await held; }
+    return response;
+  };
+  card.title = 'First';
+  f.client.cardChanged(card);
+  f.client.flushCards();
+  await waitFor(() => saving);
+  card.fields.script = 'Typed during save';
+  f.client.cardChanged(card);
+  f.client.endCardEditing(card.id);
+  release();
+  await f.idle();
+  const saved = (await f.call('GET', `/api/cards/${card.id}/states`)).states;
+  assert.equal(saved.at(-1).snapshot.fields.script, 'Typed during save');
+  assert.equal((await f.call('GET', `/api/cards/${card.id}`)).card.fields.script, 'Typed during save');
+  assert.ok(saved[1].closedAt, 'The closed session is not reopened by a delayed save');
+});

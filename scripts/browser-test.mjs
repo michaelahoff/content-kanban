@@ -385,6 +385,7 @@ try {
   assert.equal(await evaluate(`document.querySelector('#card-title').value`), 'Tall lane card 0');
   await click('#card-dialog [data-action="close-card"]');
   await waitFor(`!document.querySelector('#card-dialog').open`);
+  await saved(); // Closing now persists the editing-session boundary.
   await evaluate(`window.beforeCompactReload = true`);
   await send('Page.reload');
   await waitFor(`!window.beforeCompactReload && document.querySelector('#board')?.classList.contains('cards-collapsed')`);

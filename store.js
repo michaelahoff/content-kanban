@@ -64,6 +64,52 @@ const migrations = [`
     event_id INTEGER REFERENCES card_events(id), before_card TEXT NOT NULL, after_card TEXT NOT NULL,
     placement TEXT NOT NULL, created_at TEXT NOT NULL, undone_at TEXT, undo_event_id INTEGER REFERENCES card_events(id));
   CREATE INDEX card_moves_by_card ON card_moves(card_id, id);
+`, `
+  CREATE TABLE activity_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+    entity TEXT NOT NULL, entity_id TEXT NOT NULL, project_id TEXT, type TEXT NOT NULL,
+    actor TEXT NOT NULL, data TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL,
+    card_event_id INTEGER UNIQUE, legacy_change_id INTEGER UNIQUE,
+    from_stage_id TEXT, to_stage_id TEXT, note TEXT NOT NULL DEFAULT '', context TEXT);
+  CREATE INDEX activity_by_workspace ON activity_log(workspace_id, id);
+  CREATE INDEX activity_by_entity ON activity_log(workspace_id, entity, entity_id, id);
+  -- Merge only unambiguous pairs emitted by the old insertEvent boundary.
+  -- Keep old feed IDs, so existing browser cursors remain valid.
+  WITH pairs AS (
+    SELECT c.id AS change_id, e.id AS event_id,
+      COUNT(*) OVER (PARTITION BY c.id) AS change_matches,
+      COUNT(*) OVER (PARTITION BY e.id) AS event_matches
+    FROM workspace_changes c JOIN card_events e ON c.entity = 'card'
+      AND c.workspace_id = e.workspace_id AND c.entity_id = e.card_id
+      AND c.project_id = e.project_id AND c.type = e.type AND c.actor = e.actor
+      AND c.data = e.data AND c.created_at = e.created_at)
+  INSERT INTO activity_log (id, workspace_id, entity, entity_id, project_id, type, actor, data, created_at,
+    card_event_id, legacy_change_id, from_stage_id, to_stage_id, note)
+  SELECT c.id, c.workspace_id, c.entity, c.entity_id, c.project_id, c.type, c.actor, c.data, c.created_at,
+    e.id, c.id, e.from_stage_id, e.to_stage_id, COALESCE(e.note, '')
+  FROM workspace_changes c LEFT JOIN pairs p ON p.change_id = c.id AND p.change_matches = 1 AND p.event_matches = 1
+    LEFT JOIN card_events e ON e.id = p.event_id ORDER BY c.id;
+  INSERT INTO activity_log (workspace_id, entity, entity_id, project_id, type, actor, data, created_at,
+    card_event_id, from_stage_id, to_stage_id, note)
+  SELECT e.workspace_id, 'card', e.card_id, e.project_id, e.type, e.actor, e.data, e.created_at,
+    e.id, e.from_stage_id, e.to_stage_id, e.note FROM card_events e
+  WHERE NOT EXISTS (SELECT 1 FROM activity_log a WHERE a.card_event_id = e.id) ORDER BY e.id;
+  CREATE TABLE saved_card_states (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, workspace_id TEXT NOT NULL REFERENCES workspaces(id),
+    card_id TEXT NOT NULL REFERENCES cards(id), activity_id INTEGER NOT NULL REFERENCES activity_log(id),
+    source TEXT NOT NULL, actor TEXT NOT NULL, snapshot TEXT NOT NULL,
+    editing_session_id TEXT, started_at TEXT NOT NULL, updated_at TEXT NOT NULL, closed_at TEXT);
+  CREATE INDEX saved_states_by_card ON saved_card_states(workspace_id, card_id, id);
+  -- Move history IDs now refer to the compatibility projection of activity.
+  ALTER TABLE card_moves RENAME TO legacy_card_moves;
+  CREATE TABLE card_moves (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, card_id TEXT NOT NULL REFERENCES cards(id),
+    event_id INTEGER REFERENCES activity_log(card_event_id), before_card TEXT NOT NULL, after_card TEXT NOT NULL,
+    placement TEXT NOT NULL, created_at TEXT NOT NULL, undone_at TEXT,
+    undo_event_id INTEGER REFERENCES activity_log(card_event_id));
+  INSERT INTO card_moves SELECT * FROM legacy_card_moves;
+  DROP TABLE legacy_card_moves;
+  CREATE INDEX card_moves_by_card ON card_moves(card_id, id);
 `];
 
 const now = () => new Date().toISOString();
@@ -92,6 +138,11 @@ const eventFrom = (row) => ({
 const changeFrom = (row) => ({
   id: row.id, entity: row.entity, entityId: row.entity_id, projectId: row.project_id,
   type: row.type, actor: row.actor, data: JSON.parse(row.data), createdAt: row.created_at,
+});
+const activityEventFrom = (row) => eventFrom({ ...row, id: row.card_event_id, card_id: row.entity_id });
+const savedStateFrom = (row) => ({
+  id: row.id, cardId: row.card_id, activityId: row.activity_id, source: row.source, actor: row.actor,
+  snapshot: JSON.parse(row.snapshot), startedAt: row.started_at, updatedAt: row.updated_at, closedAt: row.closed_at,
 });
 
 // Applies a partial content update to a card and checks the result.
@@ -166,7 +217,8 @@ function unmetCriteria(stage, card) {
     : !card.imageRoles[item.imageRole]).map((item) => item.label || (item.field ? `${item.field} is filled` : `${item.imageRole} image is set`));
 }
 
-export async function openStore({ dataDir, onCardEvent = () => {} }) {
+export async function openStore({ dataDir, onCardEvent = () => {}, clock = now }) {
+  const now = clock;
   const file = path.join(dataDir, 'frameboard.db');
   const legacyFile = path.join(dataDir, 'board.json');
   const created = !existsSync(file);
@@ -209,18 +261,66 @@ export async function openStore({ dataDir, onCardEvent = () => {} }) {
     return flowId;
   }
   function insertEvent(workspaceId, card, type, actor, { from = null, to = null, note = '', data = {}, at = now() } = {}) {
-    const { lastInsertRowid } = run('INSERT INTO card_events (workspace_id, project_id, card_id, type, actor, from_stage_id, to_stage_id, note, data, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      workspaceId, card.projectId, card.id, type, actor, from, to, note, JSON.stringify(data), at);
-    const event = eventFrom(get('SELECT * FROM card_events WHERE id = ?', lastInsertRowid));
+    const eventId = (get('SELECT MAX(card_event_id) AS id FROM activity_log').id ?? 0) + 1;
+    const activityId = recordChange({ workspaceId, actor }, 'card', card.id, type,
+      { projectId: card.projectId, data, at, eventId, from, to, note });
+    const event = activityEventFrom(get('SELECT * FROM activity_log WHERE id = ?', activityId));
     pendingEvents.push(event);
-    recordChange({ workspaceId, actor }, 'card', card.id, type, { projectId: card.projectId, data, at });
     return event;
   }
-  // The synchronization feed includes ordinary edits and structural changes;
-  // the card timeline stays focused on decisions and image changes.
-  function recordChange(ctx, entity, entityId, type, { projectId = null, data = {}, at = now() } = {}) {
-    run('INSERT INTO workspace_changes (workspace_id, entity, entity_id, project_id, type, actor, data, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-      ctx.workspaceId, entity, entityId, projectId, type, ctx.actor, JSON.stringify(data), at);
+  // One append-only log serves activity and the synchronization feed. Legacy
+  // card history is a filtered projection; the old tables are migration input.
+  function recordChange(ctx, entity, entityId, type, { projectId = null, data = {}, at = now(), eventId = null, from = null, to = null, note = '' } = {}) {
+    const card = entity === 'card' ? get('SELECT title, stage_id FROM cards WHERE id = ?', entityId) : null;
+    const context = {
+      projectName: projectId ? get('SELECT name FROM projects WHERE id = ?', projectId)?.name : undefined,
+      cardTitle: card?.title,
+      stageName: get('SELECT name FROM stages WHERE id = ?', card?.stage_id ?? (entity === 'stage' ? entityId : ''))?.name,
+      fromStageName: from ? get('SELECT name FROM stages WHERE id = ?', from)?.name : undefined,
+      toStageName: to ? get('SELECT name FROM stages WHERE id = ?', to)?.name : undefined,
+    };
+    const { lastInsertRowid } = run(`INSERT INTO activity_log
+      (workspace_id, entity, entity_id, project_id, type, actor, data, created_at, card_event_id, from_stage_id, to_stage_id, note, context)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ctx.workspaceId, entity, entityId, projectId, type, ctx.actor, JSON.stringify(data), at, eventId, from, to, note, JSON.stringify(context));
+    return Number(lastInsertRowid);
+  }
+
+  function retainedCard(ctx, id) {
+    const row = get('SELECT c.* FROM cards c JOIN projects p ON p.id = c.project_id WHERE c.id = ? AND p.workspace_id = ?', id, ctx.workspaceId);
+    return row || fail(404, 'This card does not exist.');
+  }
+  function snapshotFor(row) {
+    const order = all('SELECT id FROM cards WHERE stage_id = ? AND deleted_at IS NULL ORDER BY position', row.stage_id);
+    const index = order.findIndex((item) => item.id === row.id);
+    return { ...cardFrom(row), deletedAt: row.deleted_at,
+      placement: { index: index < 0 ? null : index, beforeCardId: index < 0 ? null : order[index + 1]?.id ?? null, afterCardId: index > 0 ? order[index - 1].id : null } };
+  }
+  function recordSavedState(ctx, id, source, at, editingSessionId = null) {
+    const row = retainedCard(ctx, id);
+    const activityId = get("SELECT MAX(id) AS id FROM activity_log WHERE workspace_id = ? AND entity = 'card' AND entity_id = ?", ctx.workspaceId, id).id;
+    const snapshot = JSON.stringify(snapshotFor(row));
+    const previous = get('SELECT * FROM saved_card_states WHERE workspace_id = ? AND card_id = ? ORDER BY id DESC LIMIT 1', ctx.workspaceId, id);
+    const grouped = source === 'editing_session' && editingSessionId && previous?.source === source
+      && previous.actor === ctx.actor && previous.editing_session_id === editingSessionId && !previous.closed_at
+      && Date.parse(at) - Date.parse(previous.updated_at) < 120000;
+    if (grouped) {
+      run('UPDATE saved_card_states SET snapshot = ?, activity_id = ?, updated_at = ? WHERE id = ?', snapshot, activityId, at, previous.id);
+    } else {
+      if (previous && !previous.closed_at) run('UPDATE saved_card_states SET closed_at = ? WHERE id = ?', at, previous.id);
+      run(`INSERT INTO saved_card_states (workspace_id, card_id, activity_id, source, actor, snapshot, editing_session_id, started_at, updated_at, closed_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, ctx.workspaceId, id, activityId, source, ctx.actor, snapshot, editingSessionId, at, at,
+      source === 'editing_session' && editingSessionId ? null : at);
+    }
+  }
+  function recordMissingBaselines() {
+    const at = now();
+    for (const row of all(`SELECT c.id, c.project_id, p.workspace_id FROM cards c JOIN projects p ON p.id = c.project_id
+      WHERE NOT EXISTS (SELECT 1 FROM saved_card_states s WHERE s.card_id = c.id)`)) {
+      const ctx = { workspaceId: row.workspace_id, actor: 'system:history-migration' };
+      recordChange(ctx, 'card', row.id, 'history_begins', { projectId: row.project_id, data: { reason: 'Saved card states begin here; earlier states were not reconstructed.' }, at });
+      recordSavedState(ctx, row.id, 'history_begins', at);
+    }
   }
 
   // Entry actions run in the same transaction as creation or movement. The
@@ -263,6 +363,7 @@ export async function openStore({ dataDir, onCardEvent = () => {} }) {
           insertEvent(workspaceId, { id: card.id, projectId: project.id }, 'created', `user:${userId}`, { to: lane.id, at: card.updatedAt ?? now() });
         });
       });
+      recordMissingBaselines();
     });
     if (legacy) {
       let target = `${legacyFile}.migrated`;
@@ -277,6 +378,7 @@ export async function openStore({ dataDir, onCardEvent = () => {} }) {
     if (version > migrations.length) throw new Error('This data was saved by a newer version of Frameboard.');
     if (version < migrations.length) transaction(() => {
       for (const sql of migrations.slice(version)) db.exec(sql);
+      recordMissingBaselines();
       run("UPDATE meta SET value = ? WHERE key = 'schema_version'", String(migrations.length));
     });
   } catch (error) {
@@ -338,6 +440,7 @@ export async function openStore({ dataDir, onCardEvent = () => {} }) {
     for (const row of rows) {
       run('UPDATE cards SET deleted_at = ? WHERE id = ?', at, row.id);
       insertEvent(ctx.workspaceId, cardFrom(row), 'deleted', ctx.actor, { from: row.stage_id, data: { reason }, at });
+      recordSavedState(ctx, row.id, 'deleted', at);
     }
   }
 
@@ -352,7 +455,7 @@ export async function openStore({ dataDir, onCardEvent = () => {} }) {
         FROM projects p WHERE p.workspace_id = ? AND p.deleted_at IS NULL ORDER BY p.position`, ctx.workspaceId)
         .map((row) => ({ id: row.id, name: row.name, flowId: row.flow_id, position: row.position, cardCount: row.card_count }));
       const flows = all('SELECT id, name FROM flows WHERE workspace_id = ? ORDER BY created_at', ctx.workspaceId).map((row) => ({ ...row, stages: activeStages(row.id) }));
-      const eventCursor = get('SELECT MAX(id) AS cursor FROM workspace_changes WHERE workspace_id = ?', ctx.workspaceId).cursor ?? 0;
+      const eventCursor = get('SELECT MAX(id) AS cursor FROM activity_log WHERE workspace_id = ?', ctx.workspaceId).cursor ?? 0;
       return { workspace, user, projects, flows, eventCursor };
     },
 
@@ -403,6 +506,7 @@ export async function openStore({ dataDir, onCardEvent = () => {} }) {
           .map((card) => {
             run('UPDATE cards SET fields = ?, revision = revision + 1, updated_at = ? WHERE id = ?', JSON.stringify({ ...card.fields, prompt }), at, card.id);
             recordChange(ctx, 'card', card.id, 'updated', { projectId, data: { revision: card.revision + 1 }, at });
+            recordSavedState(ctx, card.id, 'bulk_prompt', at);
             return { id: card.id, revision: card.revision + 1, updatedAt: at };
           });
       });
@@ -473,7 +577,19 @@ export async function openStore({ dataDir, onCardEvent = () => {} }) {
 
     getCard(ctx, id) {
       const card = requireCard(ctx, id);
-      return { card, events: all('SELECT * FROM card_events WHERE card_id = ? ORDER BY id', id).map(eventFrom) };
+      return { card, events: all('SELECT * FROM activity_log WHERE workspace_id = ? AND entity = \'card\' AND entity_id = ? AND card_event_id IS NOT NULL ORDER BY card_event_id', ctx.workspaceId, id).map(activityEventFrom) };
+    },
+
+    savedCardStates(ctx, id) {
+      retainedCard(ctx, id);
+      return all('SELECT * FROM saved_card_states WHERE workspace_id = ? AND card_id = ? ORDER BY id', ctx.workspaceId, id).map(savedStateFrom);
+    },
+
+    endEditingSession(ctx, id, input) {
+      check(isObject(input) && typeof input.editingSessionId === 'string' && idPattern.test(input.editingSessionId), 'An editing session ID is required.');
+      retainedCard(ctx, id);
+      transaction(() => run(`UPDATE saved_card_states SET closed_at = ? WHERE workspace_id = ? AND card_id = ?
+        AND actor = ? AND editing_session_id = ? AND closed_at IS NULL`, now(), ctx.workspaceId, id, ctx.actor, input.editingSessionId));
     },
 
     createCard(ctx, projectId, input) {
@@ -492,6 +608,7 @@ export async function openStore({ dataDir, onCardEvent = () => {} }) {
           id, projectId, stage.id, positionFor(stage.id, null), template, content.title, JSON.stringify(content.fields), JSON.stringify(content.images), JSON.stringify(content.imageRoles), at, at, at);
         insertEvent(ctx.workspaceId, { id, projectId }, 'created', ctx.actor, { to: stage.id, at });
         applyEntryGraph(ctx, requireCard(ctx, id), stage, at);
+        recordSavedState(ctx, id, 'created', at);
         return requireCard(ctx, id);
       });
     },
@@ -500,6 +617,7 @@ export async function openStore({ dataDir, onCardEvent = () => {} }) {
     // step or another tab cannot silently overwrite them.
     updateCard(ctx, id, input) {
       check(isObject(input), 'Invalid card.');
+      check(input.editingSessionId === undefined || (typeof input.editingSessionId === 'string' && idPattern.test(input.editingSessionId)), 'Invalid editing session ID.');
       const card = requireCard(ctx, id);
       check(Number.isInteger(input.revision), 'Card updates need the revision they were based on.');
       if (input.revision !== card.revision) fail(409, 'This card changed in another tab. Copy any unsaved text, then reload to get the latest version.');
@@ -513,9 +631,12 @@ export async function openStore({ dataDir, onCardEvent = () => {} }) {
         const added = [...after].filter((imageId) => !before.has(imageId));
         const removed = [...before].filter((imageId) => !after.has(imageId));
         const roles = Object.keys(content.imageRoles).filter((role) => content.imageRoles[role] !== card.imageRoles[role]);
-        if (added.length || removed.length || roles.length) {
+        const imagesChanged = JSON.stringify(content.images) !== JSON.stringify(card.images) || roles.length > 0;
+        if (imagesChanged) {
           insertEvent(ctx.workspaceId, card, 'images_changed', ctx.actor, { data: { added, removed, roles }, at });
         } else recordChange(ctx, 'card', id, 'updated', { projectId: card.projectId, data: { revision: card.revision + 1 }, at });
+        recordSavedState(ctx, id, imagesChanged ? 'images_changed'
+          : ctx.actor.startsWith('user:') ? 'editing_session' : 'fields_changed', at, input.editingSessionId ?? null);
         return requireCard(ctx, id);
       });
     },
@@ -569,6 +690,7 @@ export async function openStore({ dataDir, onCardEvent = () => {} }) {
         const { lastMove: pendingMove, ...after } = requireCard(ctx, id);
         run('INSERT INTO card_moves (card_id, event_id, before_card, after_card, placement, created_at) VALUES (?, ?, ?, ?, ?, ?)',
           id, event?.id ?? null, JSON.stringify(before), JSON.stringify(after), JSON.stringify(placement), at);
+        recordSavedState(ctx, id, changedStage ? 'moved' : 'reordered', at);
         // Older browsers can still acknowledge a prompt-only action safely.
         const promptUpdate = fieldUpdate && Object.keys(fieldUpdate.values).length === 1 && 'prompt' in fieldUpdate.values
           ? { beforeRevision: fieldUpdate.beforeRevision, revision: fieldUpdate.revision, prompt: fieldUpdate.values.prompt } : null;
@@ -608,6 +730,7 @@ export async function openStore({ dataDir, onCardEvent = () => {} }) {
           from: card.stageId, to: source.id, data: { moveId: move.id, originalEventId: move.event_id, fields: keys }, at,
         });
         run('UPDATE card_moves SET undone_at = ?, undo_event_id = ? WHERE id = ?', at, event.id, move.id);
+        recordSavedState(ctx, id, 'move_undone', at);
         return { card: requireCard(ctx, id), event, beforeCardId,
           fieldUpdate: keys.length ? { beforeRevision: card.revision, revision, values } : null };
       });
@@ -619,8 +742,17 @@ export async function openStore({ dataDir, onCardEvent = () => {} }) {
     },
 
     // A change feed for other tabs and, later, automatic steps.
+    activity(ctx, { since = 0, limit = 500, cardId = null } = {}) {
+      if (cardId !== null) retainedCard(ctx, cardId);
+      return all(`SELECT * FROM activity_log WHERE workspace_id = ? AND id > ?
+        AND (? IS NULL OR (entity = 'card' AND entity_id = ?)) ORDER BY id LIMIT ?`, ctx.workspaceId, since, cardId, cardId, limit)
+        .map((row) => ({ ...changeFrom(row), cardEventId: row.card_event_id,
+          fromStageId: row.from_stage_id, toStageId: row.to_stage_id, note: row.note,
+          context: row.context === null ? null : JSON.parse(row.context) }));
+    },
+
     events(ctx, { since = 0, limit = 500 } = {}) {
-      return all('SELECT * FROM workspace_changes WHERE workspace_id = ? AND id > ? ORDER BY id LIMIT ?', ctx.workspaceId, since, limit).map(changeFrom);
+      return all('SELECT * FROM activity_log WHERE workspace_id = ? AND id > ? ORDER BY id LIMIT ?', ctx.workspaceId, since, limit).map(changeFrom);
     },
   };
 }

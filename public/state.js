@@ -11,6 +11,7 @@ const queuedCards = new Set();
 const conflicts = new Map();
 const statusListeners = new Set();
 const fieldListeners = new Set();
+const editingSessions = new Map();
 let saveTimer = null;
 
 const url = (...parts) => `/api/${parts.map(encodeURIComponent).join('/')}`;
@@ -103,14 +104,25 @@ export function flushCards() {
   for (const cardId of dirty) if (!queuedCards.has(cardId) && !conflicts.has(cardId)) queueCardSave(cardId);
   notify();
 }
+export function beginCardEditing(cardId) {
+  if (!editingSessions.has(cardId)) editingSessions.set(cardId, id());
+}
+export function endCardEditing(cardId) {
+  const editingSessionId = editingSessions.get(cardId);
+  if (!editingSessionId) return;
+  flushCards();
+  editingSessions.delete(cardId);
+  enqueue(() => send('POST', `${url('cards', cardId)}/editing-session/end`, { editingSessionId }));
+}
 function queueCardSave(cardId) {
+  const editingSessionId = editingSessions.get(cardId);
   queuedCards.add(cardId);
   enqueue(async () => {
     dirty.delete(cardId);
     const card = locateCard(cardId)?.card;
     if (card) {
       try {
-        adopt(card, await send('PATCH', url('cards', cardId), { revision: card.revision, title: card.title, fields: card.fields, images: card.images, imageRoles: card.imageRoles }), true);
+        adopt(card, await send('PATCH', url('cards', cardId), { revision: card.revision, title: card.title, fields: card.fields, images: card.images, imageRoles: card.imageRoles, editingSessionId }), true);
       } catch (error) {
         if (locateCard(cardId)) dirty.add(cardId);
         throw error;
