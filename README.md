@@ -99,4 +99,4 @@ This is a development milestone. Card tools, full grants/input handling, native 
 
 Ask for images in a card chat prompt. Codex native image outputs and images Codex registers from its card workspace stay in the chat with their provider, method, tool prompt and exact references. **Add to gallery** adds one version to the card without choosing Display, Original or Inspiration; choose roles afterward in the editor. Adding the same version again does nothing. **Edit** attaches that exact version to the next prompt while keeping your other references. If an image was generated but could not be saved, **Retry saving** imports the same output without asking Codex to generate again. A failed generation or usage limit needs a deliberate new request.
 
-The real-account generation/edit acceptance check is still outstanding. See [the image implementation and evidence](docs/implementation/phase-1-images.md).
+A bounded real-account generation and exact-source edit through Frameboard passed with Codex 0.160.1 and `gpt-6-luna`. See [the image implementation and evidence](docs/implementation/phase-1-images.md).

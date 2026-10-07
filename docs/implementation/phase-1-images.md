@@ -2,7 +2,7 @@
 
 Implementation ticket: [#23](https://github.com/michaelahoff/content-kanban/issues/23). Contracts: [assembled specification](https://github.com/michaelahoff/content-kanban/issues/12#issuecomment-6041712115), [image workflow](https://github.com/michaelahoff/content-kanban/issues/9#issuecomment-6027240938), [durable boundaries](https://github.com/michaelahoff/content-kanban/issues/11#issuecomment-6041085002), [native image contracts](https://github.com/michaelahoff/content-kanban/issues/3#issuecomment-6023782264) and ADR 0001.
 
-Phase 1 remains unreleased. The bounded **real-account** Codex generation and exact-source edit through Frameboard (specification cases 6–7) have **not** run; see [Live account gate](#live-account-gate).
+Phase 1 remains unreleased. The bounded real-account Codex generation and exact-source edit through Frameboard (specification cases 6–7) passed on 2026-10-07; see [Live account gate](#live-account-gate).
 
 ## Hashed image store
 
@@ -52,7 +52,7 @@ At queue time, each frozen reference records `source: gallery | chat-output` and
 
 ## Capability disclosure
 
-The composer says that image outputs Codex returns or registers stay in the chat, that native generation through Frameboard has not yet passed live account validation, and that adoption never sets roles. Claude is not offered. A native image tool unavailable on an account or route is reported as an honest failure, with no fallback. Update the disclosure only after the live gate passes.
+The composer states that Codex native image generation and exact-reference edits stay in the chat, and that adoption never sets roles. That claim rests on the live gate below for Codex 0.160.1 and `gpt-6-luna`. Claude is not offered. A native image tool unavailable on an account or route is reported as an honest failure, with no fallback.
 
 ## Evidence on 2026-10-07
 
@@ -79,9 +79,16 @@ Environment: Node.js 22.17.1, Codex CLI 0.160.1, Chromium (Arch Linux).
 
 ## Live account gate
 
-The specification requires a bounded real Codex generation and exact-source edit through Frameboard, with the model, configuration, native version and app revision recorded. That has not run, for two reasons:
+Run on 2026-10-07 at app revision `45b7921`, through Frameboard's public HTTP API with the real app-server and a temporary data directory.
 
-- The developer's actual Codex home discovers plugins, so Frameboard correctly reports that effective configuration as unavailable and blocks dispatch.
-- Seeding a disposable home with copied ChatGPT credentials would read credential files, and token refresh could invalidate the original login.
+- **Harness and account:** installed Codex CLI 0.160.1, the developer's existing ChatGPT sign-in, and model `gpt-6-luna`.
+- **Configuration:** the opt-in full Codex setup ([ADR 0002](../adr/0002-opt-in-inherited-codex-setup.md)), effective configuration `9ef6c0b4…a85`. The isolated mode correctly remains unavailable on that native home, because of `codex_apps` and four plugins.
+- **Bound:** two submissions with ordinary sandbox/approval settings. No native approval request occurred.
 
-Running the gate needs an explicit developer choice: either sign in to a dedicated isolated Codex home, or remove or disable the unsupported plugin setup. Until then, Phase 1 daily-use acceptance for native generation remains open.
+**Generation.** "Create exactly one simple image: a flat red circle…" completed with **three** native `imageGeneration` items in one turn. The model chose to produce more than one. All three were retained, saved and hash-verified, each with its own tool prompt, native thread/turn/item IDs and `savedPath` under `~/.codex/generated_images/<thread>/`. Output A has SHA-256 `849b204a…b8dc`.
+
+**Exact-source edit.** **Edit** attached A as a chat version. The frozen submission recorded `source: chat-output`, A's output ID and hash, and the reference copy path. The prompt asked to change only the circle from red to blue. It completed with one new output B (SHA-256 `a1e9f9c6…0fbe`). Its tool prompt is "Edit this image with one change only: recolor the existing circle from red to a solid vivid blue…", and it links back to A. Visual inspection confirmed that B keeps A's circle size, position and white background with only the colour changed. A was not overwritten. Codex does not expose the image tool's reference arguments, so evidence that the attached reference was used is this visual identity, not a native reference field.
+
+**Adoption.** Adopting B added one gallery image, with Display, Original and Inspiration all still empty.
+
+Image use was four native images (three plus one), not two, because of the model's extra outputs. The served bytes matched the recorded hashes. The evidence images were inspected locally and are not committed.
