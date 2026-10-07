@@ -4,18 +4,23 @@ import { state, locateCard, flushCards, saveStatus, refreshSavedCard } from './s
 import { contextFields } from './chat-context.js';
 
 const chats = new Map();
-let selected = null; let navigation; let activity = []; let pollTimer; let polling = false;
+let selected = null; let navigation; let activity = []; let events = null; let activityTimer = null; let refreshTimer = null; let clockTimer;
 let hidden = preference('frameboard-chat-hidden') === 'true';
 function preference(key, value) {
   try { if (value !== undefined) localStorage.setItem(key, value); return localStorage.getItem(key); } catch { return null; }
 }
 const url = (id, action = '') => `/api/cards/${encodeURIComponent(id)}/chat${action ? `/${action}` : ''}`;
 const labels = { 'input-needed': '? Input needed', 'needs-attention': '! Needs attention', working: '◌ Working', done: '✓ Done' };
+// The timer counts wall-clock time from the server's attempt start.
+function activityLabel(entry) {
+  if (entry.state !== 'working') return labels[entry.state];
+  if (entry.waitingForProvider) return `${labels.working} · waiting for provider`;
+  return entry.startedAt ? `${labels.working} · ${Math.max(0, Math.floor((Date.now() - Date.parse(entry.startedAt)) / 1000))}s` : labels.working;
+}
 export function activityMarkup(cardId) {
   const entry = activity.find((entry) => entry.cardId === cardId);
   if (!entry) return '';
-  const elapsed = entry.state === 'working' && entry.startedAt ? ` · ${Math.max(0, Math.floor((Date.now() - Date.parse(entry.startedAt)) / 1000))}s` : '';
-  return `<span class="chat-activity ${entry.state}">${labels[entry.state]}${elapsed}</span>`;
+  return `<span class="chat-activity ${entry.state}" data-activity-card="${escape(entry.cardId)}">${escape(activityLabel(entry))}</span>`;
 }
 function rememberView() {
   const item = chats.get(selected);
@@ -188,6 +193,16 @@ async function refreshPreview(item) {
     $('#chat-exact-preview').innerHTML = contextMarkup(preview.context);
   } catch (error) { showError(item, error); }
 }
+// Possible delivery is never resent automatically; these are explicit choices.
+function recoveryMarkup(submission, attempts) {
+  if (submission.status === 'uncertain') {
+    const attempt = attempts.at(-1);
+    return `<div class="chat-recovery"><p class="chat-hint">Codex may have received this prompt. Nothing is resent automatically.</p><button class="button small secondary" data-action="chat-reconcile">Check native history</button><button class="button small secondary" data-action="chat-resolve" data-id="${escape(attempt.id)}">Mark interrupted…</button></div>`;
+  }
+  if (submission.status === 'held' && submission.hold === 'outside') return `<div class="chat-recovery"><button class="button small secondary" data-action="chat-continue" data-id="${escape(submission.id)}">Continue in this conversation</button><span class="chat-hint">or start fresh context</span></div>`;
+  if (submission.status === 'waiting' && submission.retryAt) return `<p class="chat-hint">Next automatic try at ${escape(new Date(submission.retryAt).toLocaleTimeString())}.</p>`;
+  return '';
+}
 function renderTranscript(item) {
   const timeline = $('#chat-transcript'); if (!timeline || !item.snapshot) return;
   const nearEnd = timeline.scrollHeight - timeline.clientHeight - timeline.scrollTop < 32;
@@ -197,7 +212,7 @@ function renderTranscript(item) {
     const submissions = snapshot.submissions.filter((submission) => submission.conversationId === conversation.id);
     return `<div class="chat-divider">${conversation.state === 'previous' ? 'Previous conversation' : conversation.state === 'native-unavailable' ? 'Native context unavailable · history retained' : 'Current conversation'}</div>${submissions.map((submission) => {
       const attempts = snapshot.attempts.filter((attempt) => attempt.submissionId === submission.id);
-      return `<article class="chat-submission"><div class="chat-prompt-sent">${escape(submission.prompt)}</div>${frozenMarkup(submission)}<p class="chat-status">${escape(submission.status)}${submission.reason ? ` · ${escape(submission.reason)}` : ''}</p>${attempts.map((attempt) => `${attempt.previousAttemptId ? '<div class="chat-divider">Retry · original inputs retained</div>' : ''}${snapshot.items.filter((entry) => entry.attemptId === attempt.id).map((entry) => `<div data-item-sequence="${entry.sequence}" class="chat-item ${entry.kind === 'notice' ? 'chat-notice' : ''}">${['imageGeneration', 'registeredImage'].includes(entry.kind) ? outputMarkup(item, (snapshot.outputs ?? []).find((o) => o.attemptId === entry.attemptId && (o.nativeId === entry.nativeId || o.id === entry.data.outputId))) : escape(entry.text || ({ dynamicToolCall: 'Tool result', commandExecution: 'Command execution' }[entry.kind] ?? entry.kind))}${!entry.completed && entry.kind === 'agentMessage' ? '<small>Partial response</small>' : ''}${entry.kind === 'agentMessage' ? `<button class="button small secondary" data-action="chat-use-text" data-sequence="${entry.sequence}">Use selected reply text</button>` : ''}</div>`).join('')}`).join('')}${['queued', 'held'].includes(submission.status) ? `<button class="button small secondary" data-action="chat-cancel" data-id="${escape(submission.id)}">Cancel submission</button>` : ''}${['failed', 'interrupted'].includes(submission.status) && conversation.state === 'active' ? `<button class="button small secondary" data-action="chat-retry" data-id="${escape(submission.id)}">Retry original submission</button>` : ''}</article>`;
+      return `<article class="chat-submission"><div class="chat-prompt-sent">${escape(submission.prompt)}</div>${frozenMarkup(submission)}<p class="chat-status">${escape(submission.status)}${submission.reason ? ` · ${escape(submission.reason)}` : ''}</p>${attempts.map((attempt) => `${attempt.previousAttemptId ? `<div class="chat-divider">${snapshot.attempts.find((a) => a.id === attempt.previousAttemptId)?.status === 'not-delivered' ? 'Not sent before Codex stopped · sent again with original inputs' : 'Retry · original inputs retained'}</div>` : ''}${snapshot.items.filter((entry) => entry.attemptId === attempt.id).map((entry) => `<div data-item-sequence="${entry.sequence}" class="chat-item ${entry.kind === 'notice' ? 'chat-notice' : ''}">${['imageGeneration', 'registeredImage'].includes(entry.kind) ? outputMarkup(item, (snapshot.outputs ?? []).find((o) => o.attemptId === entry.attemptId && (o.nativeId === entry.nativeId || o.id === entry.data.outputId))) : escape(entry.text || ({ dynamicToolCall: 'Tool result', commandExecution: 'Command execution' }[entry.kind] ?? entry.kind))}${!entry.completed && entry.kind === 'agentMessage' ? '<small>Partial response</small>' : ''}${entry.kind === 'agentMessage' ? `<button class="button small secondary" data-action="chat-use-text" data-sequence="${entry.sequence}">Use selected reply text</button>` : ''}</div>`).join('')}`).join('')}${recoveryMarkup(submission, attempts)}${['queued', 'waiting', 'held'].includes(submission.status) ? `<button class="button small secondary" data-action="chat-cancel" data-id="${escape(submission.id)}">Cancel submission</button>` : ''}${['failed', 'interrupted'].includes(submission.status) && conversation.state === 'active' ? `<button class="button small secondary" data-action="chat-retry" data-id="${escape(submission.id)}">Retry original submission</button>` : ''}</article>`;
     }).join('')}`;
   }).join('');
   if (timeline.dataset.rendered !== html) {
@@ -225,6 +240,7 @@ function renderRequests(item) {
     return `<div class="chat-request"><strong>? ${escape(locateCard(item.id)?.card.title || 'This card')} · Input needed</strong><pre>${escape(detail || r.method)}</pre>${input ? `<button class="button small secondary" data-action="chat-input" data-id="${escape(r.id)}">Answer questions</button>` : supported ? `<button class="button small secondary" data-action="chat-answer" data-id="${escape(r.id)}" data-decision="accept">Allow once</button>${scoped ? `<button class="button small secondary" data-action="chat-answer" data-id="${escape(r.id)}" data-decision="accept" data-scope="conversation">Allow this exact operation for conversation</button>` : ''}<button class="button small secondary" data-action="chat-full-access" data-id="${escape(r.id)}">Full native access…</button><button class="button small secondary" data-action="chat-answer" data-id="${escape(r.id)}" data-decision="decline">Deny</button>` : '<p>This request is unsupported. Stop remains available.</p>'}</div>`;
   }).join('');
   const panel = $('#chat-requests'); if (panel.dataset.rendered !== html) { panel.innerHTML = html; panel.dataset.rendered = html; }
+  if (item.reveal === 'requests' && html) { item.reveal = null; panel.scrollIntoView({ block: 'nearest' }); panel.querySelector('button')?.focus(); }
 }
 function renderProposals(item) {
   const html = (item.snapshot.proposals ?? []).filter((p) => p.status === 'pending').map((p) => `<div class="chat-request"><strong>Card proposal · ${p.kind === 'move' ? 'Lane move' : 'Text changes'}</strong><p>${escape(p.kind === 'move' ? 'Requires your acceptance' : Object.keys(p.payload.fields).join(', '))}</p><button class="button small secondary" data-action="chat-proposal" data-id="${escape(p.id)}">Review proposal</button></div>`).join('');
@@ -304,21 +320,65 @@ function wireResize() {
   });
   handle.addEventListener('keydown', (event) => { if (['ArrowLeft', 'ArrowRight'].includes(event.key)) { event.preventDefault(); resize($('#card-chat').clientWidth + (event.key === 'ArrowLeft' ? 20 : -20)); } });
 }
-async function poll() {
-  if (polling) return; polling = true;
-  try {
-    const next = (await request('/api/chat-activity')).entries;
-    if (JSON.stringify(next) !== JSON.stringify(activity)) { activity = next; navigation?.renderBoard(); renderActivityList(); }
-    const item = chats.get(selected); if (item) await refresh(item);
-  } catch (error) { const item = chats.get(selected); if (item) showError(item, error); }
-  finally { polling = false; }
+async function loadActivity() {
+  const result = await request('/api/chat-activity');
+  if (JSON.stringify(result.entries) !== JSON.stringify(activity)) { activity = result.entries; navigation?.renderBoard(); renderActivityList(); }
+  return result.cursor;
+}
+function scheduleActivity() {
+  clearTimeout(activityTimer);
+  activityTimer = setTimeout(() => void loadActivity().catch(() => { /* The stream retries and resyncs. */ }), 100);
+}
+function scheduleRefresh() {
+  const item = chats.get(selected); if (!item) return;
+  clearTimeout(refreshTimer);
+  refreshTimer = setTimeout(() => void refresh(item).catch((error) => showError(item, error)), 100);
+}
+// Deltas carry their character offset: a duplicate is ignored, an overlap
+// appends only its new suffix and a gap reloads the snapshot.
+function applyDelta(delta) {
+  const item = chats.get(delta.cardId);
+  if (!item?.snapshot || delta.cardId !== selected) return;
+  const entry = item.snapshot.items.find((candidate) => candidate.attemptId === delta.attemptId && candidate.nativeId === delta.itemId);
+  if (!entry || delta.offset > entry.text.length) { scheduleRefresh(); return; }
+  if (entry.completed || delta.offset + delta.text.length <= entry.text.length) return;
+  entry.text += delta.text.slice(entry.text.length - delta.offset);
+  if (!item.renderPending) {
+    item.renderPending = true;
+    requestAnimationFrame(() => { item.renderPending = false; if (selected === item.id) renderTranscript(item); });
+  }
+}
+// Durable activity arrives by cursor; EventSource reconnects with
+// Last-Event-ID, and the server asks for a snapshot reload when replay is
+// incomplete.
+function connect(cursor) {
+  events?.close();
+  let reconnecting = false;
+  events = new EventSource(`/api/stream?since=${cursor}`);
+  events.addEventListener('activity', (event) => {
+    const entry = JSON.parse(event.data);
+    if (entry.entity === 'chat' || entry.entity === 'card' || entry.entity === 'project') scheduleActivity();
+    if ((entry.entity === 'chat' || entry.entity === 'card') && entry.entityId === selected) scheduleRefresh();
+  });
+  events.addEventListener('delta', (event) => applyDelta(JSON.parse(event.data)));
+  events.addEventListener('resync', () => { scheduleActivity(); scheduleRefresh(); });
+  events.addEventListener('error', () => { reconnecting = true; });
+  events.addEventListener('open', () => { if (reconnecting) { reconnecting = false; scheduleActivity(); scheduleRefresh(); } });
+}
+function tickTimers() {
+  document.querySelectorAll('[data-activity-card]').forEach((node) => {
+    const entry = activity.find((candidate) => candidate.cardId === node.dataset.activityCard);
+    if (entry?.state === 'working') node.textContent = activityLabel(entry);
+  });
 }
 function renderActivityList() {
   const list = $('#chat-activity-list'); if (!list) return;
-  list.innerHTML = activity.length ? activity.map((entry) => `<button class="chat-activity-entry" data-action="chat-activity-card" data-id="${entry.cardId}" data-project="${entry.projectId}" ${entry.deleted ? 'disabled' : ''}><strong>${escape(entry.title || 'Untitled card')}${entry.deleted ? ' (deleted)' : ''}</strong><span>${labels[entry.state]}</span></button>`).join('') : '<p>No active card chats.</p>';
+  list.innerHTML = activity.length ? activity.map((entry) => `<button class="chat-activity-entry" data-action="chat-activity-card" data-id="${escape(entry.cardId)}" data-project="${escape(entry.projectId)}" ${entry.requestId ? 'data-reveal="requests"' : ''} ${entry.deleted ? 'disabled' : ''}><strong>${escape(entry.title || 'Untitled card')}${entry.deleted ? ' (deleted)' : ''}</strong><span data-activity-card="${escape(entry.cardId)}">${escape(activityLabel(entry))}</span>${entry.reason ? `<span>${escape(entry.reason)}</span>` : ''}</button>`).join('') : '<p>No active card chats.</p>';
 }
 export function initializeChats(callbacks) {
-  navigation = callbacks; clearInterval(pollTimer); pollTimer = setInterval(() => void poll(), 800);
+  navigation = callbacks;
+  clearInterval(clockTimer); clockTimer = setInterval(tickTimers, 1000);
+  void loadActivity().then(connect, () => connect(0));
   document.addEventListener('input', (event) => {
     if (event.target.id !== 'chat-prompt') return;
     const item = chats.get(selected); if (!item?.composer) return;
@@ -344,10 +404,14 @@ export function initializeChats(callbacks) {
     const item = chats.get(selected); const action = target.dataset.action;
     try {
       if (action === 'workspace-chat-activity') { const list = $('#chat-activity-list'); list.hidden = !list.hidden; renderActivityList(); }
-      if (action === 'chat-activity-card') { await navigation.switchProject(target.dataset.project); navigation.openCard(target.dataset.id); }
+      if (action === 'chat-activity-card') {
+        await navigation.switchProject(target.dataset.project);
+        if (target.dataset.reveal) { if (!chats.has(target.dataset.id)) chats.set(target.dataset.id, newItem(target.dataset.id)); Object.assign(chats.get(target.dataset.id), { reveal: target.dataset.reveal }); chats.get(target.dataset.id).view.tab = 'chat'; }
+        navigation.openCard(target.dataset.id);
+      }
       if (!item) return;
-      if (action === 'toggle-chat') { rememberView(); hidden = !hidden; preference('frameboard-chat-hidden', String(hidden)); setDialogMode(); }
-      if (action === 'workbench-tab') { rememberView(); item.view.tab = target.dataset.tab; applyLayout(); rememberView(); }
+      if (action === 'toggle-chat') { rememberView(); hidden = !hidden; preference('frameboard-chat-hidden', String(hidden)); setDialogMode(); scheduleRefresh(); }
+      if (action === 'workbench-tab') { rememberView(); item.view.tab = target.dataset.tab; applyLayout(); rememberView(); scheduleRefresh(); }
       if (action === 'chat-send') await sendPrompt(item);
       if (action === 'chat-save-draft') { await saveComposer(item); item.error = ''; $('#chat-error').hidden = true; await refresh(item); }
       if (action === 'chat-load-draft') smallForm({ title: 'Use the saved composer?', description: 'Discard this card’s local unsent prompt and reference selections. Copy anything you want to keep first. Other card drafts and running responses are unaffected.', submit: 'Use saved draft', onSubmit: async () => {
@@ -363,6 +427,9 @@ export function initializeChats(callbacks) {
         if (selected === item.id) renderComposer(item);
         if (!result.effective.supported) showError(item, new Error(result.effective.reasons.join(' ')));
       }
+      if (action === 'chat-reconcile') { await send('POST', url(item.id, 'reconcile'), {}); await refresh(item); }
+      if (action === 'chat-continue') { await send('POST', url(item.id, 'continue'), { submissionId: target.dataset.id }); await refresh(item); }
+      if (action === 'chat-resolve') smallForm({ title: 'Mark this delivery interrupted?', description: 'Codex may already have received this prompt. Marking it interrupted unblocks this card’s queue and lets you retry deliberately, which may send it twice. Nothing is resent automatically.', submit: 'Mark interrupted', onSubmit: async () => { await send('POST', url(item.id, 'resolve'), { attemptId: target.dataset.id }); await refresh(item); } });
       if (action === 'chat-stop') { await send('POST', url(item.id, 'stop'), {}); await refresh(item); }
       if (action === 'chat-cancel' || action === 'chat-retry') { await send('POST', url(item.id, action === 'chat-cancel' ? 'cancel' : 'retry'), { submissionId: target.dataset.id }); await refresh(item); }
       if (action === 'chat-answer') { await send('POST', url(item.id, 'answer'), { requestId: target.dataset.id, response: { decision: target.dataset.decision, scope: target.dataset.scope ?? 'once' } }); await refresh(item); }
@@ -384,6 +451,6 @@ export function initializeChats(callbacks) {
     } catch (error) { if (item) showError(item, error); else toast(error.message); }
     finally { if (action === 'chat-discover' && target.isConnected) target.disabled = false; }
   });
-  document.addEventListener('visibilitychange', () => { if (document.hidden) { rememberView(); flushComposers(); } });
-  void poll();
+  document.addEventListener('visibilitychange', () => { if (document.hidden) { rememberView(); flushComposers(); } else scheduleRefresh(); });
+  matchMedia('(min-width: 1180px)').addEventListener('change', scheduleRefresh);
 }

@@ -9,7 +9,7 @@ import path from 'node:path';
 import { templates, defaultTemplate, emptyFields, emptyImageRoles } from './public/card-template.js';
 import { readLegacyBoard } from './legacy-board.js';
 import { emptyGraph, promptGraph, validateGraph, executeGraph, assignmentsFor } from './public/flow-graph.js';
-import { chatMigration, createChatStore } from './store-chat.js';
+import { chatMigration, recoveryMigration, createChatStore } from './store-chat.js';
 import { protectionMigration, createProtectionStore } from './store-protection.js';
 import { imagesMigration, createImageStore } from './store-images.js';
 
@@ -118,7 +118,7 @@ const migrations = [`
     workspace_id TEXT NOT NULL REFERENCES workspaces(id), provider TEXT NOT NULL,
     revision INTEGER NOT NULL, selection TEXT NOT NULL, updated_at TEXT NOT NULL,
     PRIMARY KEY (workspace_id, provider));
-`, chatMigration, protectionMigration, imagesMigration];
+`, chatMigration, protectionMigration, imagesMigration, recoveryMigration];
 
 const now = () => new Date().toISOString();
 const fail = (status, message) => { throw Object.assign(new Error(message), { status }); };

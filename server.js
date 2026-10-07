@@ -8,6 +8,7 @@ import { createCodexAdapter } from './codex-adapter.js';
 import { configurationDiscovery, compileConfiguration, mandatoryBehavior } from './codex-configuration.js';
 import { createChatService } from './chat-service.js';
 import { createChatWorker } from './chat-worker.js';
+import { createEventStream } from './event-stream.js';
 import { imageFormat, storeImage, verifiedImage, maxImageBytes } from './image-files.js';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
@@ -65,11 +66,11 @@ async function json(req, limit) {
   catch (error) { if (error.status) throw error; throw Object.assign(new Error('Invalid JSON.'), { status: 400 }); }
 }
 
-export async function createApp({ dataDir = process.env.DATA_DIR || path.join(root, 'data'), fetch: fetchImpl = globalThis.fetch, onCardEvent, codexAdapter } = {}) {
+export async function createApp({ dataDir = process.env.DATA_DIR || path.join(root, 'data'), fetch: fetchImpl = globalThis.fetch, onCardEvent, codexAdapter, providerBackoffMs, streamReplayLimit } = {}) {
   const imagesDir = path.join(dataDir, 'images');
   await mkdir(imagesDir, { recursive: true });
-  let store; let worker;
-  try { store = await openStore({ dataDir, onCardEvent, onCommit: () => worker?.wake() }); }
+  let store; let worker; let stream;
+  try { store = await openStore({ dataDir, onCardEvent, onCommit: () => { worker?.wake(); stream?.notify(); } }); }
   catch (error) { throw new Error(`Could not load the board in ${dataDir}. Your data has not been changed. ${error.message}`); }
   // Only top-level files in public/ are served, so paths cannot escape it.
   const publicFiles = new Map((await readdir(path.join(root, 'public'))).filter((name) => staticTypes[path.extname(name)]).map((name) => [`/${name}`, name]));
@@ -83,7 +84,9 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
   const read = (req) => json(req, 12 * 1024 * 1024);
   const codex = codexAdapter ?? createCodexAdapter();
   const chat = createChatService({ store, adapter: codex, dataDir });
-  worker = createChatWorker({ store, adapter: codex, service: chat, ctx: currentUser() });
+  stream = createEventStream({ store, replayLimit: streamReplayLimit });
+  worker = createChatWorker({ store, adapter: codex, service: chat, ctx: currentUser(), providerBackoffMs,
+    onDelta: (delta) => stream.delta(currentUser().workspaceId, delta) });
   const codexAction = async (fn) => {
     try { return await fn(); } catch (error) {
       if (error.kind) Object.assign(error, { status: 503 });
@@ -98,15 +101,18 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
     ['POST', /^\/api\/cards\/([^/]+)\/chat\/proposals\/[^/]+\/preview$/, (ctx, req, id, url) => store.protection.previewProposal(ctx, id, url.pathname.split('/').at(-2))],
     ['POST', /^\/api\/cards\/([^/]+)\/chat\/outputs\/[^/]+\/adopt$/, (ctx, req, id, url) => store.images.adopt(ctx, id, url.pathname.split('/').at(-2))],
     ['POST', /^\/api\/cards\/([^/]+)\/chat\/outputs\/[^/]+\/retry-save$/, (ctx, req, id, url) => worker.retrySave(id, url.pathname.split('/').at(-2))],
-    ['GET', /^\/api\/chat-activity$/, (ctx) => ({ entries: store.chats.indicators(ctx) })],
+    ['GET', /^\/api\/chat-activity$/, (ctx) => ({ cursor: store.workspace(ctx).eventCursor, entries: store.chats.indicators(ctx) })],
     ['POST', /^\/api\/cards\/([^/]+)\/chat\/revoke-grants$/, (ctx, req, id) => store.chats.clearGrants(ctx, id)],
-    ['GET', /^\/api\/cards\/([^/]+)\/chat$/, (ctx, req, id) => ({ ...store.chats.snapshot(ctx, id), proposals: store.protection.proposals(ctx, id), outputs: store.images.outputs(ctx, id).map((output) => ({ ...output, available: Boolean(output.imageId) && existsSync(path.join(imagesDir, output.imageId)) })) })],
+    ['GET', /^\/api\/cards\/([^/]+)\/chat$/, (ctx, req, id) => (worker.flushCard(id), { ...store.chats.snapshot(ctx, id), proposals: store.protection.proposals(ctx, id), outputs: store.images.outputs(ctx, id).map((output) => ({ ...output, available: Boolean(output.imageId) && existsSync(path.join(imagesDir, output.imageId)) })) })],
     ['PUT', /^\/api\/cards\/([^/]+)\/chat\/composer$/, async (ctx, req, id) => store.chats.saveComposer(ctx, id, await read(req))],
     ['POST', /^\/api\/cards\/([^/]+)\/chat\/preview$/, (ctx, req, id) => chat.preview(ctx, id)],
     ['POST', /^\/api\/cards\/([^/]+)\/chat\/discover$/, (ctx, req, id) => codexAction(() => chat.discover(ctx, id))],
     ['POST', /^\/api\/cards\/([^/]+)\/chat\/submissions$/, (ctx, req, id) => codexAction(async () => chat.queue(ctx, id, await read(req))), 201],
     ['POST', /^\/api\/cards\/([^/]+)\/chat\/fresh$/, async (ctx, req, id) => store.chats.fresh(ctx, id, await read(req))],
     ['POST', /^\/api\/cards\/([^/]+)\/chat\/viewed$/, (ctx, req, id) => (store.chats.viewed(ctx, id), { ok: true })],
+    ['POST', /^\/api\/cards\/([^/]+)\/chat\/reconcile$/, (ctx, req, id) => codexAction(() => worker.reconcileCard(id))],
+    ['POST', /^\/api\/cards\/([^/]+)\/chat\/continue$/, async (ctx, req, id) => store.chats.continueOutside(ctx, id, (await read(req))?.submissionId)],
+    ['POST', /^\/api\/cards\/([^/]+)\/chat\/resolve$/, async (ctx, req, id) => store.chats.resolve(ctx, id, (await read(req))?.attemptId)],
     ['POST', /^\/api\/cards\/([^/]+)\/chat\/stop$/, (ctx, req, id) => ({ attempt: worker.stop(id) })],
     ['POST', /^\/api\/cards\/([^/]+)\/chat\/cancel$/, async (ctx, req, id) => (store.chats.cancelSubmission(ctx, id, (await read(req)).submissionId), { ok: true })],
     ['POST', /^\/api\/cards\/([^/]+)\/chat\/retry$/, async (ctx, req, id) => store.chats.retry(ctx, id, (await read(req)).submissionId)],
@@ -145,6 +151,11 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
       if (!/^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/.test(host)) return send(res, 403, { error: 'Use localhost to access this board.' });
       if (req.headers.origin && req.headers.origin !== `http://${host}`) return send(res, 403, { error: 'Cross-origin requests are not allowed.' });
       const url = new URL(req.url, `http://${host}`);
+      if (url.pathname === '/api/stream' && req.method === 'GET') {
+        const cursor = req.headers['last-event-id'] ?? url.searchParams.get('since');
+        assert(cursor === null || /^\d{1,15}$/.test(cursor), 'Invalid stream cursor.');
+        return stream.open(currentUser(req), req, res, cursor === null ? undefined : Number(cursor));
+      }
       for (const [method, pattern, handler, status = 200] of routes) {
         const match = url.pathname.match(pattern);
         if (!match || req.method !== method) continue;
@@ -194,7 +205,14 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
       if (!error.status && error.code !== 'ENOENT') console.error(error);
     }
   });
-  server.on('close', () => { worker.close(); store.close(); codex.close().catch((error) => console.error(error)); });
+  // Open event streams would otherwise keep close() waiting forever.
+  const close = server.close.bind(server);
+  server.close = (callback) => {
+    worker.close(); stream.close();
+    const stopped = codex.close().catch((error) => console.error(error));
+    return close((error) => { stopped.then(() => callback?.(error)); });
+  };
+  server.on('close', () => { store.close(); });
   return server;
 }
 

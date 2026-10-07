@@ -5,8 +5,23 @@ import { submissionText } from './public/chat-context.js';
 import { automaticDecision, nativeDecision } from './native-requests.js';
 import { outputProvenance } from './store-images.js';
 
-export function createChatWorker({ store, adapter, service, ctx }) {
+// Explains a failed accepted turn. Exhausted usage and provider rejections after
+// acceptance need an explicit retry; nothing is resent or substituted.
+export function failureReason(error) {
+  const info = error?.codexErrorInfo; const kind = typeof info === 'string' ? info : info && Object.keys(info)[0];
+  const message = error?.message ?? '';
+  if (kind === 'usageLimitExceeded') return `Usage limit reached. Retry explicitly after it resets. ${message}`.trim();
+  if (kind) return `Codex reported ${kind} after accepting this prompt. Retry explicitly. ${message}`.trim();
+  return message;
+}
+
+// A JSON-RPC rejection Codex documents as transient backpressure: the request
+// was refused before acceptance.
+const overloaded = (error) => error.code === -32001;
+
+export function createChatWorker({ store, adapter, service, ctx, providerBackoffMs = 2000, providerWaitLimit = 6, onDelta = () => {} }) {
   const live = new Map();
+  let retryTimer = null;
   const retained = new Set();
   const requests = new Map();
   const importing = new Set();
@@ -51,12 +66,21 @@ export function createChatWorker({ store, adapter, service, ctx }) {
     for (const [id, pending] of requests) if (pending.work === work) requests.delete(id);
     wake();
   }
-  function end(work, status, reason = '') {
+  // An observed Codex exit is proof for reconciliation: no surviving process
+  // can still deliver the turn, so history is checked at once.
+  function end(work, status, reason = '', { exited = false } = {}) {
     if (closed) return;
     flush(work);
     if (store.chats.attempt(work.attempt.id)?.status === 'uncertain') store.chats.reconcile(ctx, work.attempt.id, status, reason);
-    else store.chats.finish(ctx, work.attempt.id, status, reason);
+    else store.chats.finish(ctx, work.attempt.id, status, reason, exited ? 'process-exited' : null);
     release(work);
+    if (exited && status === 'uncertain') void recheck(work.attempt.id, true);
+  }
+  async function recheck(attemptId, proof) {
+    const entry = store.chats.unfinished(ctx).find((candidate) => candidate.attempt.id === attemptId);
+    if (!entry) return;
+    try { await settleFromHistory(entry, proof); }
+    catch (error) { if (!closed) store.chats.reconcile(ctx, attemptId, 'uncertain', `Reconciliation failed: ${error.message}`); }
   }
   async function interrupt(work) {
     if (closed || !work.threadId || !work.turnId || work.interruptSent === work.turnId) return;
@@ -82,7 +106,9 @@ export function createChatWorker({ store, adapter, service, ctx }) {
     } else if (event.type === 'delta') {
       const item = work.items.get(event.itemId) ?? { id: event.itemId, kind: 'agentMessage', text: '', data: {}, completed: false };
       if (item.completed) return;
+      const offset = item.text.length;
       item.text += event.delta; item.dirty = true; work.items.set(item.id, item);
+      onDelta({ cardId: work.submission.cardId, attemptId: work.attempt.id, itemId: item.id, offset, text: event.delta });
       // Late deltas remain reviewable even when the periodic writer has stopped.
       if (live.get(work.submission.cardId) !== work) flush(work);
     } else if (event.type === 'item-started' || event.type === 'item-completed') {
@@ -94,9 +120,9 @@ export function createChatWorker({ store, adapter, service, ctx }) {
       work.items.set(item.id, item); flush(work);
       if (native.type === 'imageGeneration' && event.type === 'item-completed') capture(work.attempt, work.submission, native, { threadId: work.threadId, turnId: event.turnId ?? work.turnId });
     } else if (event.type === 'turn-completed') {
-      end(work, event.status === 'completed' ? 'completed' : event.status === 'interrupted' ? 'interrupted' : 'failed', event.error?.message ?? '');
+      end(work, event.status === 'completed' ? 'completed' : event.status === 'interrupted' ? 'interrupted' : 'failed', failureReason(event.error));
     } else if (event.type === 'process-exited' || event.type === 'target-unavailable') {
-      end(work, 'uncertain', event.error?.message ?? 'The selected target changed. Reconcile this conversation before continuing.');
+      end(work, 'uncertain', event.error?.message ?? 'The selected target changed. Reconcile this conversation before continuing.', { exited: event.type === 'process-exited' });
     } else if (event.type === 'request-invalidated') {
       store.chats.invalidateRequest(ctx, work.attempt.id, event.requestId);
       for (const [id, pending] of requests) if (pending.work === work && String(pending.nativeId) === String(event.requestId)) requests.delete(id);
@@ -156,8 +182,14 @@ export function createChatWorker({ store, adapter, service, ctx }) {
       if (store.chats.attempt(attempt.id)?.status === 'interrupt-requested') { end(work, 'interrupted'); return; }
       const recheck = queuedConfigurationDecision(submission.configuration, store.providerConfiguration(ctx).selection, discovery);
       if (recheck.status !== 'ready') { store.chats.hold(ctx, attempt.id, recheck.reason); release(work); return; }
+      if (work.conversation.binding?.threadId) {
+        const outside = await outsideTurns(work.conversation.id, opened.threadId);
+        if (closed) return;
+        if (store.chats.attempt(attempt.id)?.status === 'interrupt-requested') { end(work, 'interrupted'); return; }
+        if (outside.length) { store.chats.holdOutside(ctx, attempt.id, outside); release(work); return; }
+      }
       if (store.chats.attempt(attempt.id)?.status !== 'dispatching') { release(work); return; }
-      work.dispatching = true;
+      work.dispatching = true; work.sent = true;
       const started = await adapter.startTurn({ threadId: opened.threadId, model: submission.model,
         fullAccess: store.chats.requestGrants(ctx, submission.cardId).some((grant) => grant.kind === 'full'),
         clientUserMessageId: attempt.id, input: [{ type: 'text', text: submissionText(submission) }, ...images] });
@@ -167,10 +199,15 @@ export function createChatWorker({ store, adapter, service, ctx }) {
       if (store.chats.attempt(attempt.id)?.status === 'interrupt-requested') void interrupt(work);
     } catch (error) {
       if (closed) return;
+      // Nothing reached Codex, or Codex refused it before acceptance: wait for
+      // the provider and retry. Possible delivery is never retried this way.
+      if (overloaded(error) || (!work.sent && ['timeout', 'process-exited', 'busy'].includes(error.kind))) {
+        store.chats.wait(ctx, work.attempt.id, error.message, { baseMs: providerBackoffMs, limit: providerWaitLimit }); release(work); return;
+      }
       const uncertain = ['timeout', 'process-exited', 'protocol', 'binding-mismatch', 'busy'].includes(error.kind);
-      if (uncertain) end(work, 'uncertain', error.message);
+      if (uncertain) end(work, 'uncertain', error.message, { exited: error.kind === 'process-exited' });
       else if (['configuration-unavailable', 'fresh-context-required', 'native-unavailable'].includes(error.kind) || error.status === 409) {
-        store.chats.hold(ctx, work.attempt.id, error.message, error.kind === 'native-unavailable'); release(work);
+        store.chats.hold(ctx, work.attempt.id, error.message, { nativeUnavailable: error.kind === 'native-unavailable' }); release(work);
       } else end(work, 'failed', error.message);
     }
   }
@@ -193,34 +230,86 @@ export function createChatWorker({ store, adapter, service, ctx }) {
         work.timer.unref();
         void execute(work);
       }
+      // Waiting submissions become ready at their retry time.
+      clearTimeout(retryTimer);
+      const next = store.chats.nextRetry(ctx);
+      if (next) { retryTimer = setTimeout(wake, Math.max(0, Date.parse(next) - Date.now()) + 5); retryTimer.unref(); }
     });
+  }
+  // Pages native history read-only (newest first) until `found` matches.
+  async function findTurn(threadId, found) {
+    let cursor = null; const seen = new Set();
+    do {
+      const page = await adapter.listTurns({ threadId, cursor });
+      if (closed) return null;
+      const match = page.data.find(found);
+      if (match) return match;
+      cursor = page.nextCursor;
+      if (cursor && seen.has(cursor)) throw new Error('Native history repeated a cursor.');
+      seen.add(cursor);
+    } while (cursor);
+    return null;
+  }
+  // Newest native turns back to the latest one Frameboard knows. Any other turn
+  // was continued outside Frameboard (for example a CLI resume).
+  async function outsideTurns(conversationId, threadId) {
+    const { attemptIds, turnIds } = store.chats.nativeIdentity(conversationId);
+    const outside = [];
+    await findTurn(threadId, (turn) => {
+      if (turnIds.has(turn.id) || turn.items?.some((item) => item.type === 'userMessage' && attemptIds.has(item.clientId))) return true;
+      outside.push(turn.id); return false;
+    });
+    return outside;
+  }
+  // Read-only delivery reconciliation by attempt client ID. `proof` holds only
+  // when the app-server that could have received turn/start has exited (app
+  // startup or an observed process exit). Then complete native history without
+  // the attempt proves non-delivery. Anything possibly delivered is never resent.
+  async function settleFromHistory({ attempt, submission, conversation }, proof) {
+    const threadId = conversation.binding?.threadId;
+    const notSent = (unbind = false) => {
+      // A Stop or deletion requested before delivery is honored, not requeued.
+      if (attempt.status === 'interrupt-requested' || ['user', 'cancelled'].includes(attempt.cause)) return store.chats.reconcile(ctx, attempt.id, 'interrupted', 'Stopped before it was sent to Codex.');
+      return store.chats.notDelivered(ctx, attempt.id, 'Not sent before Codex stopped; sent again automatically.', { unbind });
+    };
+    // The binding is committed before turn/start, so no binding means no send.
+    if (!threadId) return notSent();
+    let match;
+    try { match = await findTurn(threadId, (turn) => turn.items?.some((item) => item.type === 'userMessage' && item.clientId === attempt.id)); }
+    catch (error) {
+      if (closed) return false;
+      if (error.kind !== 'native-unavailable') return store.chats.reconcile(ctx, attempt.id, 'uncertain', `Native history could not be read, so delivery is uncertain: ${error.message}`);
+      // A thread is persisted with its first turn. A missing thread whose
+      // conversation never had a turn therefore never received this one.
+      if (proof && !attempt.turnId && !store.chats.conversationTurns(conversation.id).length) return notSent(true);
+      return store.chats.reconcile(ctx, attempt.id, 'interrupted', 'Native history for this conversation is missing. Its retained history stays readable here and nothing was resent. Start fresh context to continue.', { nativeUnavailable: true, cause: 'missing-history' });
+    }
+    if (closed) return false;
+    if (!match) {
+      if (attempt.turnId) {
+        store.chats.item(ctx, attempt.id, { id: 'missing-from-native-history', kind: 'notice', text: 'Missing from native history. Retained output is shown; nothing was resent.', completed: true });
+        return store.chats.reconcile(ctx, attempt.id, 'interrupted', 'Codex accepted this prompt, but it is missing from native history. Nothing was resent.', { cause: 'missing-history' });
+      }
+      if (proof) return notSent();
+      return store.chats.reconcile(ctx, attempt.id, 'uncertain', 'No matching native turn yet, and Codex may still deliver it. Check again, or mark it interrupted to retry deliberately.');
+    }
+    for (const item of match.items ?? []) if (item.type !== 'userMessage') {
+      store.chats.item(ctx, attempt.id, { id: item.id, kind: item.type, text: item.text ?? '', data: transcriptData(item), completed: match.status === 'completed' });
+      if (item.type === 'imageGeneration') capture(attempt, submission, item, { threadId, turnId: match.id });
+    }
+    const identity = { turnId: match.id };
+    if (match.status === 'completed') return store.chats.reconcile(ctx, attempt.id, 'completed', 'Recovered after restart.', identity);
+    if (match.status === 'failed') return store.chats.reconcile(ctx, attempt.id, 'failed', failureReason(match.error), identity);
+    if (match.status === 'interrupted' || proof) return store.chats.reconcile(ctx, attempt.id, 'interrupted', 'Interrupted when Codex stopped. Partial output is retained; nothing was resent.', { ...identity, cause: 'restart' });
+    return store.chats.reconcile(ctx, attempt.id, 'uncertain', 'Codex accepted this prompt and has not reported a result. It is held until reconciled.', identity);
   }
   async function reconcile() {
     store.chats.invalidateAfterRestart(ctx);
     store.images.interruptedImports(ctx);
-    for (const { attempt, submission, conversation } of store.chats.unfinished(ctx)) {
+    for (const entry of store.chats.unfinished(ctx)) {
       if (closed) return;
-      try {
-        if (!conversation.binding?.threadId) throw new Error('Native identity was not recorded; delivery cannot be established.');
-        let cursor = null; let match; const seen = new Set();
-        do {
-          const page = await adapter.listTurns({ threadId: conversation.binding.threadId, cursor });
-          if (closed) return;
-          match = page.data.find((turn) => turn.items?.some((item) => item.type === 'userMessage' && item.clientId === attempt.id));
-          cursor = page.nextCursor;
-          if (cursor && seen.has(cursor)) throw new Error('Native history repeated a cursor.');
-          seen.add(cursor);
-        } while (!match && cursor);
-        if (!match) throw new Error('No matching native turn. Non-delivery is not proven at this milestone; this submission remains held.');
-        for (const item of match.items ?? []) if (item.type !== 'userMessage') {
-          store.chats.item(ctx, attempt.id, { id: item.id, kind: item.type, text: item.text ?? '', data: transcriptData(item), completed: match.status === 'completed' });
-          if (item.type === 'imageGeneration') capture(attempt, submission, item, { threadId: conversation.binding.threadId, turnId: match.id });
-        }
-        const status = match.status === 'completed' ? 'completed' : match.status === 'interrupted' ? 'interrupted' : match.status === 'failed' ? 'failed' : 'uncertain';
-        store.chats.reconcile(ctx, attempt.id, status, status === 'uncertain' ? 'Native delivery was accepted but has no terminal result. Reconciliation is required.' : 'Recovered after restart.');
-      } catch (error) {
-        if (!closed) store.chats.reconcile(ctx, attempt.id, error.kind === 'native-unavailable' ? 'interrupted' : 'uncertain', error.message, error.kind === 'native-unavailable');
-      }
+      try { await settleFromHistory(entry, true); }
+      catch (error) { if (!closed) store.chats.reconcile(ctx, entry.attempt.id, 'uncertain', `Reconciliation failed: ${error.message}`); }
     }
   }
   void reconcile().catch((error) => { if (!closed) console.error(error); }).finally(wake);
@@ -230,16 +319,8 @@ export function createChatWorker({ store, adapter, service, ctx }) {
   // Retry saving reads the same item from native history (read-only), or its
   // reported saved file. It never resumes the conversation or starts a turn.
   async function nativeItem({ threadId, turnId, itemId }) {
-    let cursor = null; const seen = new Set();
-    do {
-      const page = await adapter.listTurns({ threadId, cursor });
-      const turn = page.data.find((entry) => entry.id === turnId);
-      if (turn) return turn.items?.find((item) => item.id === itemId && item.type === 'imageGeneration') ?? null;
-      cursor = page.nextCursor;
-      if (cursor && seen.has(cursor)) return null;
-      seen.add(cursor);
-    } while (cursor);
-    return null;
+    const turn = await findTurn(threadId, (entry) => entry.id === turnId);
+    return turn?.items?.find((item) => item.id === itemId && item.type === 'imageGeneration') ?? null;
   }
   return {
     wake,
@@ -251,6 +332,17 @@ export function createChatWorker({ store, adapter, service, ctx }) {
       await saveOutput(output, native ?? { result: '', savedPath: output.native.savedPath });
       return store.images.output(outputId);
     },
+    // Explicit read-only reconciliation of this card's uncertain deliveries.
+    async reconcileCard(cardId) {
+      store.getCard(ctx, cardId);
+      for (const entry of store.chats.unfinished(ctx)) {
+        if (entry.attempt.cardId === cardId && entry.attempt.status === 'uncertain') await recheck(entry.attempt.id, entry.attempt.cause === 'process-exited');
+      }
+      return { ok: true };
+    },
+    // A snapshot then includes everything streamed so far, so the next delta's
+    // offset continues exactly where the snapshot ends.
+    flushCard(cardId) { for (const work of retained) if (work.submission.cardId === cardId) flush(work); },
     stop(cardId) { const result = store.chats.stop(ctx, cardId); wake(); return result; },
     answer(cardId, requestId, response) {
       const pending = requests.get(requestId);
@@ -263,7 +355,7 @@ export function createChatWorker({ store, adapter, service, ctx }) {
     },
     close() {
       for (const work of retained) { flush(work); clearInterval(work.timer); work.unsubscribe?.(); }
-      closed = true; requests.clear(); live.clear(); retained.clear();
+      closed = true; clearTimeout(retryTimer); requests.clear(); live.clear(); retained.clear();
     },
   };
 }

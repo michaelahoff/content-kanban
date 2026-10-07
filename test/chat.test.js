@@ -79,7 +79,7 @@ test('exact image versions deduplicate role references; composer selections surv
   assert.equal(sent.context.images[0].hash, preview.context.images[0].hash);
 });
 
-test('completed native bindings resume exactly after restart; uncertain accepted turns are never replayed', async (t) => {
+test('completed native bindings resume exactly after restart; accepted turns cut off by restart are never replayed', async (t) => {
   const f = await fixture(t); const card = await f.card();
   await f.queue(card.id, await f.compose(card.id));
   await waitFor(() => f.codex.sends[0]);
@@ -90,11 +90,9 @@ test('completed native bindings resume exactly after restart; uncertain accepted
   assert.equal(f.codex.sends[1].threadId, f.codex.sends[0].threadId);
   assert.equal(f.codex.sends[1].model, 'other-model');
   await f.restart();
-  await waitFor(async () => (await f.chat(card.id)).attempts[1].status === 'uncertain');
+  await waitFor(async () => (await f.chat(card.id)).attempts[1].status === 'interrupted');
   assert.equal(f.codex.sends.length, 2);
-  await f.queue(card.id, await f.compose(card.id, 'Must wait', 'other-model'));
-  assert.equal(f.codex.sends.length, 2);
-  assert.equal((await f.call('POST', `/api/cards/${card.id}/chat/fresh`, { cancelQueued: true })).status, 409);
+  assert.equal((await f.chat(card.id)).attempts[1].cause, 'restart');
   assert.equal((await f.chat(card.id)).conversations[0].model, 'other-model');
 });
 

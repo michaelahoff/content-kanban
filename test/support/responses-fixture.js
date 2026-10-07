@@ -38,6 +38,9 @@ export async function createResponsesFixture() {
       emit('response.output_item.added', { output_index: 0, item: { ...item, content: [] } });
       emit('response.content_part.added', { output_index: 0, item_id: item.id, content_index: 0, part: { type: 'output_text', text: '', annotations: [] } });
       emit('response.output_text.delta', { output_index: 0, item_id: item.id, content_index: 0, delta: step.text });
+      // A stalled response streams partial text and never completes, so a
+      // gate can crash the harness mid-stream.
+      if (step.stall) return;
     }
     emit('response.output_item.done', { output_index: 0, item });
     emit('response.completed', { response: { id, object: 'response', status: 'completed', output: [item], usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } });
@@ -47,7 +50,7 @@ export async function createResponsesFixture() {
   return {
     baseUrl: `http://127.0.0.1:${server.address().port}/v1`,
     requests,
-    // Queue the next model responses: { text } or { functionCall: { name, arguments } }.
+    // Queue the next model responses: { text, stall } or { functionCall: { name, arguments } }.
     respond(...steps) { queue.push(...steps); },
     close: () => new Promise((resolve) => { server.closeAllConnections?.(); server.close(resolve); }),
   };

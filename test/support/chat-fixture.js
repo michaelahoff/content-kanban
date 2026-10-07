@@ -11,12 +11,12 @@ export async function waitFor(fn) {
   while (Date.now() < end) { const value = await fn(); if (value) return value; await new Promise((resolve) => setTimeout(resolve, 10)); }
   assert.fail('Expected behavior did not arrive within five seconds.');
 }
-export async function fixture(t) {
+export async function fixture(t, { providerBackoffMs = 10, streamReplayLimit } = {}) {
   const dataDir = await mkdtemp(path.join(tmpdir(), 'frameboard-chat-'));
   const codex = new ControlledCodex(dataDir);
   let app;
   async function start() {
-    app = await createApp({ dataDir, codexAdapter: codex });
+    app = await createApp({ dataDir, codexAdapter: codex, providerBackoffMs, streamReplayLimit });
     await new Promise((resolve) => app.listen(0, '127.0.0.1', resolve));
   }
   await start();
@@ -37,5 +37,31 @@ export async function fixture(t) {
     return ok('PUT', `/api/cards/${id}/chat/composer`, { ...composer, prompt, model, ...extra });
   };
   const queue = (id, composer, submissionId = randomUUID()) => ok('POST', `/api/cards/${id}/chat/submissions`, { id: submissionId, composerRevision: composer.revision });
-  return { dataDir, codex, call, raw, ok, card, chat, compose, queue, restart: async () => { await close(); await start(); } };
+  // Reads Server-Sent Events from /api/stream as { id, event, data } frames.
+  async function stream({ since, lastEventId } = {}) {
+    const controller = new AbortController();
+    const response = await raw(`/api/stream${since === undefined ? '' : `?since=${since}`}`, { signal: controller.signal, headers: lastEventId === undefined ? {} : { 'Last-Event-ID': String(lastEventId) } });
+    assert.equal(response.headers.get('content-type'), 'text/event-stream');
+    const frames = []; const decoder = new TextDecoder(); let buffer = '';
+    const reading = (async () => {
+      try {
+        for await (const chunk of response.body) {
+          buffer += decoder.decode(chunk, { stream: true });
+          let end;
+          while ((end = buffer.indexOf('\n\n')) >= 0) {
+            const block = buffer.slice(0, end); buffer = buffer.slice(end + 2);
+            const frame = { id: null, event: 'message', data: '' };
+            for (const line of block.split('\n')) {
+              const [field, ...rest] = line.split(':'); const value = rest.join(':').replace(/^ /, '');
+              if (field === 'id') frame.id = Number(value); else if (field === 'event') frame.event = value; else if (field === 'data') frame.data += value;
+            }
+            if (frame.data) frames.push({ ...frame, data: JSON.parse(frame.data) });
+          }
+        }
+      } catch (error) { if (error.name !== 'AbortError') throw error; }
+    })();
+    t.after(() => { controller.abort(); return reading; });
+    return { frames, until: (predicate) => waitFor(() => frames.find(predicate)), close: () => { controller.abort(); return reading; } };
+  }
+  return { dataDir, codex, call, raw, ok, card, chat, compose, queue, stream, restart: async () => { await close(); await start(); } };
 }

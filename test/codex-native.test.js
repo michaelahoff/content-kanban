@@ -82,6 +82,56 @@ test('installed native: durable HTTP worker follows up after process/app restart
   } finally { if (app.listening) await close(); await adapter.close(); }
 });
 
+test('installed native: a crash mid-stream is reconciled read-only after restart, retains partial text and resumes exactly without resending', { skip: !enabled, timeout: 45000 }, async (t) => {
+  const f = await nativeFixture(t);
+  const dataDir = path.join(path.dirname(f.home), 'recovery-data');
+  let app; let adapter = f.adapter;
+  async function start() {
+    const boundary = { ...adapter, openThread: (options) => adapter.openThread({ ...options, modelProvider: 'fb_fixture' }) };
+    app = await createApp({ dataDir, codexAdapter: boundary });
+    await new Promise((resolve) => app.listen(0, '127.0.0.1', resolve));
+  }
+  const close = () => new Promise((resolve) => app.close(resolve));
+  async function call(method, pathname, body) {
+    const response = await fetch(`http://127.0.0.1:${app.address().port}${pathname}`, { method, headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
+    const value = await response.json(); assert.ok(response.ok, JSON.stringify(value)); return value;
+  }
+  async function until(cardId, predicate) {
+    for (let i = 0; i < 300; i++) { const chat = await call('GET', `/api/cards/${cardId}/chat`); if (predicate(chat)) return chat; await new Promise((resolve) => setTimeout(resolve, 50)); }
+    assert.fail('Installed native recovery did not reach the expected state.');
+  }
+  async function submit(cardId, prompt) {
+    const composer = (await call('GET', `/api/cards/${cardId}/chat`)).composer;
+    const saved = await call('PUT', `/api/cards/${cardId}/chat/composer`, { ...composer, prompt, model: 'gpt-6-luna' });
+    return call('POST', `/api/cards/${cardId}/chat/submissions`, { id: randomUUID(), composerRevision: saved.revision });
+  }
+  await start();
+  try {
+    const workspace = await call('GET', '/api/workspace'); const project = workspace.projects[0];
+    const stageId = workspace.flows.find((flow) => flow.id === project.flowId).stages[0].id;
+    const card = await call('POST', `/api/projects/${project.id}/cards`, { stageId, title: 'RECOVERY_NATIVE_CARD' });
+    f.peer.respond({ text: 'FB_PARTIAL_BEFORE_CRASH', stall: true });
+    const stalled = await submit(card.id, 'RECOVERY_STALLED_PROMPT');
+    const before = await until(card.id, (chat) => chat.items.some((item) => item.text.includes('FB_PARTIAL_BEFORE_CRASH')));
+    const binding = before.conversations[0].binding;
+    const sentBefore = f.peer.requests.length;
+    await adapter.close({ signal: 'SIGKILL' }); await close();
+    adapter = createCodexAdapter({ cwd: f.cwd, env: { ...process.env, CODEX_HOME: f.home }, requestTimeoutMs: 15000 });
+    await start();
+    const recovered = await until(card.id, (chat) => chat.submissions[0].status === 'interrupted');
+    assert.equal(recovered.attempts.length, 1);
+    assert.equal(recovered.attempts[0].cause, 'restart');
+    assert.ok(recovered.items.some((item) => item.text.includes('FB_PARTIAL_BEFORE_CRASH') && !item.completed));
+    assert.equal(f.peer.requests.length, sentBefore, 'Reconciliation made no model request and resent nothing.');
+    assert.equal(recovered.submissions[0].id, stalled.id);
+    const follow = await submit(card.id, 'RECOVERY_FOLLOW_UP');
+    const done = await until(card.id, (chat) => chat.submissions.find((row) => row.id === follow.id)?.status === 'completed');
+    assert.deepEqual(done.conversations[0].binding, binding);
+    assert.equal(f.peer.requests.filter((request) => request.serialized.includes('RECOVERY_STALLED_PROMPT')).length >= 1, true);
+    assert.ok(!f.peer.requests.slice(sentBefore).some((request) => request.serialized.split('RECOVERY_STALLED_PROMPT').length > 2), 'The stalled prompt was never resent as a new user message.');
+  } finally { if (app.listening) await close(); await adapter.close(); }
+});
+
 async function nativeFixture(t) {
   assert.ok(schema, 'Install Codex before running the native gates.');
   const root = await mkdtemp(path.join(tmpdir(), 'frameboard-native-'));
@@ -133,6 +183,63 @@ async function nativeFixture(t) {
   }
   return { adapter, home, cwd, peer, selection, discovery, frozen, open, turn };
 }
+
+test('installed native: three HTTP cards with text, approval and image work progress independently', { skip: !enabled, timeout: 45000 }, async (t) => {
+  let app;
+  t.after(() => app?.listening && new Promise((resolve) => app.close(resolve)));
+  const f = await nativeFixture(t);
+  const dataDir = path.join(path.dirname(f.home), 'concurrent-data');
+  const boundary = { ...f.adapter, openThread: (options) => f.adapter.openThread({ ...options, modelProvider: 'fb_fixture' }) };
+  app = await createApp({ dataDir, codexAdapter: boundary });
+  await new Promise((resolve) => app.listen(0, '127.0.0.1', resolve));
+  async function call(method, pathname, body) {
+    const res = await fetch(`http://127.0.0.1:${app.address().port}${pathname}`, { method, headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
+    const value = await res.json(); assert.ok(res.ok, JSON.stringify(value)); return value;
+  }
+  async function until(fn) {
+    for (let i = 0; i < 300; i++) { const value = await fn(); if (value) return value; await new Promise((resolve) => setTimeout(resolve, 50)); }
+    assert.fail('Installed concurrent cards did not reach the expected state.');
+  }
+  const workspace = await call('GET', '/api/workspace'); const project = workspace.projects[0];
+  const stageId = workspace.flows.find((flow) => flow.id === project.flowId).stages[0].id;
+  const cards = [];
+  for (const title of ['Approval', 'Text', 'Image']) cards.push(await call('POST', `/api/projects/${project.id}/cards`, { stageId, title }));
+  const [approval, text, image] = cards;
+  const chat = (id) => call('GET', `/api/cards/${id}/chat`);
+  async function submit(card) {
+    const composer = (await chat(card.id)).composer;
+    const saved = await call('PUT', `/api/cards/${card.id}/chat/composer`, { ...composer, prompt: `${card.title} concurrency gate`, model: 'gpt-6-luna' });
+    await call('POST', `/api/cards/${card.id}/chat/submissions`, { id: randomUUID(), composerRevision: saved.revision });
+  }
+  const outside = await mkdtemp('/var/tmp/frameboard-concurrent-');
+  t.after(() => rm(outside, { recursive: true, force: true }));
+  f.peer.respond({ functionCall: { name: 'exec_command', arguments: { cmd: `printf test > '${path.join(outside, 'approval.txt')}'`, sandbox_permissions: 'require_escalated', justification: 'Bounded native approval validation.', yield_time_ms: 1000 } } });
+  await submit(approval);
+  const pending = await until(async () => (await chat(approval.id)).requests.find((request) => request.status === 'pending'));
+  f.peer.respond({ text: 'CONCURRENT_PARTIAL_TEXT', stall: true });
+  await submit(text);
+  await until(async () => (await chat(text.id)).items.some((item) => item.text === 'CONCURRENT_PARTIAL_TEXT'));
+  // Native register_image imports a rendered file. Real raster generation and
+  // recovery are validated separately against the signed-in account.
+  const imageWorkspace = path.join(dataDir, 'workspaces', image.id);
+  await mkdir(imageWorkspace, { recursive: true });
+  await writeFile(path.join(imageWorkspace, 'rendered.png'), Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jS1kAAAAASUVORK5CYII=', 'base64'));
+  f.peer.respond({ functionCall: { name: 'register_image', arguments: { path: 'rendered.png', name: 'Concurrent rendered image' } } });
+  await submit(image);
+  const rendered = await until(async () => { const value = await chat(image.id); return value.submissions[0].status === 'completed' && value; });
+  assert.equal(rendered.outputs.length, 1); assert.equal(rendered.outputs[0].importStatus, 'imported');
+  assert.equal(rendered.outputs[0].creationMethod, 'code-rendered');
+  assert.equal((await chat(approval.id)).requests[0].status, 'pending');
+  assert.equal((await chat(text.id)).attempts[0].status, 'running');
+  await call('POST', `/api/cards/${text.id}/chat/stop`, {});
+  await until(async () => (await chat(text.id)).submissions[0].status === 'interrupted');
+  await call('POST', `/api/cards/${approval.id}/chat/answer`, { requestId: pending.id, response: { decision: 'accept', scope: 'once' } });
+  await until(async () => (await chat(approval.id)).submissions[0].status === 'completed');
+  const snapshots = await Promise.all(cards.map((card) => chat(card.id)));
+  assert.ok(snapshots.every((value) => value.attempts.length === 1));
+  assert.equal(new Set(snapshots.map((value) => value.conversations[0].binding.threadId)).size, 3);
+  assert.ok(f.peer.requests.every((request) => !request.authorization));
+});
 
 test('installed native: exact resume, persisted dynamic tools, model change, unload and crash isolation', { skip: !enabled, timeout: 45000 }, async (t) => {
   const f = await nativeFixture(t);

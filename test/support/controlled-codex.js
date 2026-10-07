@@ -6,6 +6,9 @@ export class ControlledCodex {
     this.home = home; this.threads = new Map(); this.listeners = new Map(); this.sends = []; this.interrupts = [];
     this.instructions = []; this.skills = []; this.running = false; this.autoInterrupt = true;
     this.models = ['test-model', 'other-model']; this.startGate = null;
+    // openGate pauses before a native binding exists; ackGate pauses after
+    // Codex recorded the turn but before Frameboard hears it was accepted.
+    this.openGate = null; this.ackGate = null; this.startError = null;
     this.afterSubscribe = null;
   }
   async discover({ cwd } = {}) {
@@ -15,6 +18,7 @@ export class ControlledCodex {
       models: this.models.map((id, index) => ({ id, displayName: id, isDefault: index === 0 })) };
   }
   async openThread({ threadId, cwd, model, threadConfig }) {
+    await this.openGate;
     if (threadId && !this.threads.has(threadId)) throw Object.assign(new Error('No rollout found.'), { kind: 'native-unavailable' });
     if (!this.models.includes(model)) throw Object.assign(new Error('Model unavailable.'), { kind: 'model-unavailable' });
     const id = threadId ?? randomUUID();
@@ -32,9 +36,15 @@ export class ControlledCodex {
   }
   async startTurn(input) {
     await this.startGate;
+    // startError: { error, recorded } rejects turn/start, after Codex recorded
+    // the turn when `recorded` (a lost response) or before it otherwise.
+    const failure = this.startError; this.startError = null;
+    if (failure && !failure.recorded) throw failure.error;
     const thread = this.threads.get(input.threadId);
     const turn = { id: randomUUID(), status: 'inProgress', items: [{ type: 'userMessage', id: randomUUID(), clientId: input.clientUserMessageId, content: input.input }] };
     thread.turns.push(turn); this.sends.push({ ...input, turnId: turn.id });
+    if (failure) throw failure.error;
+    await this.ackGate;
     this.emit(thread.id, { type: 'turn-started', turnId: turn.id });
     return { turnId: turn.id, turn };
   }
@@ -61,11 +71,15 @@ export class ControlledCodex {
     }
     return {};
   }
-  request(send, method = 'item/commandExecution/requestApproval', params = {}) {
-    const requestId = randomUUID(); const results = [];
+  request(send, method = 'item/commandExecution/requestApproval', params = {}, requestId = randomUUID()) {
+    const results = [];
     const request = { requestId, threadId: send.threadId, turnId: send.turnId, method,
       command: 'outside sandbox', cwd: this.threads.get(send.threadId).cwd, ...params, respond: (result) => results.push(result) };
-    for (const handler of this.listeners.get(send.threadId) ?? []) if (!handler.acceptsRequest || handler.acceptsRequest(request)) handler.onRequest?.(request);
+    // Like the adapter, a returned value is the immediate native response.
+    for (const handler of this.listeners.get(send.threadId) ?? []) if (!handler.acceptsRequest || handler.acceptsRequest(request)) {
+      const result = handler.onRequest?.(request);
+      if (result !== undefined) request.respond(result);
+    }
     return { requestId, results };
   }
   async tool(send, tool, args = {}, callId = randomUUID()) {
@@ -78,7 +92,8 @@ export class ControlledCodex {
   }
   async listTurns({ threadId, cursor }) {
     if (!this.threads.has(threadId)) throw Object.assign(new Error('No rollout found.'), { kind: 'native-unavailable' });
-    const turns = this.threads.get(threadId).turns;
+    // Newest first, as Frameboard requests from app-server.
+    const turns = [...this.threads.get(threadId).turns].reverse();
     return { data: cursor ? [] : turns, nextCursor: null };
   }
   async close() { this.running = false; }
