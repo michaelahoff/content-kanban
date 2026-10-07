@@ -223,8 +223,15 @@ export function createCodexAdapter({
     readThread: ({ threadId }) => request('thread/read', { threadId, includeTurns: false }),
     listTurns: ({ threadId, cursor = null, limit = 25 }) => request('thread/turns/list', { threadId, cursor, limit, itemsView: 'full', sortDirection: 'desc' }),
     listItems: ({ threadId, turnId = null, cursor = null, limit = 100 }) => request('thread/items/list', { threadId, turnId, cursor, limit, sortDirection: 'asc' }),
-    async unload({ threadId }) {
-      if (bindings.get(threadId)?.turnId) throw new CodexError('busy', 'Stop the active turn before unloading.');
+    listLoadedThreads: ({ cursor = null, limit = 100 } = {}) => request('thread/loaded/list', { cursor, limit }),
+    async archiveThread({ threadId }) {
+      if (bindings.get(threadId)?.turnId) throw new CodexError('busy', 'Stop the active turn before archiving.');
+      const result = await request('thread/archive', { threadId });
+      session?.threads.delete(threadId); return result;
+    },
+    unarchiveThread: ({ threadId }) => request('thread/unarchive', { threadId }),
+    async unsubscribeThread({ threadId }) {
+      if (bindings.get(threadId)?.turnId) throw new CodexError('busy', 'Stop the active turn before unsubscribing.');
       const result = await request('thread/unsubscribe', { threadId });
       // Unsubscribe can leave a thread loaded natively. It proves no config transition.
       session?.threads.delete(threadId); return result;

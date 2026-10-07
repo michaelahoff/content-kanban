@@ -69,7 +69,13 @@ test('installed native: exact resume, persisted dynamic tools, model change, unl
   const f = await nativeFixture(t);
   const a = await f.open(); const b = await f.open(); assert.notEqual(a.threadId, b.threadId);
   await f.turn(a.threadId); await f.turn(b.threadId);
-  await f.adapter.unload({ threadId: a.threadId });
+  await f.adapter.unsubscribeThread({ threadId: a.threadId });
+  assert.equal((await f.open(a.threadId)).threadId, a.threadId);
+  await f.turn(a.threadId);
+  // Unlike unsubscribe, archive removes the actual loaded native session.
+  await f.adapter.archiveThread({ threadId: a.threadId });
+  assert.ok(!(await f.adapter.listLoadedThreads()).data.includes(a.threadId));
+  await f.adapter.unarchiveThread({ threadId: a.threadId });
   assert.equal((await f.open(a.threadId)).threadId, a.threadId);
   await f.turn(a.threadId);
   await f.adapter.close({ signal: 'SIGKILL' });
@@ -128,6 +134,13 @@ test('installed native: two shared-process configurations keep distinct instruct
   const a = await f.open(undefined, 'gpt-6-luna', aConfig); const b = await f.open(undefined, 'gpt-6-luna', bConfig);
   const first = await f.turn(a.threadId); assert.match(first.serialized, /FB_CARD_A_SENTINEL/); assert.doesNotMatch(first.serialized, /FB_CARD_B_SENTINEL/);
   const other = await f.turn(b.threadId); assert.match(other.serialized, /FB_CARD_B_SENTINEL/); assert.doesNotMatch(other.serialized, /FB_CARD_A_SENTINEL/);
+  await f.adapter.archiveThread({ threadId: a.threadId });
+  const loaded = (await f.adapter.listLoadedThreads()).data;
+  assert.ok(!loaded.includes(a.threadId)); assert.ok(loaded.includes(b.threadId));
+  await f.adapter.unarchiveThread({ threadId: a.threadId });
+  await f.open(a.threadId, 'gpt-6-luna', aConfig);
+  const reloaded = await f.turn(a.threadId); assert.match(reloaded.serialized, /FB_CARD_A_SENTINEL/); assert.doesNotMatch(reloaded.serialized, /FB_CARD_B_SENTINEL/);
+  const retained = await f.turn(b.threadId); assert.match(retained.serialized, /FB_CARD_B_SENTINEL/); assert.doesNotMatch(retained.serialized, /FB_CARD_A_SENTINEL/);
   await f.adapter.close({ signal: 'SIGKILL' });
   await f.open(a.threadId, 'gpt-6-luna', aConfig); await f.open(b.threadId, 'gpt-6-luna', bConfig);
   const restoredA = await f.turn(a.threadId); const restoredB = await f.turn(b.threadId);

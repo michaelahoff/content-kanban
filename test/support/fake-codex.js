@@ -180,6 +180,12 @@ const methods = {
     requireModel(params.model);
     return sessionResponse(record, { instructionSources: instructionSourcesFor(record.resumedConfig ?? record.config) });
   },
+  'thread/loaded/list': ({ cursor, limit }) => {
+    const ids = [...loaded]; const start = Number(cursor ?? 0); const size = limit ?? 100;
+    return { data: ids.slice(start, start + size), nextCursor: start + size < ids.length ? String(start + size) : null };
+  },
+  'thread/archive': ({ threadId }) => { const record = requireThread(threadId); record.archived = true; loaded.delete(threadId); save(); return {}; },
+  'thread/unarchive': ({ threadId }) => { const record = requireThread(threadId); record.archived = false; save(); return { thread: threadView(record) }; },
   'thread/unsubscribe': ({ threadId }) => { loaded.delete(threadId); return { status: 'unsubscribed' }; },
   'thread/items/list': ({ threadId, turnId, cursor, limit }) => {
     const items = requireThread(threadId).turns.filter((t) => !turnId || t.id === turnId).flatMap((t) => t.items.map((item) => ({ turnId: t.id, item })));

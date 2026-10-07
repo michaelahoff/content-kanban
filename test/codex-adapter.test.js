@@ -104,7 +104,12 @@ async function turn(codex, threadId, text, extra = {}) {
 
 test('cold resume preserves exact identity and tools without re-registering them, with explicit model changes', async (t) => {
   const f = await fixture(t); const codex = f.adapter(); const a = await open(codex, f.home);
-  await turn(codex, a.threadId, 'first'); await codex.close();
+  await turn(codex, a.threadId, 'first');
+  await codex.archiveThread({ threadId: a.threadId });
+  assert.ok(!(await codex.listLoadedThreads()).data.includes(a.threadId));
+  await codex.unarchiveThread({ threadId: a.threadId });
+  await open(codex, f.home, { threadId: a.threadId });
+  await codex.close();
   const b = await open(codex, f.home, { threadId: a.threadId });
   assert.equal(b.threadId, a.threadId); assert.equal(b.resumed, true);
   const remove = codex.subscribe(b.threadId, { onToolCall: () => ({ success: true, contentItems: [{ type: 'inputText', text: 'card read' }] }) });
