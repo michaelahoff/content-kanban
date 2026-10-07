@@ -38,6 +38,7 @@ function downgrade(db) {
     INSERT INTO card_events SELECT card_event_id, workspace_id, project_id, entity_id, type, actor,
       from_stage_id, to_stage_id, note, data, created_at FROM activity_log WHERE card_event_id IS NOT NULL;
     INSERT INTO workspace_changes SELECT id, workspace_id, entity, entity_id, project_id, type, actor, data, created_at FROM activity_log;
+    DROP TABLE provider_configurations;
     DROP TABLE saved_card_states;
     DROP TABLE activity_log;
     UPDATE meta SET value = '4' WHERE key = 'schema_version';

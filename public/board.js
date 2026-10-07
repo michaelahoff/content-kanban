@@ -58,7 +58,7 @@ export function renderApp() {
       <div class="sidebar-section"><span>Projects</span>${iconButton('add-project', 'Add project', 'plus')}</div>
       <nav class="project-list">${state.projects.map((item) => `<button class="project-link ${item.id === state.projectId ? 'active' : ''}" data-action="switch-project" data-id="${item.id}" ${item.id === state.projectId ? 'aria-current="page"' : ''}>${icon('board')}<span>${escape(item.name)}</span><span class="project-count">${cardCount(item)}</span></button>`).join('')}</nav>
       ${button('add-project', 'New project', 'plus', 'new-project')}
-      <div class="sidebar-bottom"><div class="local-label"><span class="online-dot"></span>Local workspace</div><p>Just you and your ideas.<br>Saved on this computer.</p><div class="workspace-owner"><span class="avatar">Y</span><div><strong>Your workspace</strong><span>No account needed</span></div>${icon('monitor')}</div></div>
+      <div class="sidebar-bottom"><a class="button secondary" href="/codex.html">Codex settings</a><div class="local-label"><span class="online-dot"></span>Local workspace</div><p>Just you and your ideas.<br>Saved on this computer.</p><div class="workspace-owner"><span class="avatar">Y</span><div><strong>Your workspace</strong><span>No account needed</span></div>${icon('monitor')}</div></div>
     </aside>
     <main class="main">
       <div class="topbar"><div class="breadcrumbs">${iconButton('toggle-sidebar', 'Toggle projects', 'menu')}<span>Workspace</span>${icon('chevron')}<strong>Board</strong></div><div class="save-status" data-save-status></div></div>

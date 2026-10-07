@@ -8,7 +8,8 @@
     "start": "node --disable-warning=ExperimentalWarning server.js",
     "dev": "node --disable-warning=ExperimentalWarning --watch server.js",
     "test": "node --disable-warning=ExperimentalWarning --test test/*.test.js",
-    "test:browser": "node --disable-warning=ExperimentalWarning scripts/browser-test.mjs"
+    "test:browser": "node --disable-warning=ExperimentalWarning scripts/browser-test.mjs",
+    "test:native": "FRAMEBOARD_NATIVE_TEST=1 node --disable-warning=ExperimentalWarning --test test/codex-native.test.js"
   },
   "engines": { "node": ">=22.13" }
 }

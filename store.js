@@ -110,6 +110,11 @@ const migrations = [`
   INSERT INTO card_moves SELECT * FROM legacy_card_moves;
   DROP TABLE legacy_card_moves;
   CREATE INDEX card_moves_by_card ON card_moves(card_id, id);
+`, `
+  CREATE TABLE provider_configurations (
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id), provider TEXT NOT NULL,
+    revision INTEGER NOT NULL, selection TEXT NOT NULL, updated_at TEXT NOT NULL,
+    PRIMARY KEY (workspace_id, provider));
 `];
 
 const now = () => new Date().toISOString();
@@ -447,6 +452,30 @@ export async function openStore({ dataDir, onCardEvent = () => {}, clock = now }
   return {
     owner,
     close: () => db.close(),
+
+    providerConfiguration(ctx, provider = 'codex') {
+      check(provider === 'codex', 'Only the Codex provider is available in this milestone.');
+      const row = get('SELECT * FROM provider_configurations WHERE workspace_id = ? AND provider = ?', ctx.workspaceId, provider);
+      return row ? { provider, revision: row.revision, selection: JSON.parse(row.selection), updatedAt: row.updated_at }
+        : { provider, revision: 0, selection: { instructions: '', selected: [] }, updatedAt: null };
+    },
+
+    saveProviderConfiguration(ctx, input) {
+      check(isObject(input) && Number.isInteger(input.revision), 'Configuration needs its current revision.');
+      check(isObject(input.selection) && isText(input.selection.instructions, 50000) && Array.isArray(input.selection.selected)
+        && input.selection.selected.length <= 500 && input.selection.selected.every((id) => isText(id, 4000)), 'Invalid provider selection.');
+      return transaction(() => {
+        const current = this.providerConfiguration(ctx);
+        if (current.revision !== input.revision) fail(409, 'Configuration changed in another tab. Reload before saving.');
+        const selection = { instructions: input.selection.instructions, selected: [...new Set(input.selection.selected)].sort() };
+        const revision = current.revision + 1;
+        const at = now();
+        run(`INSERT INTO provider_configurations (workspace_id, provider, revision, selection, updated_at) VALUES (?, 'codex', ?, ?, ?)
+          ON CONFLICT (workspace_id, provider) DO UPDATE SET revision = excluded.revision, selection = excluded.selection, updated_at = excluded.updated_at`, ctx.workspaceId, revision, JSON.stringify(selection), at);
+        recordChange(ctx, 'provider', 'codex', 'configuration_changed', { data: { revision }, at });
+        return this.providerConfiguration(ctx);
+      });
+    },
 
     workspace(ctx) {
       const workspace = get('SELECT id, name FROM workspaces WHERE id = ?', ctx.workspaceId);

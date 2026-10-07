@@ -59,6 +59,7 @@ function removeHistoryMilestone(db) {
       FROM activity_log WHERE card_event_id IS NOT NULL;
     INSERT INTO workspace_changes (id, workspace_id, entity, entity_id, project_id, type, actor, data, created_at)
       SELECT id, workspace_id, entity, entity_id, project_id, type, actor, data, created_at FROM activity_log;
+    DROP TABLE provider_configurations;
     DROP TABLE saved_card_states;
     DROP TABLE activity_log;
   `);
@@ -746,4 +747,26 @@ test('schema upgrade enables future undo without inventing snapshots for older m
     const undone = await reopened.ok('POST', `/api/cards/${card.id}/undo-move`, { moveId: moved.card.lastMove.id, revision: moved.card.revision });
     assert.equal(undone.card.stageId, f.stages[1].id);
   } finally { await reopened.close(); }
+});
+
+test('idle provider settings never start Codex; explicit discovery and saved selection preserve revisions', async (t) => {
+  let calls = 0; let closes = 0;
+  const home = await mkdtemp(path.join(tmpdir(), 'frameboard-provider-home-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const codexAdapter = {
+    running: false,
+    discover: async () => { calls++; return { harness: { userAgent: 'codex/0.160.1', codexHome: home }, skills: [], models: [], hooks: [], plugins: [], configuredMcpServers: [], mcpServers: [], errors: [] }; },
+    close: async () => { closes++; },
+  };
+  const f = await fixture(t, { codexAdapter });
+  const idle = await f.ok('GET', '/api/providers/codex');
+  assert.equal(calls, 0); assert.equal(idle.revision, 0); assert.equal(idle.running, false);
+  assert.ok(idle.mandatoryBehavior.some((s) => /workspace-write/.test(s)));
+  const saved = await f.ok('PUT', '/api/providers/codex', { revision: 0, selection: { instructions: 'Frameboard guidance', selected: [] } });
+  assert.equal(saved.revision, 1); assert.equal(calls, 0);
+  assert.equal((await f.call('PUT', '/api/providers/codex', { revision: 0, selection: saved.selection })).status, 409);
+  const result = await f.ok('POST', '/api/providers/codex/discover');
+  assert.equal(calls, 1); assert.equal(result.effective.supported, true);
+  assert.match(result.effective.nativeOptions.developerInstructions, /Frameboard guidance/);
+  assert.equal(closes, 0);
 });

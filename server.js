@@ -4,6 +4,8 @@ import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openStore, imageIdPattern } from './store.js';
+import { createCodexAdapter } from './codex-adapter.js';
+import { configurationDiscovery, compileConfiguration, mandatoryBehavior } from './codex-configuration.js';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const imageTypes = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif', 'image/avif': 'avif' };
@@ -69,7 +71,7 @@ async function json(req, limit) {
   catch (error) { if (error.status) throw error; throw Object.assign(new Error('Invalid JSON.'), { status: 400 }); }
 }
 
-export async function createApp({ dataDir = process.env.DATA_DIR || path.join(root, 'data'), fetch: fetchImpl = globalThis.fetch, onCardEvent } = {}) {
+export async function createApp({ dataDir = process.env.DATA_DIR || path.join(root, 'data'), fetch: fetchImpl = globalThis.fetch, onCardEvent, codexAdapter } = {}) {
   const imagesDir = path.join(dataDir, 'images');
   await mkdir(imagesDir, { recursive: true });
   let store;
@@ -85,7 +87,20 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
     res.end(JSON.stringify(value));
   };
   const read = (req) => json(req, 12 * 1024 * 1024);
+  const codex = codexAdapter ?? createCodexAdapter();
+  const codexAction = async (fn) => {
+    try { return await fn(); } catch (error) {
+      if (error.kind) Object.assign(error, { status: 503 });
+      throw error;
+    }
+  };
   const routes = [
+    ['GET', /^\/api\/providers\/codex$/, (ctx) => ({ ...store.providerConfiguration(ctx), running: codex.running, mandatoryBehavior, discoveryRequired: true })],
+    ['PUT', /^\/api\/providers\/codex$/, async (ctx, req) => store.saveProviderConfiguration(ctx, await read(req))],
+    ['POST', /^\/api\/providers\/codex\/discover$/, (ctx) => codexAction(async () => {
+      const discovery = await configurationDiscovery(codex);
+      return { discovery, effective: compileConfiguration(store.providerConfiguration(ctx).selection, discovery) };
+    })],
     ['GET', /^\/api\/workspace$/, (ctx) => store.workspace(ctx)],
     ['POST', /^\/api\/projects$/, async (ctx, req) => store.createProject(ctx, await read(req)), 201],
     ['PATCH', /^\/api\/projects\/([^/]+)$/, async (ctx, req, id) => store.updateProject(ctx, id, await read(req))],
@@ -164,7 +179,7 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
       if (!error.status && error.code !== 'ENOENT') console.error(error);
     }
   });
-  server.on('close', () => store.close());
+  server.on('close', () => { store.close(); codex.close().catch((error) => console.error(error)); });
   return server;
 }
 

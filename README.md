@@ -78,3 +78,9 @@ New card changes save a complete state (fields, placement, gallery and roles) in
 `GET /api/cards/:id/states` provides retained saved states, including for deleted cards, as groundwork for later timeline/restoration controls. `PATCH /api/cards/:id` optionally accepts an `editingSessionId` to group manual text saves; the browser generates a separate ID for each editor session. Clients without an ID get separate saved states. `POST /api/cards/:id/editing-session/end` accepts `{editingSessionId}` and closes only that session, including after card deletion. The store's workspace-scoped `activity` read returns recording-time labels and the full activity metadata; the existing event feed response remains compatible.
 
 Full history browsing and card restoration controls are scheduled for Phase 3. Existing Undo last move remains available.
+
+### Codex adapter foundation (Phase 1.2)
+
+Open **Codex settings** from the board to save provider guidance and explicitly discover the installed harness. Optional discoveries start unchecked. Opening settings does not start Codex. Unsupported MCP/plugin/hook and native skill selections display their isolation limits; card chat controls are delivered in the next milestone.
+
+`npm run test:native` runs opt-in, credential-free installed Codex protocol/persistence/configuration gates against a local fixture. It does not verify model entitlement. See [implementation evidence and supported boundaries](docs/implementation/phase-1-codex.md).
