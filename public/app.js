@@ -2,11 +2,12 @@
 import { $, escape, iconButton, imageURL, toast, wordCount, confirmDelete, smallForm } from './ui.js';
 import { retry } from './api.js';
 import { templates, fieldInputId } from './card-template.js';
-import { state, project, locateCard, cardCount, loadWorkspace, loadCards, cardChanged, flushCards, createCard, moveCard, deleteCard, deleteLane, deleteProject, saveStatus, hasUnsavedWork, onStatusChange, useSavedCard, undoLastMove } from './state.js';
+import { state, project, locateCard, cardCount, loadWorkspace, loadCards, cardChanged, flushCards, createCard, moveCard, deleteCard, deleteLane, deleteProject, saveStatus, hasUnsavedWork, onStatusChange, useSavedCard, undoLastMove, loadPlaybooks, applyStages } from './state.js';
 import { view, selectProject, renderApp, renderBoard, renderStatus, editProject, editLane, editProjectPrompt, toggleCards } from './board.js';
 import { openCard, closeCard, cardPanelOpen, renderImages, copyText, copyTrifecta, fetchYoutube, addImages, originalVideoMarkup, videoLinkMarkup } from './editor.js';
-import { openFlow } from './flow-editor.js';
-import { initializeChats, hasUnsentChatChanges, flushComposers } from './chat.js';
+import { openPlaybooks, playbooksChanged } from './playbook-editor.js';
+import { renderBar, cardPlaybookActivity, hasUnsavedNotes } from './card-playbook.js';
+import { initializeChats, hasUnsentChatChanges, flushComposers, onActivity } from './chat.js';
 
 const formDialog = $('#form-dialog');
 const imageDialog = $('#image-dialog');
@@ -46,10 +47,11 @@ document.addEventListener('click', (event) => {
   if (action === 'toggle-cards') toggleCards();
   if (action === 'add-lane') editLane();
   if (action === 'edit-lane') editLane(targetId);
-  if (action === 'edit-flow') {
-    // Keep any lane settings draft in its dialog beneath the graph.
-    openFlow(targetId);
+  if (action === 'edit-playbook') {
+    if (formDialog.open) formDialog.close();
+    openPlaybooks({ laneId: targetId });
   }
+  if (action === 'open-playbooks') openPlaybooks();
   if (action === 'add-card') makeCard(target.dataset.laneId);
   if (action === 'open-card') openCard(targetId);
   if (action === 'close-card') closeCard();
@@ -58,7 +60,7 @@ document.addEventListener('click', (event) => {
   if (action === 'retry-save') retry();
   if (action === 'undo-move') {
     undoLastMove(targetId, Number(target.dataset.moveId)).then(() => {
-      if (state.cardId === targetId && $('#card-lane')) $('#card-lane').value = locateCard(targetId)?.card.stageId;
+      if (state.cardId === targetId && $('#card-lane')) { $('#card-lane').value = locateCard(targetId)?.card.stageId; renderBar(); }
       renderBoard();
       toast('Move undone.');
     }).catch((error) => toast(error.message));
@@ -163,7 +165,7 @@ document.addEventListener('input', (event) => {
 });
 document.addEventListener('change', (event) => {
   if (event.target.id === 'card-lane') {
-    if (moveCard(state.cardId, event.target.value)) renderBoard();
+    if (moveCard(state.cardId, event.target.value)) { renderBoard(); renderBar(); }
     else event.target.value = locateCard()?.card.stageId;
   }
   if (event.target.id === 'image-files') {
@@ -316,7 +318,7 @@ for (const dialog of [formDialog, imageDialog]) {
   dialog.addEventListener('click', (event) => { if (downOnBackdrop && event.target === dialog) dialog.close(); downOnBackdrop = false; });
 }
 window.addEventListener('beforeunload', (event) => {
-  if (hasUnsavedWork() || hasUnsentChatChanges()) { event.preventDefault(); event.returnValue = ''; }
+  if (hasUnsavedWork() || hasUnsentChatChanges() || hasUnsavedNotes()) { event.preventDefault(); event.returnValue = ''; }
 });
 document.addEventListener('visibilitychange', () => { if (document.hidden) { flushCards(); flushComposers(); } });
 window.addEventListener('online', () => { if (saveStatus().error) retry(); });
@@ -329,6 +331,14 @@ try {
   await loadCards(state.projectId);
   renderApp();
   initializeChats({ openCard, switchProject, renderBoard });
+  // Playbook files saved in another tab change lane summaries on the board.
+  onActivity((entry) => {
+    cardPlaybookActivity(entry);
+    if (entry.entity !== 'flow') return;
+    playbooksChanged();
+    const p = state.projects.find((item) => item.flowId === entry.entityId);
+    if (p) void loadPlaybooks(p).then((listing) => { applyStages(p, listing.stages); renderBoard(); renderBar(); }).catch(() => {});
+  });
 } catch (error) {
   app.innerHTML = `<div class="loading-screen"><h1>Couldn’t open your workspace</h1><p>${escape(error.message)}</p><p>Make sure the local server is running, then reload this page.</p><a class="button primary" href="/">Try again</a></div>`;
 }

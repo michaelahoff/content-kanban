@@ -8,7 +8,8 @@ import { rename, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { templates, defaultTemplate, emptyFields, emptyImageRoles } from './public/card-template.js';
 import { readLegacyBoard } from './legacy-board.js';
-import { emptyGraph, promptGraph, validateGraph, executeGraph, assignmentsFor } from './public/flow-graph.js';
+import { createPlaybooks } from './playbooks.js';
+import { parseDocument, playbookSettings, describeSettings } from './public/playbook-format.js';
 import { chatMigration, recoveryMigration, createChatStore } from './store-chat.js';
 import { protectionMigration, createProtectionStore } from './store-protection.js';
 import { imagesMigration, createImageStore } from './store-images.js';
@@ -50,6 +51,8 @@ export const laneColors = ['lavender', 'blue', 'amber', 'green', 'pink', 'gray',
 const defaultStages = [['Ideas', 'lavender'], ['In progress', 'blue'], ['Review', 'amber'], ['Done', 'green']];
 const idPattern = /^[\w-]{1,100}$/;
 const criterionRules = { field: 'filled', imageRole: 'set' };
+// Released migration text embeds the retired lane command graph's empty value.
+const emptyGraphJson = '{"version":1,"nodes":[{"id":"entry","type":"entry","position":{"x":48,"y":100}}],"edges":[]}';
 
 // Each entry upgrades the schema by one version. Never edit a released entry;
 // append a new one instead.
@@ -85,7 +88,7 @@ const migrations = [`
     actor TEXT NOT NULL, data TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL);
   CREATE INDEX changes_by_workspace ON workspace_changes(workspace_id, id);
 `, `ALTER TABLE stages ADD COLUMN entry_prompt TEXT;`, `
-  ALTER TABLE stages ADD COLUMN entry_graph TEXT NOT NULL DEFAULT '${JSON.stringify(emptyGraph())}';
+  ALTER TABLE stages ADD COLUMN entry_graph TEXT NOT NULL DEFAULT '${emptyGraphJson}';
   UPDATE stages SET entry_graph = json_object('version', 1,
     'nodes', json_array(
       json_object('id', 'entry', 'type', 'entry', 'position', json_object('x', 48, 'y', 100)),
@@ -167,6 +170,15 @@ const migrations = [`
   INSERT INTO card_moves SELECT * FROM legacy_card_moves;
   DROP TABLE legacy_card_moves;
   CREATE INDEX card_moves_by_card ON card_moves(card_id, id);
+`, `
+  -- A lane run is one execution of a lane playbook for a card. Once queued, its
+  -- card chat submission owns delivery status; the run keeps the outcome.
+  CREATE TABLE lane_runs (
+    id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), card_id TEXT NOT NULL REFERENCES cards(id),
+    stage_id TEXT NOT NULL REFERENCES stages(id), move_id INTEGER, trigger TEXT NOT NULL, status TEXT NOT NULL,
+    reason TEXT NOT NULL DEFAULT '', submission_id TEXT, result TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+  CREATE INDEX lane_runs_by_card ON lane_runs(card_id, created_at);
+  CREATE INDEX lane_runs_by_status ON lane_runs(workspace_id, status);
 `];
 
 const now = () => new Date().toISOString();
@@ -179,9 +191,6 @@ const checkName = (value, max, message) => check(isText(value, max) && value.tri
 const stageFrom = (row) => ({
   id: row.id, flowId: row.flow_id, name: row.name, color: row.color, position: row.position, instructions: row.instructions,
   exitCriteria: JSON.parse(row.exit_criteria), approveTo: row.approve_to, sendBackTo: row.send_back_to, automations: JSON.parse(row.automations),
-  entryGraph: JSON.parse(row.entry_graph),
-  // Compatibility for an older browser; execution uses only entryGraph.
-  entryPrompt: legacyPrompt(JSON.parse(row.entry_graph)),
 });
 const cardFrom = (row) => ({
   id: row.id, projectId: row.project_id, stageId: row.stage_id, position: row.position, template: row.template, title: row.title,
@@ -250,21 +259,22 @@ function checkCriteria(value) {
   }
 }
 
-function checkEntryPrompt(value) {
-  const max = templates[defaultTemplate].fields.find((field) => field.key === 'prompt').max;
-  check(value === null || isText(value, max), `The lane prompt must be text of up to ${max.toLocaleString('en-US')} characters, or null to disable it.`);
+function rejectCommands(input) {
+  check(!('entryPrompt' in input) && !('entryGraph' in input), 'Lane commands are now lane playbooks. Put Set field values in the playbook’s set: setting.');
 }
-function legacyPrompt(graph) {
-  const commands = graph.nodes.filter((node) => node.type !== 'entry');
-  if (commands.length !== 1 || commands[0].type !== 'set') return null;
-  const assignments = assignmentsFor(commands[0]);
-  return assignments.length === 1 && assignments[0].field === 'prompt' ? assignments[0].value : null;
-}
-function graphInput(input) {
-  check(!('entryPrompt' in input && 'entryGraph' in input), 'Choose either a command graph or a legacy lane prompt.');
-  if ('entryGraph' in input) return validateGraph(input.entryGraph);
-  if ('entryPrompt' in input) { checkEntryPrompt(input.entryPrompt); return promptGraph(input.entryPrompt); }
-  return null;
+// The Set field values a retired command graph applied, in its run order:
+// independent commands ran in saved node order once their inputs had run.
+function legacySetValues(graph) {
+  const values = {};
+  const remaining = new Set(graph.nodes.map((node) => node.id));
+  while (remaining.size) {
+    const next = graph.nodes.find((node) => remaining.has(node.id) && !graph.edges.some((edge) => edge.to === node.id && remaining.has(edge.from)));
+    if (!next) break;
+    remaining.delete(next.id);
+    if (next.type !== 'set') continue;
+    for (const { field, value } of next.config.assignments ?? [next.config]) values[field] = value;
+  }
+  return values;
 }
 
 // Lists the exit criteria of a stage that a card does not meet yet.
@@ -274,7 +284,7 @@ function unmetCriteria(stage, card) {
     : !card.imageRoles[item.imageRole]).map((item) => item.label || (item.field ? `${item.field} is filled` : `${item.imageRole} image is set`));
 }
 
-export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = () => {}, clock = now }) {
+export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = () => {}, clock = now, playbooks = createPlaybooks({ dataDir }) }) {
   const now = clock;
   const file = path.join(dataDir, 'frameboard.db');
   const legacyFile = path.join(dataDir, 'board.json');
@@ -381,21 +391,53 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
     }
   }
 
-  // Entry actions run in the same transaction as creation or movement. The
-  // revision before the action lets a client acknowledge just this field
-  // without treating another tab's unseen content as its own saved draft.
-  function applyEntryGraph(ctx, card, stage, at) {
-    const { values, steps } = executeGraph(stage.entryGraph, card);
-    if (!steps.length) return null;
+  // A lane playbook's set: values apply in the same transaction as creation or
+  // movement. The revision before them lets a client acknowledge just these
+  // fields without treating another tab's unseen content as its own draft.
+  function applyEntrySet(ctx, card, stage, at) {
+    const found = playbooks.settings(stage.flowId, stage.id, card.template);
+    if (!found || found.settings.errors.length || !Object.keys(found.settings.set).length) return null;
+    const values = found.settings.set;
     const changedFields = Object.keys(values).filter((key) => values[key] !== (key === 'title' ? card.title : card.fields[key]));
     const revision = card.revision + Number(changedFields.length > 0);
     if (changedFields.length) {
       const fields = { ...card.fields, ...Object.fromEntries(Object.entries(values).filter(([key]) => key !== 'title')) };
       run('UPDATE cards SET title = ?, fields = ?, revision = ?, updated_at = ? WHERE id = ?',
         values.title ?? card.title, JSON.stringify(fields), revision, at, card.id);
-      insertEvent(ctx.workspaceId, card, 'fields_set', `automation:${stage.id}`, { to: stage.id, data: { fields: changedFields, steps, revision }, at });
+      insertEvent(ctx.workspaceId, card, 'fields_set', `automation:${stage.id}`, { to: stage.id, data: { fields: changedFields, playbook: found.document.path, playbookHash: found.document.hash, revision }, at });
     }
     return { beforeRevision: card.revision, revision, values };
+  }
+
+  // Lane runs: an on-enter playbook asks for one when a card arrives; the lane
+  // runner turns pending runs into card chat submissions after the commit.
+  const laneRunFrom = (row) => row && ({ id: row.id, cardId: row.card_id, stageId: row.stage_id, moveId: row.move_id, trigger: row.trigger,
+    status: row.status, reason: row.reason, submissionId: row.submission_id, result: row.result ? JSON.parse(row.result) : null,
+    createdAt: row.created_at, updatedAt: row.updated_at,
+    submissionStatus: row.submission_id ? get('SELECT status FROM chat_submissions WHERE id = ?', row.submission_id)?.status ?? null : null });
+  function requestLaneRun(ctx, card, stage, trigger, moveId = null) {
+    const found = playbooks.settings(stage.flowId, stage.id, card.template);
+    if (!found) return null;
+    const { settings } = found;
+    if (trigger === 'enter' && (settings.run !== 'on-enter' || !settings.instructions)) return null;
+    const id = randomUUID(); const at = now();
+    const problem = settings.errors.length ? `The playbook ${found.document.path} has errors: ${settings.errors.join(' ')}`
+      : !settings.instructions ? 'This lane playbook has no instructions to run.' : settings.run === 'off' ? 'This lane playbook is turned off (run: off).' : '';
+    run('INSERT INTO lane_runs (id, workspace_id, card_id, stage_id, move_id, trigger, status, reason, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      id, ctx.workspaceId, card.id, stage.id, moveId, trigger, problem ? 'failed' : 'pending', problem, at, at);
+    recordChange(ctx, 'card', card.id, problem ? 'lane_run_failed' : 'lane_run_requested', { projectId: card.projectId, data: { laneRunId: id, stageId: stage.id, trigger, reason: problem }, at });
+    return id;
+  }
+  // Cancels runs that have not started work. Running replies finish; their
+  // result arrives as proposals because the card is no longer in that lane.
+  function cancelLaneRuns(ctx, cardId, keep, reason) {
+    for (const row of all("SELECT * FROM lane_runs WHERE card_id = ? AND status IN ('pending', 'queued')", cardId)) {
+      if (keep(row)) continue;
+      if (row.status === 'queued') {
+        if (!chats.cancelQueued(ctx, row.submission_id, reason)) continue;
+      }
+      run("UPDATE lane_runs SET status = 'cancelled', reason = ?, updated_at = ? WHERE id = ?", reason, now(), row.id);
+    }
   }
 
   // First run: create the schema, then import board.json or start fresh.
@@ -449,6 +491,35 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
   const owner = { userId: meta('owner_user_id'), workspaceId: meta('owner_workspace_id') };
 
   const activeStages = (flowId) => all('SELECT * FROM stages WHERE flow_id = ? AND deleted_at IS NULL ORDER BY position', flowId).map(stageFrom);
+  // Every flow gets a playbook folder with a starter map, and retired lane
+  // command graphs become set: values in their lane's playbook. The file is
+  // written before the graph is cleared, so a crash only repeats a no-op.
+  try {
+    for (const flow of all('SELECT f.id, p.name FROM flows f JOIN projects p ON p.flow_id = f.id WHERE p.deleted_at IS NULL')) {
+      playbooks.ensure(flow.id, { projectName: flow.name, lanes: activeStages(flow.id) });
+    }
+    for (const row of all('SELECT * FROM stages WHERE entry_graph != ?', emptyGraphJson)) {
+      const values = legacySetValues(JSON.parse(row.entry_graph));
+      // A lane that already has a playbook keeps its old graph untouched
+      // rather than losing values that could not be merged automatically.
+      if (Object.keys(values).length && !row.deleted_at && !playbooks.migrateSet(row.flow_id, stageFrom(row), values)) continue;
+      transaction(() => run('UPDATE stages SET entry_graph = ? WHERE id = ?', emptyGraphJson, row.id));
+    }
+  } catch (error) {
+    db.close();
+    throw error;
+  }
+  // Lane playbook summaries for the board, read once per flow.
+  function withPlaybooks(flowId, stages) {
+    const documents = playbooks.lanes(flowId);
+    return stages.map((stage) => {
+      const document = documents.find((entry) => entry.laneId === stage.id);
+      if (!document) return { ...stage, playbook: null };
+      const settings = playbookSettings(parseDocument(document.text), defaultTemplate);
+      return { ...stage, playbook: { path: document.path, hash: document.hash, run: settings.run, provider: settings.provider, model: settings.model,
+        hasInstructions: Boolean(settings.instructions), errors: settings.errors, summary: describeSettings(settings, defaultTemplate) } };
+    });
+  }
   function requireProject(ctx, id) {
     return get('SELECT * FROM projects WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL', id, ctx.workspaceId) || fail(404, 'This project no longer exists. Reload the page.');
   }
@@ -498,6 +569,7 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
     const at = now();
     for (const row of rows) {
       chats.cancelCard(ctx, row.id, reason);
+      run("UPDATE lane_runs SET status = 'cancelled', reason = ?, updated_at = ? WHERE card_id = ? AND status IN ('pending', 'queued')", reason, at, row.id);
       run('UPDATE cards SET deleted_at = ? WHERE id = ?', at, row.id);
       insertEvent(ctx.workspaceId, cardFrom(row), 'deleted', ctx.actor, { from: row.stage_id, data: { reason }, at });
       recordSavedState(ctx, row.id, 'deleted', at);
@@ -507,6 +579,7 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
   const chats = createChatStore({ all, get, run, transaction, retainedCard, requireCard, recordChange, now });
 
   const protection = createProtectionStore({ all, get, run, transaction, requireCard, retainedCard, recordChange, now,
+    laneEntry: (cardId) => api.laneRuns.entry(cardId),
     updateCard: (...args) => api.updateCard(...args), transitionCard: (...args) => api.transitionCard(...args), item: (...args) => chats.item(...args), registerOutput: (...args) => images.registered(...args) });
   // Adoption appends one exact version to the gallery. It never assigns a
   // role, and an already adopted version is not added again.
@@ -524,6 +597,8 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
   const images = createImageStore({ all, get, run, transaction, retainedCard, recordChange, now, adopt: adoptImage });
   const api = {
     owner,
+    playbooks,
+    transaction,
     chats,
     protection,
     images,
@@ -581,7 +656,7 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
       const projects = all(`SELECT p.id, p.name, p.flow_id, p.position, (SELECT COUNT(*) FROM cards c WHERE c.project_id = p.id AND c.deleted_at IS NULL) AS card_count
         FROM projects p WHERE p.workspace_id = ? AND p.deleted_at IS NULL ORDER BY p.position`, ctx.workspaceId)
         .map((row) => ({ id: row.id, name: row.name, flowId: row.flow_id, position: row.position, cardCount: row.card_count }));
-      const flows = all('SELECT id, name FROM flows WHERE workspace_id = ? ORDER BY created_at', ctx.workspaceId).map((row) => ({ ...row, stages: activeStages(row.id) }));
+      const flows = all('SELECT id, name FROM flows WHERE workspace_id = ? ORDER BY created_at', ctx.workspaceId).map((row) => ({ ...row, stages: withPlaybooks(row.id, activeStages(row.id)) }));
       const eventCursor = get('SELECT MAX(id) AS cursor FROM activity_log WHERE workspace_id = ?', ctx.workspaceId).cursor ?? 0;
       return { workspace, user, projects, flows, eventCursor };
     },
@@ -599,7 +674,8 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
         const position = (get('SELECT MAX(position) AS position FROM projects WHERE workspace_id = ?', ctx.workspaceId).position ?? -1) + 1;
         run('INSERT INTO projects (id, workspace_id, flow_id, name, position, created_at) VALUES (?, ?, ?, ?, ?, ?)', id, ctx.workspaceId, flowId, name, position, now());
         recordChange(ctx, 'project', id, 'created', { projectId: id, data: { flowId } });
-        return { project: { id, name, flowId, position, cardCount: 0 }, flow: { id: flowId, name, stages: activeStages(flowId) } };
+        playbooks.ensure(flowId, { projectName: name, lanes: activeStages(flowId) });
+        return { project: { id, name, flowId, position, cardCount: 0 }, flow: { id: flowId, name, stages: withPlaybooks(flowId, activeStages(flowId)) } };
       });
     },
 
@@ -645,12 +721,12 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
       checkId(input.id);
       checkName(input.name, 100, 'Lanes need a name (up to 100 characters).');
       check(laneColors.includes(input.color), 'Choose a lane color.');
-      const graph = graphInput(input) ?? emptyGraph();
+      rejectCommands(input);
       return transaction(() => {
         const stages = activeStages(flowId);
         check(stages.length < 100, 'A project can hold up to 100 lanes.');
         const id = input.id ?? randomUUID();
-        run('INSERT INTO stages (id, flow_id, name, color, position, entry_graph) VALUES (?, ?, ?, ?, ?, ?)', id, flowId, input.name.trim(), input.color, (stages.at(-1)?.position ?? -1) + 1, JSON.stringify(graph));
+        run('INSERT INTO stages (id, flow_id, name, color, position) VALUES (?, ?, ?, ?, ?)', id, flowId, input.name.trim(), input.color, (stages.at(-1)?.position ?? -1) + 1);
         recordChange(ctx, 'stage', id, 'created', { data: { flowId } });
         return requireStage(ctx, id);
       });
@@ -664,8 +740,7 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
       if ('name' in input) { checkName(input.name, 100, 'Lanes need a name (up to 100 characters).'); columns.name = input.name.trim(); }
       if ('color' in input) { check(laneColors.includes(input.color), 'Choose a lane color.'); columns.color = input.color; }
       if ('instructions' in input) { check(isText(input.instructions, 20000), 'Review instructions can be up to 20,000 characters.'); columns.instructions = input.instructions; }
-      const graph = graphInput(input);
-      if (graph) columns.entry_graph = JSON.stringify(graph);
+      rejectCommands(input);
       if ('exitCriteria' in input) { checkCriteria(input.exitCriteria); columns.exit_criteria = JSON.stringify(input.exitCriteria); }
       if ('approveTo' in input) { check(sibling(input.approveTo), 'Approving must lead to another lane in this project.'); columns.approve_to = input.approveTo; }
       if ('sendBackTo' in input) { check(sibling(input.sendBackTo), 'Sending back must lead to another lane in this project.'); columns.send_back_to = input.sendBackTo; }
@@ -734,7 +809,7 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
         run('INSERT INTO cards (id, project_id, stage_id, position, template, title, fields, images, image_roles, entered_stage_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
           id, projectId, stage.id, positionFor(stage.id, null), template, content.title, JSON.stringify(content.fields), JSON.stringify(content.images), JSON.stringify(content.imageRoles), at, at, at);
         insertEvent(ctx.workspaceId, { id, projectId }, 'created', ctx.actor, { to: stage.id, at });
-        applyEntryGraph(ctx, requireCard(ctx, id), stage, at);
+        applyEntrySet(ctx, requireCard(ctx, id), stage, at);
         recordSavedState(ctx, id, 'created', at);
         return requireCard(ctx, id);
       });
@@ -828,7 +903,7 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
         const nextOrder = orderedCards(target.id, id);
         const nextIndex = nextOrder.findIndex((row) => row.id === input.beforeCardId);
         if (!changedStage && (nextIndex < 0 ? nextOrder.length : nextIndex) === oldIndex) {
-          return { card, event: null, fieldUpdate: null, promptUpdate: null };
+          return { card, event: null, fieldUpdate: null, laneRunId: null };
         }
         run('UPDATE cards SET stage_id = ?, position = ?, updated_at = ?, entered_stage_at = ? WHERE id = ?',
           target.id, positionFor(target.id, input.beforeCardId, id), at, changedStage ? at : card.enteredStageAt, id);
@@ -838,18 +913,20 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
           const type = { approve: 'approved', send_back: 'sent_back', move: 'moved' }[input.action];
           event = insertEvent(ctx.workspaceId, card, type, ctx.actor, { from: current.id, to: target.id, note, data: unmet.length ? { unmet } : {}, at });
         } else recordChange(ctx, 'card', id, 'reordered', { projectId: card.projectId, at });
-        const fieldUpdate = changedStage ? applyEntryGraph(ctx, card, target, at) : null;
+        const fieldUpdate = changedStage ? applyEntrySet(ctx, card, target, at) : null;
         // Keep the complete move boundary separate from the lightweight event feed.
         // Reordering also gets a snapshot, without adding ordinary reorder history.
         const { lastMove: previousMove, ...before } = card;
         const { lastMove: pendingMove, ...after } = requireCard(ctx, id);
-        run('INSERT INTO card_moves (card_id, event_id, before_card, after_card, placement, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+        const { lastInsertRowid: moveId } = run('INSERT INTO card_moves (card_id, event_id, before_card, after_card, placement, created_at) VALUES (?, ?, ?, ?, ?, ?)',
           id, event?.id ?? null, JSON.stringify(before), JSON.stringify(after), JSON.stringify(placement), at);
+        let laneRunId = null;
+        if (changedStage) {
+          cancelLaneRuns(ctx, id, (row) => row.stage_id === target.id, `The card moved to ${target.name} before this run started.`);
+          laneRunId = requestLaneRun(ctx, card, target, 'enter', Number(moveId));
+        }
         recordSavedState(ctx, id, changedStage ? 'moved' : 'reordered', at);
-        // Older browsers can still acknowledge a prompt-only action safely.
-        const promptUpdate = fieldUpdate && Object.keys(fieldUpdate.values).length === 1 && 'prompt' in fieldUpdate.values
-          ? { beforeRevision: fieldUpdate.beforeRevision, revision: fieldUpdate.revision, prompt: fieldUpdate.values.prompt } : null;
-        return { card: requireCard(ctx, id), event, fieldUpdate, promptUpdate };
+        return { card: requireCard(ctx, id), event, fieldUpdate, laneRunId };
       });
     },
 
@@ -887,6 +964,7 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
           from: card.stageId, to: source.id, data: { moveId: move.id, originalEventId: move.event_id, fields: keys }, at,
         });
         run('UPDATE card_moves SET undone_at = ?, undo_event_id = ? WHERE id = ?', at, event.id, move.id);
+        cancelLaneRuns(ctx, id, (row) => row.stage_id === source.id && row.move_id !== move.id, 'The move was undone before this run started.');
         recordSavedState(ctx, id, 'move_undone', at);
         return { card: requireCard(ctx, id), event, beforeCardId,
           fieldUpdate: keys.length ? { beforeRevision: card.revision, revision, values } : null };
@@ -906,6 +984,73 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
         .map((row) => ({ ...changeFrom(row), cardEventId: row.card_event_id,
           fromStageId: row.from_stage_id, toStageId: row.to_stage_id, note: row.note,
           context: row.context === null ? null : JSON.parse(row.context) }));
+    },
+
+    // Playbook files live on disk; their activity is still logged so other
+    // tabs and the board learn about saves.
+    recordPlaybookChange(ctx, flowId, documentPath, type) {
+      requireFlow(ctx, flowId);
+      transaction(() => recordChange(ctx, 'flow', flowId, type, { projectId: get('SELECT id FROM projects WHERE flow_id = ?', flowId)?.id ?? null, data: { path: documentPath } }));
+    },
+    recordNotesChange(ctx, cardId) {
+      const card = requireCard(ctx, cardId);
+      transaction(() => recordChange(ctx, 'card', cardId, 'notes_saved', { projectId: card.projectId }));
+    },
+    laneRuns: {
+      // Reordering keeps this identity. A move away and back, including undo,
+      // changes it even when both moves share the same clock timestamp.
+      entry(cardId) {
+        const move = get("SELECT id, undo_event_id FROM card_moves WHERE card_id = ? AND json_extract(before_card, '$.stageId') != json_extract(after_card, '$.stageId') ORDER BY id DESC LIMIT 1", cardId);
+        return move ? `${move.id}:${move.undo_event_id ?? ''}` : 'initial';
+      },
+      get: (id) => laneRunFrom(get('SELECT * FROM lane_runs WHERE id = ?', id)),
+      bySubmission: (submissionId) => laneRunFrom(get('SELECT * FROM lane_runs WHERE submission_id = ?', submissionId)),
+      pending: (ctx) => all("SELECT * FROM lane_runs WHERE workspace_id = ? AND status = 'pending' ORDER BY created_at", ctx.workspaceId).map(laneRunFrom),
+      forCard(ctx, cardId) {
+        retainedCard(ctx, cardId);
+        return all('SELECT * FROM lane_runs WHERE card_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 20', cardId).map(laneRunFrom);
+      },
+      // Everything a lane run prompt needs about where the card is.
+      context(ctx, id) {
+        const runRow = get('SELECT * FROM lane_runs WHERE id = ? AND workspace_id = ?', id, ctx.workspaceId) || fail(404, 'This lane run does not exist.');
+        const cardRow = get('SELECT * FROM cards WHERE id = ?', runRow.card_id);
+        const project = get('SELECT * FROM projects WHERE id = ?', cardRow.project_id);
+        const stage = stageFrom(get('SELECT * FROM stages WHERE id = ?', runRow.stage_id));
+        return { run: laneRunFrom(runRow), card: cardFrom(cardRow), deleted: Boolean(cardRow.deleted_at || project.deleted_at),
+          stage, stageDeleted: Boolean(get('SELECT deleted_at FROM stages WHERE id = ?', stage.id).deleted_at), project: { id: project.id, name: project.name, flowId: project.flow_id }, stages: activeStages(project.flow_id) };
+      },
+      place(ctx, cardId) {
+        const card = requireCard(ctx, cardId);
+        const project = requireProject(ctx, card.projectId);
+        return { card, stage: requireStage(ctx, card.stageId), project: { id: project.id, name: project.name, flowId: project.flow_id }, stages: activeStages(project.flow_id) };
+      },
+      // Run playbook: the card's current lane, on request.
+      request(ctx, cardId) {
+        const card = requireCard(ctx, cardId);
+        const stage = requireStage(ctx, card.stageId);
+        const found = playbooks.settings(stage.flowId, stage.id, card.template);
+        if (!found) fail(409, `${stage.name} has no lane playbook yet. Open its playbook to write one.`);
+        if (found.settings.errors.length) fail(409, `Fix the playbook first: ${found.settings.errors.join(' ')}`);
+        if (!found.settings.instructions) fail(409, 'This lane playbook has no instructions to run.');
+        if (found.settings.run === 'off') fail(409, 'This lane playbook is turned off. Change run: off to manual or on-enter.');
+        return transaction(() => {
+          const open = get("SELECT id FROM lane_runs WHERE card_id = ? AND stage_id = ? AND status = 'pending'", cardId, stage.id);
+          return laneRunFrom(get('SELECT * FROM lane_runs WHERE id = ?', open?.id ?? requestLaneRun(ctx, card, stage, 'manual')));
+        });
+      },
+      update(ctx, id, { status, reason = '', submissionId = null, result = null }) {
+        return transaction(() => {
+          const row = get('SELECT * FROM lane_runs WHERE id = ?', id);
+          if (!row) return null;
+          run('UPDATE lane_runs SET status = ?, reason = ?, submission_id = COALESCE(?, submission_id), result = COALESCE(?, result), updated_at = ? WHERE id = ?',
+            status, reason, submissionId, result === null ? null : JSON.stringify(result), now(), id);
+          if (status !== row.status || reason !== row.reason || result) {
+            recordChange({ ...ctx, actor: `automation:${row.stage_id}` }, 'card', row.card_id, `lane_run_${status}`,
+              { projectId: get('SELECT project_id FROM cards WHERE id = ?', row.card_id).project_id, data: { laneRunId: id, reason, submissionId, ...(result ? { result } : {}) } });
+          }
+          return laneRunFrom(get('SELECT * FROM lane_runs WHERE id = ?', id));
+        });
+      },
     },
 
     events(ctx, { since = 0, limit = 500 } = {}) {

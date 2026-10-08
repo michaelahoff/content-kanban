@@ -1,0 +1,111 @@
+/* The playbook folder editor and the card editor's playbook bar and notes.
+   Documents are plain Markdown, so the editor is a monospace page with the
+   folder on the left and an explanation of the saved settings on the right. */
+@layer forms {
+  #playbook-dialog { width: min(1320px, calc(100vw - 48px)); height: min(880px, calc(100dvh - 48px)); max-width: none; max-height: none; overflow: hidden; }
+  #playbook-dialog[open] { display: flex; flex-direction: column; }
+  .playbook-header { display: flex; justify-content: space-between; align-items: center; gap: 18px; padding: 20px 26px 16px; border-bottom: 1px solid var(--border); }
+  .playbook-breadcrumb { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+  .playbook-breadcrumb .icon { width: 12px; height: 12px; }
+  .playbook-header h2 { font: 550 23px/1.5 var(--display-font); letter-spacing: -.5px; margin-top: 4px; }
+  .playbook-workspace { display: grid; grid-template-columns: 230px minmax(0, 1fr) 320px; flex: 1; min-height: 0; }
+
+  .playbook-nav { display: flex; flex-direction: column; gap: 2px; padding: 16px 12px; border-right: 1px solid var(--border); overflow-y: auto; min-width: 0; }
+  .playbook-nav-heading { display: flex; align-items: center; justify-content: space-between; margin: 14px 8px 6px; color: var(--faint); font: 600 10px/1.5 Consolas, monospace; letter-spacing: 1.1px; text-transform: uppercase; }
+  .playbook-nav-heading:first-child { margin-top: 0; }
+  .playbook-nav-heading .icon-button { width: 22px; height: 22px; color: var(--accent); }
+  .playbook-nav-heading .icon { width: 13px; height: 13px; }
+  .playbook-nav-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: 8px; width: 100%; padding: 8px 10px; border-radius: 8px; text-align: left; font-size: 13px; color: #c8cad3; }
+  .playbook-nav-item > span { display: flex; align-items: center; gap: 8px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .playbook-nav-item small { grid-column: 1 / -1; color: var(--faint); font-size: 11px; }
+  .playbook-nav-item:hover { background: var(--raised); }
+  .playbook-nav-item.active { background: #bcb0ff14; color: var(--text); box-shadow: inset 2px 0 0 var(--accent); }
+  .playbook-nav-item .lane-dot { flex-shrink: 0; }
+  .playbook-unsaved { width: 7px; height: 7px; border-radius: 50%; background: var(--amber); }
+  .playbook-nav-empty { margin: 0 10px; color: var(--faint); font-size: 12px; line-height: 1.6; }
+  .playbook-folder { margin-top: auto; padding: 18px 8px 4px; display: grid; gap: 4px; color: var(--faint); font-size: 11px; }
+  .playbook-folder code { font: 11px/1.5 Consolas, monospace; color: var(--muted); overflow-wrap: anywhere; }
+  .playbook-folder .text-button { justify-self: start; font-size: 11px; }
+
+  .playbook-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+  .playbook-text { flex: 1; width: 100%; resize: none; border: 0; padding: 22px 26px; background: #0b0c10; color: #e6e6ee; font: 13.5px/1.75 'JetBrains Mono', Consolas, 'SFMono-Regular', monospace; tab-size: 2; outline: none; scrollbar-width: thin; }
+  .playbook-text:focus-visible { box-shadow: inset 0 0 0 1px #bcb0ff44; }
+  .playbook-empty { margin: auto; max-width: 440px; padding: 30px; text-align: center; color: var(--muted); line-height: 1.7; }
+  .playbook-empty > .icon { width: 30px; height: 30px; color: var(--accent); }
+  .playbook-empty h3 { color: var(--text); font: 550 18px/1.5 var(--display-font); margin: 10px 0 6px; }
+  .playbook-empty p { font-size: 13px; margin-bottom: 18px; }
+  .playbook-preview-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 22px; border-bottom: 1px solid var(--border); }
+  .playbook-preview-head div { display: grid; gap: 2px; font-size: 13px; }
+  .playbook-preview-head span { color: var(--muted); font-size: 12px; }
+  .playbook-preview { flex: 1; margin: 0; padding: 20px 26px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: #0b0c10; color: #cfd0da; font: 12.5px/1.7 Consolas, monospace; }
+  .playbook-error { margin: 14px 22px 0; color: var(--danger); font-size: 13px; }
+
+  .playbook-inspector { padding: 22px; border-left: 1px solid var(--border); overflow-y: auto; min-width: 0; font-size: 13px; line-height: 1.65; }
+  .playbook-kicker { color: var(--faint); font: 600 10px/1.5 Consolas, monospace; letter-spacing: 1.1px; }
+  .playbook-inspector h3 { font: 550 16px/1.55 var(--display-font); margin: 5px 0 12px; }
+  .playbook-inspector h4 { margin: 18px 0 4px; font-size: 12px; font-weight: 600; color: var(--muted); }
+  .playbook-inspector ul, .playbook-inspector ol { padding-left: 18px; display: grid; gap: 4px; }
+  .playbook-inspector li { overflow-wrap: anywhere; }
+  .playbook-inspector .muted { list-style: none; margin-left: -18px; color: var(--faint); }
+  .playbook-inspector code { font: 12px Consolas, monospace; color: var(--accent); }
+  .playbook-steps { margin-top: 6px; color: #babdc7; }
+  .playbook-facts { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 7px 10px; margin: 4px 0 0; }
+  .playbook-facts dt { color: var(--faint); }
+  .playbook-facts dd { margin: 0; overflow-wrap: anywhere; }
+  .playbook-problems { margin-bottom: 14px; padding: 10px 12px; border: 1px solid #eb999d44; border-radius: 8px; background: #eb999d0d; color: var(--danger); }
+  .playbook-problems ul { margin-top: 4px; }
+  .playbook-warnings { margin-bottom: 12px; color: var(--amber); }
+  .playbook-missing { color: var(--amber); font-size: 11px; }
+  .playbook-reference { margin-top: 20px; padding-top: 14px; border-top: 1px solid var(--border); color: #babdc7; font-size: 12px; }
+  .playbook-reference summary { cursor: pointer; color: var(--muted); font-weight: 550; }
+  .playbook-reference p { margin-top: 8px; overflow-wrap: anywhere; }
+  .playbook-try { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); display: grid; gap: 8px; }
+  .playbook-try .form-label { margin: 0; }
+  .playbook-try .button { justify-self: start; }
+
+  .playbook-footer { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 14px 22px; border-top: 1px solid var(--border); }
+  #playbook-status { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+  #playbook-status.playbook-dirty { color: var(--amber); }
+  .playbook-footer-actions { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+  .lane-command-settings { margin-top: 24px; border-top: 1px solid var(--border); padding-top: 18px; }
+}
+@layer board {
+  .lane-playbook-badge { margin-left: 6px; padding: 1px 7px; border-radius: 999px; border: 1px solid #83bca255; color: var(--green); font: 600 10px/1.6 Consolas, monospace; letter-spacing: .5px; }
+  .lane-playbook-badge.error { border-color: #eb999d55; color: var(--danger); }
+}
+@layer editor {
+  .card-playbook { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 6px 14px; margin: 0 24px 14px; padding: 10px 14px; border: 1px solid var(--border); border-radius: 10px; background: #ffffff04; }
+  .card-playbook:empty { display: none; }
+  .card-playbook-info { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .card-playbook-info > .icon { flex-shrink: 0; width: 16px; height: 16px; color: var(--accent); }
+  .card-playbook-info div { display: grid; min-width: 0; }
+  .card-playbook-info strong { font-size: 13px; font-weight: 550; }
+  .card-playbook-info span { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+  .card-playbook-actions { display: flex; gap: 8px; }
+  .card-playbook-run { grid-column: 1 / -1; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+  .card-playbook-run span { color: var(--faint); }
+  .card-playbook-run.failed { color: var(--danger); }
+  .notes-section textarea { min-height: 140px; font: 13px/1.7 Consolas, monospace; }
+  .notes-conflict { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-bottom: 8px; padding: 8px 10px; border: 1px solid #d8b77855; border-radius: 8px; color: var(--amber); font-size: 12px; }
+  .notes-conflict div { display: flex; gap: 8px; }
+  .chat-lane-run { border-left: 2px solid var(--green); }
+  .chat-lane-run .chat-speaker { color: var(--green); }
+  .chat-lane-run small { display: block; margin-top: 2px; color: var(--faint); font: 11px Consolas, monospace; }
+}
+@layer responsive {
+  @media (max-width: 1100px) {
+    .playbook-workspace { grid-template-columns: 200px minmax(0, 1fr); }
+    .playbook-inspector { display: none; }
+  }
+  @media (max-width: 760px) {
+    #playbook-dialog { width: calc(100vw - 24px); height: calc(100dvh - 24px); }
+    .playbook-header { padding: 14px 16px; }
+    .playbook-header h2 { font-size: 20px; }
+    .playbook-workspace { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+    .playbook-nav { flex-direction: row; flex-wrap: wrap; max-height: 150px; border-right: 0; border-bottom: 1px solid var(--border); }
+    .playbook-nav-heading, .playbook-folder, .playbook-nav-item small { display: none; }
+    .playbook-nav-item { width: auto; }
+    .playbook-footer { flex-wrap: wrap; padding: 12px 14px; }
+    .card-playbook { margin-inline: 16px; grid-template-columns: minmax(0, 1fr); }
+  }
+}

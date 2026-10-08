@@ -4,6 +4,7 @@ import { configurationDiscovery, queuedConfigurationDecision, openConfiguredThre
 import { submissionText } from './public/chat-context.js';
 import { automaticDecision, nativeDecision } from './native-requests.js';
 import { outputProvenance } from './store-images.js';
+import { applyLaneResult } from './lane-runner.js';
 
 // Explains a failed accepted turn. Exhausted usage and provider rejections after
 // acceptance need an explicit retry; nothing is resent or substituted.
@@ -120,6 +121,7 @@ export function createChatWorker({ store, adapter, adapters = { codex: adapter }
       work.items.set(item.id, item); flush(work);
       if (native.type === 'imageGeneration' && event.type === 'item-completed') capture(work.attempt, work.submission, native, { threadId: work.threadId, turnId: event.turnId ?? work.turnId });
     } else if (event.type === 'turn-completed') {
+      if (event.status === 'completed' && work.submission.lane && live.get(work.submission.cardId) === work) laneResult(work);
       end(work, event.status === 'completed' ? 'completed' : event.status === 'interrupted' ? 'interrupted' : 'failed', failureReason(event.error));
     } else if (event.type === 'process-exited' || event.type === 'target-unavailable') {
       end(work, 'uncertain', event.error?.message ?? 'The selected target changed. Reconcile this conversation before continuing.', { exited: event.type === 'process-exited' });
@@ -129,6 +131,21 @@ export function createChatWorker({ store, adapter, adapters = { codex: adapter }
     } else if (event.type === 'notification' && event.method === 'thread/compacted') {
       store.chats.item(ctx, work.attempt.id, { id: `compacted-${event.seq}`, kind: 'notice', text: 'Context compacted', completed: true });
     }
+  }
+  // A completed lane run applies its reply's result block while the attempt
+  // still holds card-tool authority, then notes what happened in the chat.
+  function laneResult(work) {
+    flush(work);
+    let text;
+    try {
+      const reply = [...work.items.values()].filter((item) => item.kind === 'agentMessage').map((item) => item.text).join('\n\n');
+      text = applyLaneResult({ store, ctx, attempt: work.attempt, submission: work.submission, text: reply });
+    } catch (error) {
+      text = `The lane result could not be applied: ${error.message}`;
+      const run = store.laneRuns.bySubmission(work.submission.id);
+      if (run?.status === 'queued') store.laneRuns.update(ctx, run.id, { status: 'failed', reason: text });
+    }
+    if (text) store.chats.item(ctx, work.attempt.id, { id: 'lane-result', kind: 'notice', text: `Lane result · ${text}`, completed: true });
   }
   function pendingRequest(work, request) {
     if (closed || request.turnId !== work.turnId) return;

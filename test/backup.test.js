@@ -38,6 +38,7 @@ async function fixture(t) {
   await api('PATCH', `/api/cards/${card.id}`, { revision: card.revision, images: [{ id: image.id, name: 'Original' }], imageRoles: { original: image.id } });
   const workspaceDir = path.join(dataDir, 'workspaces', card.id); await mkdir(workspaceDir, { recursive: true });
   await writeFile(path.join(workspaceDir, 'draft.txt'), 'Workspace draft');
+  await api('PUT', `/api/flows/${project.flowId}/playbooks`, { path: 'skills/voice.md', text: 'Retained skill', baseHash: null });
   const before = { workspace: await api('GET', '/api/workspace'), card: await api('GET', `/api/cards/${card.id}`), states: await api('GET', `/api/cards/${card.id}/states`) };
   const backup = async (extra = []) => JSON.parse((await cli('create', '--data-dir', dataDir, '--output', path.join(root, 'backups'), ...extra)).stdout);
   async function completeChat() {
@@ -59,6 +60,7 @@ test('backup CLI restores app history, image roles and workspace bytes losslessl
   await cli('restore', '--backup', result.backupDir, '--data-dir', restored, '--codex-home', path.join(f.root, 'native'));
   assert.deepEqual(await readFile(path.join(restored, 'images', f.image.id)), png);
   assert.equal(await readFile(path.join(restored, 'workspaces', f.card.id, 'draft.txt'), 'utf8'), 'Workspace draft');
+  assert.equal(await readFile(path.join(restored, 'flows', f.before.workspace.projects[0].flowId, 'skills', 'voice.md'), 'utf8'), 'Retained skill');
   await f.start(restored);
   assert.deepEqual(await f.api('GET', '/api/workspace'), f.before.workspace);
   assert.deepEqual(await f.api('GET', `/api/cards/${f.card.id}`), f.before.card);

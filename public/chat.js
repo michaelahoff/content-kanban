@@ -5,6 +5,8 @@ import { contextFields } from './chat-context.js';
 import { attemptMarkup, progressState, runningStatuses } from './chat-transcript.js';
 
 const chats = new Map();
+const activityListeners = new Set();
+export function onActivity(listener) { activityListeners.add(listener); }
 let modelCatalog = []; let catalogLoading = null; let catalogRefreshPending = false;
 let selected = null; let navigation; let activity = []; let events = null; let activityTimer = null; let refreshTimer = null; let clockTimer;
 let hidden = preference('frameboard-chat-hidden') === 'true';
@@ -220,7 +222,10 @@ function renderTranscript(item) {
     const divider = conversation.state === 'previous' ? 'Previous conversation' : conversation.state === 'native-unavailable' ? 'Native context unavailable · history retained' : snapshot.conversations.length > 1 ? 'Current conversation' : '';
     return `${divider ? `<div class="chat-divider">${divider}</div>` : ''}${submissions.map((submission) => {
       const attempts = snapshot.attempts.filter((attempt) => attempt.submissionId === submission.id);
-      return `<article class="chat-submission"><div class="chat-prompt-sent"><span class="chat-speaker">You</span>${escape(submission.prompt)}</div>${frozenMarkup(submission)}<p class="chat-status">${escape(({ running: 'In progress', completed: 'Completed', queued: 'Queued', waiting: 'Waiting for provider', held: 'Needs attention', failed: 'Failed', interrupted: 'Stopped', uncertain: 'Check delivery', cancelled: 'Cancelled' })[submission.status] ?? submission.status)}${submission.reason ? ` · ${escape(submission.reason)}` : ''}</p>${attempts.map((attempt) => `${attempt.previousAttemptId ? `<div class="chat-divider">${snapshot.attempts.find((a) => a.id === attempt.previousAttemptId)?.status === 'not-delivered' ? 'Not sent before Codex stopped · sent again with original inputs' : 'Retry · original inputs retained'}</div>` : ''}${attemptMarkup(snapshot.items.filter((entry) => entry.attemptId === attempt.id), attempt.id,
+      const sent = submission.lane
+        ? `<div class="chat-prompt-sent chat-lane-run"><span class="chat-speaker">Lane run</span>${escape(submission.lane.stageName)} playbook${submission.lane.trigger === 'manual' ? ' · run by you' : ' · card entered the lane'}<small>${escape(submission.lane.playbook.path)}</small></div>`
+        : `<div class="chat-prompt-sent"><span class="chat-speaker">You</span>${escape(submission.prompt)}</div>`;
+      return `<article class="chat-submission">${sent}${frozenMarkup(submission)}<p class="chat-status">${escape(({ running: 'In progress', completed: 'Completed', queued: 'Queued', waiting: 'Waiting for provider', held: 'Needs attention', failed: 'Failed', interrupted: 'Stopped', uncertain: 'Check delivery', cancelled: 'Cancelled' })[submission.status] ?? submission.status)}${submission.reason ? ` · ${escape(submission.reason)}` : ''}</p>${attempts.map((attempt) => `${attempt.previousAttemptId ? `<div class="chat-divider">${snapshot.attempts.find((a) => a.id === attempt.previousAttemptId)?.status === 'not-delivered' ? 'Not sent before Codex stopped · sent again with original inputs' : 'Retry · original inputs retained'}</div>` : ''}${attemptMarkup(snapshot.items.filter((entry) => entry.attemptId === attempt.id), attempt.id,
         (entry) => outputMarkup((snapshot.outputs ?? []).find((output) => output.attemptId === entry.attemptId
           && (output.nativeId === entry.nativeId || output.id === entry.data?.outputId))), runningStatuses.has(attempt.status))}`).join('')}${recoveryMarkup(submission, attempts)}${['queued', 'waiting', 'held'].includes(submission.status) ? `<button class="button small secondary" data-action="chat-cancel" data-id="${escape(submission.id)}">Cancel submission</button>` : ''}${['failed', 'interrupted'].includes(submission.status) && conversation.state === 'active' ? `<button class="button small secondary" data-action="chat-retry" data-id="${escape(submission.id)}">Retry original submission</button>` : ''}</article>`;
     }).join('')}`;
@@ -426,6 +431,7 @@ function connect(cursor) {
   events = new EventSource(`/api/stream?since=${cursor}`);
   events.addEventListener('activity', (event) => {
     const entry = JSON.parse(event.data);
+    for (const listener of activityListeners) { try { listener(entry); } catch (error) { console.error(error); } }
     if (entry.entity === 'provider') void loadModelCatalog().catch((error) => toast(error.message));
     if (entry.entity === 'chat' || entry.entity === 'card' || entry.entity === 'project') scheduleActivity();
     if ((entry.entity === 'chat' || entry.entity === 'card') && entry.entityId === selected) scheduleRefresh();

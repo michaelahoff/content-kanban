@@ -23,12 +23,26 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
     pending = message;
     await record({ type: 'user', uuid: message.uuid, message: message.message });
     if (message.message.content.some((block) => block.text === 'wait')) continue;
-    const text = `Fixture reply (${message.message.content.map((block) => block.type).join(',')})`;
+    const prompt = message.message.content.filter((block) => block.type === 'text').map((block) => block.text).join('\n');
+    // A lane run prompt asks for a result block; answer with one.
+    const text = prompt.includes('frameboard-result')
+      ? 'Lane fixture reply\n\n```frameboard-result\n{"fields": {"intro": "Fixture intro"}, "notes": "Fixture notes"}\n```'
+      : `Fixture reply (${message.message.content.map((block) => block.type).join(',')})`;
     const assistant = { id: 'assistant-' + message.uuid, content: [{ type: 'text', text }], stop_reason: 'end_turn' };
     output({ type: 'stream_event', event: { type: 'message_start', message: { id: assistant.id } } });
-    output({ type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } } });
+    // Like Claude Code with thinking: a thinking block streams first, and each
+    // block then arrives as its own assistant message with block index 0.
+    const thinking = prompt === 'think';
+    if (thinking) output({ type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'thinking' } } });
+    if (thinking) output({ type: 'stream_event', event: { type: 'content_block_start', index: 1, content_block: { type: 'text' } } });
+    output({ type: 'stream_event', event: { type: 'content_block_delta', index: thinking ? 1 : 0, delta: { type: 'text_delta', text } } });
+    if (thinking) {
+      const thought = { ...assistant, content: [{ type: 'thinking', thinking: 'Hmm' }], stop_reason: null };
+      await record({ type: 'assistant', uuid: 'thought-' + message.uuid, message: thought });
+      output({ type: 'assistant', uuid: 'thought-' + message.uuid, message: thought });
+    }
     await record({ type: 'assistant', uuid: 'response-' + message.uuid, message: assistant });
-    output({ type: 'assistant', message: assistant });
+    output({ type: 'assistant', uuid: 'response-' + message.uuid, message: assistant });
     output({ type: 'result', session_id: id, is_error: false, result: text }); pending = null;
   }
 }

@@ -82,6 +82,7 @@ export async function createBackup({ dataDir, output, codexHome }) {
     const files = ['frameboard.db']; const directories = [];
     await inventory(dataDir, 'images', files, directories);
     await inventory(dataDir, 'workspaces', files, directories);
+    await inventory(dataDir, 'flows', files, directories);
     for (const version of versions) if (!files.includes(`images/${version.id}`)) fail(`Missing image: ${version.id}`);
     const entries = [];
     for (const directory of directories) await mkdir(path.join(staging, directory), { recursive: true, mode: 0o700 });
@@ -131,7 +132,8 @@ export async function restoreBackup({ backupDir, dataDir, codexHome }) {
   backupDir = await realpath(backupDir); dataDir = path.resolve(dataDir);
   const manifest = JSON.parse((await regularBytes(backupDir, 'manifest.json')).toString());
   if (manifest.format !== 'frameboard-backup' || manifest.version !== 1 || !Array.isArray(manifest.files) || !Array.isArray(manifest.directories)) fail('Unsupported backup manifest.');
-  const appPath = (relative) => relative === 'frameboard.db' || relative === 'images' || relative.startsWith('images/') || relative === 'workspaces' || relative.startsWith('workspaces/');
+  const appPath = (relative) => relative === 'frameboard.db' || relative === 'images' || relative.startsWith('images/') || relative === 'workspaces' || relative.startsWith('workspaces/')
+    || relative === 'flows' || relative.startsWith('flows/');
   const allowed = (relative) => validPath(relative) && (appPath(relative) || relative.startsWith('native/codex/'));
   const seen = new Set();
   for (const entry of manifest.files) {

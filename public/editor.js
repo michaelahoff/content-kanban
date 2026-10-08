@@ -6,6 +6,7 @@ import { renderBoard, renderStatus } from './board.js';
 import { request } from './api.js';
 import { templates, fieldInputId } from './card-template.js';
 import { mountChat, unmountChat } from './chat.js';
+import { cardPlaybookMarkup, notesMarkup, mountCardPlaybook, renderBar } from './card-playbook.js';
 
 const cardDialog = $('#card-dialog');
 let lastCardTrigger;
@@ -13,7 +14,7 @@ onCardFieldsChange((card, keys) => {
   renderBoard();
   if (state.cardId !== card.id || !cardDialog.open) return;
   if (keys.some((key) => ['images', 'imageRoles'].includes(key))) renderImages();
-  if (keys.includes('placement')) $('#card-lane').value = card.stageId;
+  if (keys.includes('placement')) { $('#card-lane').value = card.stageId; renderBar(); }
   for (const key of keys) {
     const input = $(`#${fieldInputId(key)}`);
     if (input) input.value = key === 'title' ? card.title : card.fields[key];
@@ -92,13 +93,16 @@ export function openCard(targetId) {
     <div id="editor-save-error" class="error-banner" role="alert" hidden></div>
     ${template.fields.filter((field) => field.placement === 'header').map((field) => editorField(field, card)).join('')}
     <div class="editor-title"><label class="sr-only" for="card-title">${escape(template.title.label)}</label><input id="card-title" placeholder="Untitled card" maxlength="${template.title.max}" value="${escape(card.title)}" autocomplete="off"></div>
+    ${cardPlaybookMarkup()}
     <div class="editor-content"><div class="writing-panel">
       ${template.fields.filter((field) => field.placement !== 'header' && field.editor !== false).map((field) => editorField(field, card)).join('')}
+      ${notesMarkup()}
     </div>
     <aside class="images-panel" aria-label="Card images"><div class="field-heading"><h2>Images</h2><span id="image-count"></span></div><div id="card-images"></div><label class="image-drop" id="image-drop">${icon('upload')}<strong>Add images</strong><span>Drop, paste or <u>browse files</u></span><input id="image-files" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/avif" multiple aria-label="Upload images"></label><p id="upload-status" class="upload-status" role="status"></p></aside></div>
     <div class="editor-footer">${button('delete-card', 'Delete card', 'trash', 'text-button danger')}${button('copy-trifecta', 'Trifecta copy', 'text', 'button secondary')}<span class="edited-at" data-edited-card="${card.id}">${lastEditedMarkup(card)}</span>${button('close-card', 'Done', 'check', 'button primary')}</div>`;
   renderImages();
   renderStatus();
+  mountCardPlaybook(targetId);
   mountChat(targetId);
   document.body.classList.add('card-panel-open');
   if (!card.title) $(card.fields.originalVideoUrl ? '#card-title' : '#card-original-video-url').focus();

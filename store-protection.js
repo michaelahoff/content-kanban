@@ -26,7 +26,7 @@ const fail = (status, message) => { throw Object.assign(new Error(message), { st
 const check = (value, message) => { if (!value) fail(400, message); };
 const object = (v) => v && typeof v === 'object' && !Array.isArray(v);
 
-export function createProtectionStore({ all, get, run, transaction, requireCard, retainedCard, recordChange, now, updateCard, transitionCard, item, registerOutput }) {
+export function createProtectionStore({ all, get, run, transaction, requireCard, retainedCard, recordChange, now, updateCard, transitionCard, item, registerOutput, laneEntry }) {
   const leases = new Map();
   const reviews = new Map();
   const versions = (id) => Object.fromEntries(all('SELECT field, version FROM card_field_versions WHERE card_id = ?', id).map((r) => [r.field, r.version]));
@@ -41,7 +41,7 @@ export function createProtectionStore({ all, get, run, transaction, requireCard,
   function provenance(a, accepted) {
     const submission = get('SELECT * FROM chat_submissions WHERE id = ?', a.submission_id);
     return { cardId: a.card_id, attemptId: a.id, submissionId: submission.id, conversationId: submission.conversation_id,
-      turnId: a.turn_id, origin: 'manual', accepted };
+      turnId: a.turn_id, origin: JSON.parse(submission.frozen).lane ? 'lane' : 'manual', accepted };
   }
   function proposal(ctx, a, kind, payload) {
     const id = randomUUID();
@@ -126,8 +126,13 @@ export function createProtectionStore({ all, get, run, transaction, requireCard,
           // A model may re-read newer values but cannot manufacture a version
           // newer than the currently saved field to defeat a conflict check.
           const current = versions(card.id); const applied = {}; const proposed = {};
+          // A lane run edits directly only while its card is still in that lane
+          // and has not left and returned since the run began.
+          const laneRun = submission.lane && get('SELECT stage_id, created_at FROM lane_runs WHERE id = ?', submission.lane.runId);
+          const inLane = !submission.lane || (laneRun && card.stageId === laneRun.stage_id &&
+            (submission.lane.entry !== undefined ? submission.lane.entry === laneEntry(card.id) : !card.enteredStageAt || card.enteredStageAt <= laneRun.created_at));
           for (const [key, value] of Object.entries(input.fields)) {
-            if (tool === 'edit_fields' && submission.authority.fields.includes(key) && bases[key] === current[key] && !leased(card.id, key)) applied[key] = value;
+            if (tool === 'edit_fields' && inLane && submission.authority.fields.includes(key) && bases[key] === current[key] && !leased(card.id, key)) applied[key] = value;
             else proposed[key] = value;
           }
           if (Object.keys(applied).length) applyFields(ctx, card, applied, a, false);

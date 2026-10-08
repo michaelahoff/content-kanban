@@ -5,7 +5,7 @@ Frameboard is a content planning board. This glossary records the shared languag
 ## Language
 
 **Card chat**:
-A persistent conversation history associated with a single content card. Each card has one card chat, which receives manual and lane graph prompts and retains earlier conversations when fresh context is started.
+A persistent conversation history associated with a single content card. Each card has one card chat, which receives manual prompts and lane runs and retains earlier conversations when fresh context is started.
 
 **Fresh context**:
 A new primary agent conversation within a card chat, started by changing its primary provider or explicitly discarding the current working context. Earlier conversations remain in the card chat's history.
@@ -22,20 +22,34 @@ A reviewed transfer summary waiting to accompany the first manual prompt to the 
 **Summary source checkpoint**:
 The boundary in a retained conversation identifying the messages on which a transfer summary was based. A summary is stale when newer source messages exist beyond that boundary.
 
-**Graph prompt**:
-Instructions defined in a lane command graph for submission to a card chat.
+**Lane playbook**:
+A Markdown file that says what happens when a card enters a lane: values to set at once, and instructions for an agent with the fields it may edit. One per lane, identified by the lane's ID in its settings.
+_Avoid_: Lane command, command graph, graph prompt
 
-**Lane graph run**:
-One execution of a lane's command graph, triggered by creating a card in that lane or moving a card into it. Returning to the lane starts another run.
+**Project map**:
+The Markdown file that describes a project and its lanes. Every lane run reads it first.
+
+**Skill**:
+A shared Markdown file of know-how, such as a voice guide, that lane playbooks include by name.
+
+**Lane run**:
+One execution of a lane playbook's instructions for one card, triggered by moving the card into an `on-enter` lane or by Run playbook. Returning to the lane starts another run. Creating a card does not start one.
+_Avoid_: Lane graph run
+
+**Lane result**:
+The block at the end of a lane run's reply that lists field changes, hand-off notes and an optional proposed move. Fields the playbook may edit apply; everything else becomes a card proposal.
+
+**Hand-off notes**:
+A card's `notes.md`, read by every lane run and added to by each one, so work carries across lanes and providers.
 
 **Temporary prompt override**:
-A single manual or graph prompt using a chosen provider or model while retaining the card chat's primary conversation. Its results remain visible in the card chat.
+A single manual prompt or lane run using a chosen provider or model while retaining the card chat's primary conversation. Its results remain visible in the card chat.
 
 **Result handoff**:
 The result and artifact references from a temporary prompt override supplied as additional context to the primary conversation, with their source identified.
 
 **Submission**:
-A prompt sent to a card chat, frozen together with its submitted card context, target provider and model, and its authority to edit the card. Manual and graph prompts are both submissions.
+A prompt sent to a card chat, frozen together with its submitted card context, target provider and model, and its authority to edit the card. Manual prompts and lane runs are both submissions.
 _Avoid_: Message, job
 
 **Delivery attempt**:
