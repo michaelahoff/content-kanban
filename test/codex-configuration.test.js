@@ -53,13 +53,13 @@ test('provider selection survives SQLite reopen, with conflict protection and un
   t.after(async () => { store.close(); await rm(dataDir, { recursive: true, force: true }); });
   const ctx = { ...store.owner, actor: 'user:test' };
   const original = store.providerConfiguration(ctx);
-  assert.deepEqual(original.selection, selection);
+  assert.deepEqual(original.selection, { ...selection, enabled: true });
   const saved = store.saveProviderConfiguration(ctx, { revision: 0, selection: { instructions: 'selected guidance', selected: ['instruction:one'] } });
   assert.equal(saved.revision, 1);
   assert.throws(() => store.saveProviderConfiguration(ctx, { revision: 0, selection }), { status: 409 });
   store.close(); store = await openStore({ dataDir });
   assert.deepEqual(store.providerConfiguration(ctx), saved);
-  assert.deepEqual(original.selection, selection);
+  assert.deepEqual(original.selection, { ...selection, enabled: true });
   assert.equal(store.events(ctx).at(-1).type, 'configuration_changed');
 });
 

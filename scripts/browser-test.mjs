@@ -12,7 +12,8 @@ const fakeYoutube = async (url) => url.startsWith('https://www.youtube.com/oembe
   ? new Response(JSON.stringify({ title: 'A borrowed idea' }))
   : new Response(Buffer.from([255, 216, 255, 224, 0, 16]));
 const codex = new ControlledCodex(path.join(temporary, 'data'));
-const server = await createApp({ dataDir: path.join(temporary, 'data'), fetch: fakeYoutube, codexAdapter: codex });
+const claude = new ControlledCodex(path.join(temporary, 'data')); claude.models = ['sonnet', 'opus'];
+const server = await createApp({ dataDir: path.join(temporary, 'data'), fetch: fakeYoutube, codexAdapter: codex, claudeAdapter: claude });
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 const base = `http://127.0.0.1:${server.address().port}`;
 const chrome = spawn(process.env.CHROME_PATH || 'chromium', ['--headless', '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage', '--remote-debugging-port=0', `--user-data-dir=${path.join(temporary, 'chrome')}`, 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
@@ -730,7 +731,7 @@ try {
   await open(b.id); await fill('#chat-prompt', 'Draft B persists');
   await open(a.id); assert.equal(await evaluate(`document.querySelector('#chat-prompt').value`), 'Draft A persists');
   assert.equal(codex.threads.size, 0, 'Idle views never create native conversations.');
-  await click('[data-action="chat-discover"]');
+  assert.equal(await evaluate(`!!document.querySelector('[data-action="chat-discover"]')`), false, 'Models are shared globally without per-chat discovery.');
   await waitFor(`!!document.querySelector('#chat-model option[value="test-model"]')`);
   await select('#chat-model', 'test-model');
   await click('[data-action="chat-send"]');
@@ -782,6 +783,77 @@ try {
   await click('[data-action="toggle-chat"]');
   await waitFor(`!document.querySelector('[data-activity-card="${a.id}"].done')`);
   console.log('PASS Working timer, streamed text, Input needed navigation/focus, other-tab Done clearing and hidden-chat reveal');
+  // Global settings and provider combinations use one saved catalog for all cards.
+  await click('[data-action="close-card"]');
+  await waitFor(`import('/chat.js').then(m => !m.hasUnsentChatChanges())`);
+  await waitFor(`import('/state.js').then(m => !m.hasUnsavedWork())`);
+  assert.equal(await evaluate(`document.querySelector('a[aria-label="General settings"]').textContent`), 'Settings');
+  await send('Page.navigate', { url: base + '/settings.html' });
+  await waitFor(`!!document.querySelector('input[data-provider="claude"]')`);
+  await click('input[data-provider="claude"]');
+  await waitFor(`document.querySelector('#models').textContent.includes('sonnet')`);
+  assert.equal((await api('GET', '/api/settings')).providers.filter((p) => p.enabled).length, 2);
+  await fill('#claude-instructions', 'Shared Claude guidance');
+  await click('#claude-guidance button');
+  await waitFor(`document.querySelector('#status').textContent.includes('instructions saved')`);
+  await click('input[data-provider="codex"]');
+  await waitFor(`!document.querySelector('input[data-provider="codex"]').disabled`);
+  await send('Page.navigate', { url: base + '/settings.html' });
+  await waitFor(`!!document.querySelector('input[data-provider="claude"]')`);
+  assert.equal(await evaluate(`document.querySelector('input[data-provider="codex"]').checked`), false);
+  assert.equal(await evaluate(`document.querySelector('input[data-provider="claude"]').checked`), true);
+  assert.equal(await evaluate(`document.querySelector('#claude-instructions').value`), 'Shared Claude guidance');
+  await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+  assert.equal(await evaluate(`document.documentElement.scrollWidth > innerWidth`), false);
+  await snapshot('global-settings-mobile');
+  await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
+  await send('Page.navigate', { url: base }); await open(b.id);
+  await waitFor(`!!document.querySelector('#chat-provider option[value="claude"]')`);
+  await select('#chat-provider', 'claude');
+  await waitFor(`!!document.querySelector('#chat-model option[value="sonnet"]')`);
+  await select('#chat-model', 'sonnet'); await fill('#chat-prompt', 'Claude from shared models');
+  await click('[data-action="chat-send"]');
+  await waitFor(`document.querySelector('#chat-provider').disabled`);
+  await waitFor(`document.querySelector('#chat-transcript').textContent.includes('In progress')`);
+  assert.equal(claude.sends.length, 1); claude.finish(claude.sends[0], 'completed', 'Claude browser reply');
+  await waitFor(`document.querySelector('#chat-transcript').textContent.includes('Claude browser reply')`);
+  // Hold a model response that captured the enabled provider, then change
+  // settings while that response is pending. The next refresh must not vanish.
+  await evaluate(`(() => {
+    const original = window.fetch.bind(window);
+    window.catalogGate = { captured: false, release: null, original };
+    window.fetch = async (...args) => {
+      const response = await original(...args);
+      if (args[0] === '/api/models' && !window.catalogGate.captured) {
+        window.catalogGate.captured = true;
+        await new Promise(resolve => { window.catalogGate.release = resolve; });
+      }
+      return response;
+    };
+    window.dispatchEvent(new Event('focus'));
+  })()`);
+  await waitFor(`window.catalogGate.captured`);
+  const claudeSettings = await api('GET', '/api/providers/claude');
+  await api('PUT', '/api/providers/claude', { revision: claudeSettings.revision, selection: { ...claudeSettings.selection, enabled: false } });
+  await evaluate(`window.dispatchEvent(new Event('focus')); window.catalogGate.release()`);
+  await waitFor(`document.querySelector('#chat-composer').textContent.includes('Enable Claude or Codex')`);
+  assert.equal(await evaluate(`document.querySelector('[data-action="chat-send"]').disabled`), true);
+  await evaluate(`window.fetch = window.catalogGate.original; delete window.catalogGate`);
+  const disabledClaude = await api('GET', '/api/providers/claude');
+  await api('PUT', '/api/providers/claude', { revision: disabledClaude.revision, selection: { ...disabledClaude.selection, enabled: true } });
+  await waitFor(`!!document.querySelector('#chat-model option[value="sonnet"]:not([disabled])')`);
+  await click('[data-action="close-card"]');
+  await waitFor(`import('/chat.js').then(m => !m.hasUnsentChatChanges())`);
+  await waitFor(`import('/state.js').then(m => !m.hasUnsavedWork())`);
+  await send('Page.navigate', { url: base + '/settings.html' });
+  await waitFor(`!!document.querySelector('input[data-provider="claude"]')`);
+  await click('input[data-provider="claude"]');
+  await waitFor(`document.querySelector('#models').textContent.includes('Both providers are disabled')`);
+  assert.equal(await evaluate(`document.querySelector('#refresh-models').disabled`), true);
+  await send('Page.navigate', { url: base }); await open(b.id);
+  await waitFor(`document.querySelector('#chat-composer').textContent.includes('Enable Claude or Codex')`);
+  assert.equal(await evaluate(`document.querySelector('[data-action="chat-send"]').disabled`), true);
+  console.log('PASS global Settings, independent provider toggles, saved models/instructions, Claude chat, disabled sends and mobile layout');
   assert.deepEqual(browserErrors, []);
   console.log('All browser checks passed. Screenshots: test-results/');
 } finally {

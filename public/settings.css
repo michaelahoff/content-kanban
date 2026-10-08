@@ -1,0 +1,13 @@
+.settings-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.settings-heading h2 { margin: 0; }
+.provider-option, .model-catalog { padding: 24px; margin: 24px 0; border: 1px solid var(--border, #30323b); border-radius: 10px; }
+.provider-toggle { display: flex; align-items: center; gap: 12px; cursor: pointer; font-size: 18px; }
+.provider-toggle input { width: 18px; height: 18px; accent-color: var(--accent, #64d8be); }
+.provider-option label[for] { display: block; margin: 20px 0 8px; }
+.provider-option textarea { width: 100%; }
+.provider-option button { margin-top: 12px; }
+.model-provider { margin-top: 24px; }
+.model-provider ul { padding-left: 22px; line-height: 1.8; }
+.model-provider time, .settings-error { display: block; font-size: 13px; }
+.settings-error { color: #ff9c9c; }
+@media (max-width: 520px) { .settings-heading { align-items: start; flex-direction: column; } .provider-option, .model-catalog { padding: 16px; } }

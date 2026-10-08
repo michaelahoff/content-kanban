@@ -67,18 +67,21 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
     recordChange(ctx, 'chat', cardId, type, { projectId: card.project_id, data });
   }
   function current(cardId) { return conversationFrom(get("SELECT * FROM chat_conversations WHERE card_id = ? AND state != 'previous'", cardId)); }
-  function newConversation(cardId, model) {
+  function newConversation(cardId, model, provider = 'codex') {
     const id = randomUUID();
     const position = get('SELECT COALESCE(MAX(position), 0) + 1 AS position FROM chat_conversations WHERE card_id = ?', cardId).position;
-    run("INSERT INTO chat_conversations (id, card_id, position, provider, model, state, created_at) VALUES (?, ?, ?, 'codex', ?, 'active', ?)", id, cardId, position, model, now());
+    run("INSERT INTO chat_conversations (id, card_id, position, provider, model, state, created_at) VALUES (?, ?, ?, ?, ?, 'active', ?)", id, cardId, position, provider, model, now());
     return current(cardId);
   }
   function ensure(ctx, cardId) {
     const card = retainedCard(ctx, cardId);
     if (!get('SELECT card_id FROM card_chats WHERE card_id = ?', cardId)) transaction(() => {
+      const settings = Object.fromEntries(all('SELECT provider, selection FROM provider_configurations WHERE workspace_id = ?', ctx.workspaceId)
+        .map((row) => [row.provider, JSON.parse(row.selection)]));
+      const provider = settings.codex?.enabled === false && settings.claude?.enabled === true ? 'claude' : 'codex';
       run('INSERT INTO card_chats (card_id, workspace_id, composer) VALUES (?, ?, ?)', cardId, ctx.workspaceId,
-        JSON.stringify({ prompt: '', model: null, selections: defaultSelections(card.template), authority: { fields: [] } }));
-      newConversation(cardId, null);
+        JSON.stringify({ prompt: '', provider, model: null, selections: defaultSelections(card.template), authority: { fields: [] } }));
+      newConversation(cardId, null, provider);
     });
     return get('SELECT * FROM card_chats WHERE card_id = ?', cardId);
   }
@@ -89,7 +92,8 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
   function attempt(id) { return attemptFrom(get('SELECT * FROM chat_attempts WHERE id = ?', id)); }
   function validateComposer(card, value) {
     check(object(value) && text(value.prompt, 200000), 'Prompts can be up to 200,000 characters.');
-    check(value.model === null || (text(value.model, 200) && value.model.trim()), 'Choose a Codex model.');
+    check(value.model === null || (text(value.model, 200) && value.model.trim()), 'Choose a model.');
+    check(value.provider === undefined || ['codex', 'claude'].includes(value.provider), 'Unknown chat provider.');
     const selections = value.selections;
     const fields = contextFields(card.template).map((field) => field.key);
     check(object(selections) && Array.isArray(selections.fields) && selections.fields.every((key) => fields.includes(key))
@@ -98,7 +102,7 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
     check(Array.isArray(selections.images) && selections.images.length <= 200 && selections.images.every((id) => text(id, 100)), 'Invalid image references.');
     check(object(value.authority) && Array.isArray(value.authority.fields) && value.authority.fields.length <= fields.length
       && value.authority.fields.every((key) => fields.includes(key)), 'Invalid text authority.');
-    return { prompt: value.prompt, model: value.model, selections: { fields: [...new Set(selections.fields)], roles: [...new Set(selections.roles)], images: [...new Set(selections.images)] },
+    return { prompt: value.prompt, provider: value.provider ?? 'codex', model: value.model, selections: { fields: [...new Set(selections.fields)], roles: [...new Set(selections.roles)], images: [...new Set(selections.images)] },
       authority: { fields: [...new Set(value.authority.fields)] } };
   }
   function activeAttempt(cardId) {
@@ -141,7 +145,7 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
     snapshot(ctx, cardId) {
       const row = ensure(ctx, cardId);
       const card = retainedCard(ctx, cardId);
-      return { cardId, deleted: Boolean(card.deleted_at), composer: { ...JSON.parse(row.composer), revision: row.composer_revision },
+      return { cardId, deleted: Boolean(card.deleted_at), composer: { provider: 'codex', ...JSON.parse(row.composer), revision: row.composer_revision },
         conversations: all('SELECT * FROM chat_conversations WHERE card_id = ? ORDER BY position', cardId).map(conversationFrom),
         submissions: all('SELECT * FROM chat_submissions WHERE card_id = ? ORDER BY sequence', cardId).map(submissionFrom),
         attempts: all('SELECT * FROM chat_attempts WHERE card_id = ? ORDER BY rowid', cardId).map(attemptFrom),
@@ -157,7 +161,7 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
       check(object(input) && Number.isInteger(input.revision), 'Composer updates need their revision.');
       if (row.composer_revision !== input.revision) fail(409, 'The composer changed in another tab. Your unsent draft has been kept here; reload the saved composer or copy your draft.');
       const composer = validateComposer(card, input);
-      if (composer.model !== JSON.parse(row.composer).model && activeAttempt(cardId)) fail(409, 'Wait for the active response to finish or Stop it before changing model.');
+      if ((composer.model !== JSON.parse(row.composer).model || composer.provider !== (JSON.parse(row.composer).provider ?? 'codex')) && activeAttempt(cardId)) fail(409, 'Wait for the active response to finish or Stop it before changing model.');
       return transaction(() => {
         run('UPDATE card_chats SET composer = ?, composer_revision = composer_revision + 1 WHERE card_id = ?', JSON.stringify(composer), cardId);
         activity(ctx, cardId, 'composer_saved');
@@ -169,7 +173,7 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
       const row = ensure(ctx, cardId);
       const versions = Object.fromEntries(all('SELECT field, version FROM card_field_versions WHERE card_id = ?', cardId).map((row) => [row.field, row.version]));
       return { cardRevision: card.revision, composerRevision: row.composer_revision, conversationId: current(cardId).id,
-        prompt: JSON.parse(row.composer).prompt, model: JSON.parse(row.composer).model,
+        prompt: JSON.parse(row.composer).prompt, provider: JSON.parse(row.composer).provider ?? 'codex', model: JSON.parse(row.composer).model,
         authority: JSON.parse(row.composer).authority, context: selectedContext(card, JSON.parse(row.composer).selections, versions,
           all("SELECT image_id AS id, name, id AS outputId FROM chat_outputs WHERE card_id = ? AND import_status = 'imported'", cardId)) };
     },
@@ -190,7 +194,11 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
       check(captured.prompt.trim() && captured.model, 'Write a prompt and explicitly choose a model before sending.');
       return transaction(() => {
         const conversation = current(cardId);
-        const frozen = { prompt: captured.prompt, context: captured.context, provider: 'codex', model: captured.model, configuration, authority: captured.authority };
+        if (conversation.provider !== captured.provider) {
+          if (conversation.binding || get('SELECT id FROM chat_submissions WHERE conversation_id = ? LIMIT 1', conversation.id)) fail(409, 'Start fresh context before switching providers. Previous conversation history will be kept.');
+          run('UPDATE chat_conversations SET provider = ? WHERE id = ?', captured.provider, conversation.id);
+        }
+        const frozen = { prompt: captured.prompt, context: captured.context, provider: captured.provider, model: captured.model, configuration, authority: captured.authority };
         run('INSERT INTO chat_submissions (id, card_id, conversation_id, frozen, status, created_at) VALUES (?, ?, ?, ?, ?, ?)',
           input.id, cardId, conversation.id, JSON.stringify(frozen), 'queued', now());
         const composer = JSON.parse(row.composer);
@@ -401,7 +409,7 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
         if (queued.length && input.cancelQueued !== true) fail(409, 'Explicitly cancel the old queued submissions before starting fresh context.');
         for (const submission of queued) status(ctx, submission.id, 'cancelled', 'Cancelled for empty fresh context.');
         run("UPDATE chat_conversations SET state = 'previous' WHERE id = ?", old.id);
-        const next = newConversation(cardId, JSON.parse(row.composer).model);
+        const next = newConversation(cardId, JSON.parse(row.composer).model, JSON.parse(row.composer).provider ?? 'codex');
         activity(ctx, cardId, 'fresh_context', { previousConversationId: old.id, conversationId: next.id });
         return this.snapshot(ctx, cardId);
       });

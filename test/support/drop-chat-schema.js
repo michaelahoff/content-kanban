@@ -1,7 +1,8 @@
 // Older-schema fixtures start from the current store. Remove this milestone
 // before reconstructing their old tables and setting the historical version.
 export function dropChatSchema(db) {
-  db.exec(`DROP TABLE chat_outputs;
+  db.exec(`DROP TABLE provider_catalogs;
+    DROP TABLE chat_outputs;
     DROP TABLE image_versions;
     DROP TRIGGER protection_created;
     DROP TRIGGER protection_changed;

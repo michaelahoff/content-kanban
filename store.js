@@ -150,7 +150,12 @@ const migrations = [`
     workspace_id TEXT NOT NULL REFERENCES workspaces(id), provider TEXT NOT NULL,
     revision INTEGER NOT NULL, selection TEXT NOT NULL, updated_at TEXT NOT NULL,
     PRIMARY KEY (workspace_id, provider));
-`, chatMigration, protectionMigration, imagesMigration, recoveryMigration];
+`, chatMigration, protectionMigration, imagesMigration, recoveryMigration, `
+  CREATE TABLE provider_catalogs (
+    workspace_id TEXT NOT NULL REFERENCES workspaces(id), provider TEXT NOT NULL,
+    discovery TEXT NOT NULL, updated_at TEXT NOT NULL,
+    PRIMARY KEY (workspace_id, provider));
+`];
 
 const now = () => new Date().toISOString();
 const fail = (status, message) => { throw Object.assign(new Error(message), { status }); };
@@ -513,28 +518,48 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
     close: () => db.close(),
 
     providerConfiguration(ctx, provider = 'codex') {
-      check(provider === 'codex', 'Only the Codex provider is available in this milestone.');
+      check(['codex', 'claude'].includes(provider), 'Unknown chat provider.');
       const row = get('SELECT * FROM provider_configurations WHERE workspace_id = ? AND provider = ?', ctx.workspaceId, provider);
       return row ? { provider, revision: row.revision, selection: JSON.parse(row.selection), updatedAt: row.updated_at }
-        : { provider, revision: 0, selection: { instructions: '', selected: [] }, updatedAt: null };
+        : { provider, revision: 0, selection: { instructions: '', selected: [], enabled: provider === 'codex' }, updatedAt: null };
     },
 
-    saveProviderConfiguration(ctx, input) {
+    saveProviderConfiguration(ctx, input, provider = 'codex') {
+      this.providerConfiguration(ctx, provider);
       check(isObject(input) && Number.isInteger(input.revision), 'Configuration needs its current revision.');
       check(isObject(input.selection) && isText(input.selection.instructions, 50000) && Array.isArray(input.selection.selected)
         && input.selection.selected.length <= 500 && input.selection.selected.every((id) => isText(id, 4000))
+        && (input.selection.enabled === undefined || typeof input.selection.enabled === 'boolean')
         && (input.selection.inherited === undefined || typeof input.selection.inherited === 'boolean'), 'Invalid provider selection.');
       return transaction(() => {
-        const current = this.providerConfiguration(ctx);
+        const current = this.providerConfiguration(ctx, provider);
         if (current.revision !== input.revision) fail(409, 'Configuration changed in another tab. Reload before saving.');
         const selection = { instructions: input.selection.instructions, selected: [...new Set(input.selection.selected)].sort(),
-          ...(input.selection.inherited ? { inherited: true } : {}) };
+          ...(input.selection.inherited ? { inherited: true } : {}),
+          enabled: input.selection.enabled ?? current.selection.enabled ?? (provider === 'codex') };
         const revision = current.revision + 1;
         const at = now();
-        run(`INSERT INTO provider_configurations (workspace_id, provider, revision, selection, updated_at) VALUES (?, 'codex', ?, ?, ?)
-          ON CONFLICT (workspace_id, provider) DO UPDATE SET revision = excluded.revision, selection = excluded.selection, updated_at = excluded.updated_at`, ctx.workspaceId, revision, JSON.stringify(selection), at);
-        recordChange(ctx, 'provider', 'codex', 'configuration_changed', { data: { revision }, at });
-        return this.providerConfiguration(ctx);
+        run(`INSERT INTO provider_configurations (workspace_id, provider, revision, selection, updated_at) VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT (workspace_id, provider) DO UPDATE SET revision = excluded.revision, selection = excluded.selection, updated_at = excluded.updated_at`, ctx.workspaceId, provider, revision, JSON.stringify(selection), at);
+        recordChange(ctx, 'provider', provider, 'configuration_changed', { data: { revision }, at });
+        return this.providerConfiguration(ctx, provider);
+      });
+    },
+
+    providerCatalog(ctx, provider) {
+      this.providerConfiguration(ctx, provider);
+      const row = get('SELECT * FROM provider_catalogs WHERE workspace_id = ? AND provider = ?', ctx.workspaceId, provider);
+      return row ? { discovery: JSON.parse(row.discovery), updatedAt: row.updated_at } : { discovery: null, updatedAt: null };
+    },
+    saveProviderCatalog(ctx, provider, discovery) {
+      this.providerConfiguration(ctx, provider);
+      return transaction(() => {
+        const at = now();
+        run(`INSERT INTO provider_catalogs VALUES (?, ?, ?, ?)
+          ON CONFLICT (workspace_id, provider) DO UPDATE SET discovery = excluded.discovery, updated_at = excluded.updated_at`,
+          ctx.workspaceId, provider, JSON.stringify(discovery), at);
+        recordChange(ctx, 'provider', provider, 'catalog_refreshed', { at });
+        return this.providerCatalog(ctx, provider);
       });
     },
 

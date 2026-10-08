@@ -1,6 +1,6 @@
 // One active attempt per card; every ready card progresses independently.
 // The durable queue owns correctness. Wake-ups only reduce scheduling latency.
-import { configurationDiscovery, queuedConfigurationDecision, openConfiguredThread } from './codex-configuration.js';
+import { configurationDiscovery, queuedConfigurationDecision, openConfiguredThread } from './provider-configuration.js';
 import { submissionText } from './public/chat-context.js';
 import { automaticDecision, nativeDecision } from './native-requests.js';
 import { outputProvenance } from './store-images.js';
@@ -19,7 +19,7 @@ export function failureReason(error) {
 // was refused before acceptance.
 const overloaded = (error) => error.code === -32001;
 
-export function createChatWorker({ store, adapter, service, ctx, providerBackoffMs = 2000, providerWaitLimit = 6, onDelta = () => {} }) {
+export function createChatWorker({ store, adapter, adapters = { codex: adapter }, service, ctx, providerBackoffMs = 2000, providerWaitLimit = 6, onDelta = () => {} }) {
   const live = new Map();
   let retryTimer = null;
   const retained = new Set();
@@ -85,7 +85,7 @@ export function createChatWorker({ store, adapter, service, ctx, providerBackoff
   async function interrupt(work) {
     if (closed || !work.threadId || !work.turnId || work.interruptSent === work.turnId) return;
     work.interruptSent = work.turnId;
-    try { await adapter.interrupt({ threadId: work.threadId, turnId: work.turnId }); }
+    try { await adapters[work.submission.provider].interrupt({ threadId: work.threadId, turnId: work.turnId }); }
     catch (error) {
       if (!closed) end(work, 'uncertain', `Interruption has not been acknowledged: ${error.message}`);
     }
@@ -162,15 +162,17 @@ export function createChatWorker({ store, adapter, service, ctx, providerBackoff
   async function execute(work) {
     try {
       const { submission, attempt } = work;
+      const adapter = adapters[submission.provider];
+      if (store.providerConfiguration(ctx, submission.provider).selection.enabled === false) { store.chats.hold(ctx, attempt.id, 'This provider is disabled in Settings. Enable it and resubmit to continue.'); release(work); return; }
       const cwd = service.workspace(submission.cardId);
-      const discovery = await configurationDiscovery(adapter, { cwd });
+      const discovery = await configurationDiscovery(adapter, { cwd }, submission.provider);
       if (closed) return;
       nativeHome = discovery.harness.codexHome;
       if (store.chats.attempt(attempt.id)?.status === 'interrupt-requested') { end(work, 'interrupted'); return; }
-      const decision = queuedConfigurationDecision(submission.configuration, store.providerConfiguration(ctx).selection, discovery);
+      const decision = queuedConfigurationDecision(submission.configuration, store.providerConfiguration(ctx, submission.provider).selection, discovery);
       if (decision.status !== 'ready') { store.chats.hold(ctx, attempt.id, decision.reason); release(work); return; }
       const opened = await openConfiguredThread(adapter, { frozen: submission.configuration, discovery,
-        currentSelection: store.providerConfiguration(ctx).selection, threadId: work.conversation.binding?.threadId,
+        currentSelection: store.providerConfiguration(ctx, submission.provider).selection, threadId: work.conversation.binding?.threadId,
         binding: work.conversation.binding, cwd, model: submission.model });
       if (closed) return;
       work.threadId = opened.threadId;
@@ -180,10 +182,10 @@ export function createChatWorker({ store, adapter, service, ctx, providerBackoff
       const images = await service.references(submission);
       if (closed) return;
       if (store.chats.attempt(attempt.id)?.status === 'interrupt-requested') { end(work, 'interrupted'); return; }
-      const recheck = queuedConfigurationDecision(submission.configuration, store.providerConfiguration(ctx).selection, discovery);
+      const recheck = queuedConfigurationDecision(submission.configuration, store.providerConfiguration(ctx, submission.provider).selection, discovery);
       if (recheck.status !== 'ready') { store.chats.hold(ctx, attempt.id, recheck.reason); release(work); return; }
       if (work.conversation.binding?.threadId) {
-        const outside = await outsideTurns(work.conversation.id, opened.threadId);
+        const outside = await outsideTurns(work.conversation.id, opened.threadId, adapter);
         if (closed) return;
         if (store.chats.attempt(attempt.id)?.status === 'interrupt-requested') { end(work, 'interrupted'); return; }
         if (outside.length) { store.chats.holdOutside(ctx, attempt.id, outside); release(work); return; }
@@ -237,10 +239,10 @@ export function createChatWorker({ store, adapter, service, ctx, providerBackoff
     });
   }
   // Pages native history read-only (newest first) until `found` matches.
-  async function findTurn(threadId, found) {
+  async function findTurn(threadId, found, nativeAdapter = adapter) {
     let cursor = null; const seen = new Set();
     do {
-      const page = await adapter.listTurns({ threadId, cursor });
+      const page = await nativeAdapter.listTurns({ threadId, cursor });
       if (closed) return null;
       const match = page.data.find(found);
       if (match) return match;
@@ -252,13 +254,13 @@ export function createChatWorker({ store, adapter, service, ctx, providerBackoff
   }
   // Newest native turns back to the latest one Frameboard knows. Any other turn
   // was continued outside Frameboard (for example a CLI resume).
-  async function outsideTurns(conversationId, threadId) {
+  async function outsideTurns(conversationId, threadId, nativeAdapter) {
     const { attemptIds, turnIds } = store.chats.nativeIdentity(conversationId);
     const outside = [];
     await findTurn(threadId, (turn) => {
       if (turnIds.has(turn.id) || turn.items?.some((item) => item.type === 'userMessage' && attemptIds.has(item.clientId))) return true;
       outside.push(turn.id); return false;
-    });
+    }, nativeAdapter);
     return outside;
   }
   // Read-only delivery reconciliation by attempt client ID. `proof` holds only
@@ -267,6 +269,8 @@ export function createChatWorker({ store, adapter, service, ctx, providerBackoff
   // the attempt proves non-delivery. Anything possibly delivered is never resent.
   async function settleFromHistory({ attempt, submission, conversation }, proof) {
     const threadId = conversation.binding?.threadId;
+    const nativeAdapter = adapters[submission.provider];
+    if (threadId) nativeAdapter.bindHistory?.({ threadId, cwd: conversation.binding.cwd });
     const notSent = (unbind = false) => {
       // A Stop or deletion requested before delivery is honored, not requeued.
       if (attempt.status === 'interrupt-requested' || ['user', 'cancelled'].includes(attempt.cause)) return store.chats.reconcile(ctx, attempt.id, 'interrupted', 'Stopped before it was sent to Codex.');
@@ -275,7 +279,7 @@ export function createChatWorker({ store, adapter, service, ctx, providerBackoff
     // The binding is committed before turn/start, so no binding means no send.
     if (!threadId) return notSent();
     let match;
-    try { match = await findTurn(threadId, (turn) => turn.items?.some((item) => item.type === 'userMessage' && item.clientId === attempt.id)); }
+    try { match = await findTurn(threadId, (turn) => turn.items?.some((item) => item.type === 'userMessage' && item.clientId === attempt.id), nativeAdapter); }
     catch (error) {
       if (closed) return false;
       if (error.kind !== 'native-unavailable') return store.chats.reconcile(ctx, attempt.id, 'uncertain', `Native history could not be read, so delivery is uncertain: ${error.message}`);
