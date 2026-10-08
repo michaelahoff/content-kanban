@@ -5,7 +5,7 @@ Frameboard is a content planning board. This glossary records the shared languag
 ## Language
 
 **Card chat**:
-A persistent conversation history associated with a single content card. Each card has one card chat, which receives manual and lane graph prompts and retains earlier conversations when fresh context is started.
+A persistent conversation history associated with a single content card. Each card has one card chat, which receives manual prompts and lane runs and retains earlier conversations when fresh context is started.
 
 **Fresh context**:
 A new primary agent conversation within a card chat, started by changing its primary provider or explicitly discarding the current working context. Earlier conversations remain in the card chat's history.
@@ -22,20 +22,34 @@ A reviewed transfer summary waiting to accompany the first manual prompt to the 
 **Summary source checkpoint**:
 The boundary in a retained conversation identifying the messages on which a transfer summary was based. A summary is stale when newer source messages exist beyond that boundary.
 
-**Graph prompt**:
-Instructions defined in a lane command graph for submission to a card chat.
+**Lane playbook**:
+A Markdown file that says what happens when a card enters a lane: values to set at once, and instructions for an agent with the fields it may edit. One per lane, identified by the lane's ID in its settings.
+_Avoid_: Lane command, command graph, graph prompt
 
-**Lane graph run**:
-One execution of a lane's command graph, triggered by creating a card in that lane or moving a card into it. Returning to the lane starts another run.
+**Project map**:
+The Markdown file that describes a project and its lanes. Every lane run reads it first.
+
+**Skill**:
+A shared Markdown file of know-how, such as a voice guide, that lane playbooks include by name.
+
+**Lane run**:
+One execution of a lane playbook's instructions for one card, triggered by moving the card into an `on-enter` lane or by Run playbook. A pending run has not yet captured its submitted inputs, and each run has at most one submission. Returning to the lane starts another run. Creating a card does not start one.
+_Avoid_: Lane graph run
+
+**Lane result**:
+The block at the end of a lane run's reply that lists field changes, hand-off notes, an optional proposed move and explicitly declared outputs to retain as saved snapshots. Field changes outside the playbook's authority and moves require user review; retaining an output does not adopt it into the card or promote it to the project library.
+
+**Hand-off notes**:
+A card's `notes.md`, read by every lane run and added to by each one, so work carries across lanes and providers.
 
 **Temporary prompt override**:
-A single manual or graph prompt using a chosen provider or model while retaining the card chat's primary conversation. Its results remain visible in the card chat.
+A single manual prompt or lane run using a chosen provider or model while retaining the card chat's primary conversation. Its results remain visible in the card chat.
 
 **Result handoff**:
 The result and artifact references from a temporary prompt override supplied as additional context to the primary conversation, with their source identified.
 
 **Submission**:
-A prompt sent to a card chat, frozen together with its submitted card context, target provider and model, and its authority to edit the card. Manual and graph prompts are both submissions.
+A prompt sent to a card chat, frozen together with its submitted card context, submitted asset context, target provider and model, and its authority to edit the card. Manual prompts and lane runs are both submissions.
 _Avoid_: Message, job
 
 **Delivery attempt**:
@@ -79,3 +93,45 @@ _Avoid_: Autosave, revision
 
 **Card restoration**:
 Returning a whole card to an earlier saved card state while preserving intervening activity, conversation history, and image versions.
+
+**Playbook asset selection**:
+An ordered choice of project assets and asset folders saved for one lane playbook, independent of manual card-chat selections. It identifies reusable sources rather than the asset versions captured for a particular submission.
+
+**Submitted asset context**:
+The explicitly selected project asset versions captured as labeled reference material for a particular submission, including the assets expanded from selected folders. It remains the record of those inputs even when the library changes afterward.
+
+**Saved output**:
+A finished file or document retained as a snapshot in its originating card chat, with its source conversation and submission identified. Retaining it does not adopt it into the card or make it a project asset.
+
+**Library promotion**:
+The user's saving of a result into the project library as a new project asset or a new version of an existing asset, distinct from retaining it in card chat or adopting it into a card.
+
+**Project asset**:
+A reusable file or Frameboard-authored document owned by one project and located in one asset folder or at the library root, with an identity that persists across changes to its content. Reusing it in another project requires a separate copy.
+
+**Asset version**:
+A particular retained state of a project asset's content. Explicitly saving document changes or replacing uploaded content creates a new version of the same asset.
+
+**Asset folder**:
+A named container of project assets and nested asset folders within a project's library. It organizes related reference material that can be selected together for a prompt.
+
+**Asset removal**:
+Removing a project asset from future library selection while retaining its versions for queued submissions, history, and derived work.
+
+**Asset restoration**:
+Making a retained asset version's content current again by creating a new version of the same project asset, preserving intervening versions.
+
+**Project archive**:
+A retained, recoverable project removed from active use, with its assets, conversations, and history preserved and its pending and ongoing work cancelled.
+
+**Unavailable asset version**:
+A retained asset version whose original content is missing or damaged. Its identity and historical uses remain intact while submissions requiring that content are blocked.
+
+**Asset repair**:
+Recovering an unavailable asset version's exact original content without changing its identity or historical uses. Different content is a replacement version, not a repair.
+
+**Frameboard backup**:
+A complete, user-exportable snapshot of Frameboard's stored data, including active and archived projects and their retained content and history.
+
+**Backup restoration**:
+Recovering the saved Frameboard workspace from a verified Frameboard backup. It preserves archives and cancellations and does not automatically restart agent work.
