@@ -5,7 +5,7 @@ import { contextFields } from './chat-context.js';
 import { attemptMarkup, progressState, runningStatuses } from './chat-transcript.js';
 
 const chats = new Map();
-let modelCatalog = []; let catalogLoading = null;
+let modelCatalog = []; let catalogLoading = null; let catalogRefreshPending = false;
 let selected = null; let navigation; let activity = []; let events = null; let activityTimer = null; let refreshTimer = null; let clockTimer;
 let hidden = preference('frameboard-chat-hidden') === 'true';
 function preference(key, value) {
@@ -461,13 +461,21 @@ function renderActivityList() {
   list.innerHTML = activity.length ? activity.map((entry) => `<button class="chat-activity-entry" data-action="chat-activity-card" data-id="${escape(entry.cardId)}" data-project="${escape(entry.projectId)}" ${entry.requestId ? 'data-reveal="requests"' : ''} ${entry.deleted ? 'disabled' : ''}><strong>${escape(entry.title || 'Untitled card')}${entry.deleted ? ' (deleted)' : ''}</strong><span data-activity-card="${escape(entry.cardId)}">${escape(activityLabel(entry))}</span>${entry.reason ? `<span>${escape(entry.reason)}</span>` : ''}</button>`).join('') : '<p>No active card chats.</p>';
 }
 async function loadModelCatalog() {
-  if (catalogLoading) return catalogLoading;
+  if (catalogLoading) { catalogRefreshPending = true; return catalogLoading; }
   catalogLoading = (async () => {
     modelCatalog = (await request('/api/models')).providers;
     const item = chats.get(selected);
     if (item?.composer && $('#chat-composer')) renderComposer(item);
   })();
-  try { await catalogLoading; } finally { catalogLoading = null; }
+  try { await catalogLoading; } finally {
+    catalogLoading = null;
+    // A settings/catalog event received during this request must be reflected
+    // even if the response was already captured before that event.
+    if (catalogRefreshPending) {
+      catalogRefreshPending = false;
+      void loadModelCatalog().catch((error) => toast(error.message));
+    }
+  }
 }
 export function initializeChats(callbacks) {
   void loadModelCatalog().catch((error) => toast(error.message));

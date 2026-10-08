@@ -817,6 +817,31 @@ try {
   await waitFor(`document.querySelector('#chat-transcript').textContent.includes('In progress')`);
   assert.equal(claude.sends.length, 1); claude.finish(claude.sends[0], 'completed', 'Claude browser reply');
   await waitFor(`document.querySelector('#chat-transcript').textContent.includes('Claude browser reply')`);
+  // Hold a model response that captured the enabled provider, then change
+  // settings while that response is pending. The next refresh must not vanish.
+  await evaluate(`(() => {
+    const original = window.fetch.bind(window);
+    window.catalogGate = { captured: false, release: null, original };
+    window.fetch = async (...args) => {
+      const response = await original(...args);
+      if (args[0] === '/api/models' && !window.catalogGate.captured) {
+        window.catalogGate.captured = true;
+        await new Promise(resolve => { window.catalogGate.release = resolve; });
+      }
+      return response;
+    };
+    window.dispatchEvent(new Event('focus'));
+  })()`);
+  await waitFor(`window.catalogGate.captured`);
+  const claudeSettings = await api('GET', '/api/providers/claude');
+  await api('PUT', '/api/providers/claude', { revision: claudeSettings.revision, selection: { ...claudeSettings.selection, enabled: false } });
+  await evaluate(`window.dispatchEvent(new Event('focus')); window.catalogGate.release()`);
+  await waitFor(`document.querySelector('#chat-composer').textContent.includes('Enable Claude or Codex')`);
+  assert.equal(await evaluate(`document.querySelector('[data-action="chat-send"]').disabled`), true);
+  await evaluate(`window.fetch = window.catalogGate.original; delete window.catalogGate`);
+  const disabledClaude = await api('GET', '/api/providers/claude');
+  await api('PUT', '/api/providers/claude', { revision: disabledClaude.revision, selection: { ...disabledClaude.selection, enabled: true } });
+  await waitFor(`!!document.querySelector('#chat-model option[value="sonnet"]:not([disabled])')`);
   await click('[data-action="close-card"]');
   await waitFor(`import('/chat.js').then(m => !m.hasUnsentChatChanges())`);
   await waitFor(`import('/state.js').then(m => !m.hasUnsavedWork())`);

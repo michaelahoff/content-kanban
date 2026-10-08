@@ -33,7 +33,13 @@ export function createProviderService({ store, adapters }) {
         try { return { ...provider, ...await this.refresh(ctx, provider.provider) }; }
         catch (error) { return { ...provider, error: error.message }; }
       }));
-      return { providers: results };
+      // Settings can change while a native discovery is still running. Return
+      // current switches/revisions with the latest saved inventory, never the
+      // enablement snapshot taken before that asynchronous work.
+      return { providers: this.snapshot(ctx).providers.map((provider) => {
+        const result = results.find((entry) => entry.provider === provider.provider);
+        return { ...provider, ...(result.error ? { error: result.error } : {}) };
+      }) };
     },
     async drain() { await Promise.allSettled([...pending.values()]); },
   };

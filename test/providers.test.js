@@ -91,3 +91,19 @@ test('disabling a provider lets its running reply finish and holds the next queu
   assert.equal(snapshot.submissions[0].status, 'completed');
   assert.match(snapshot.submissions[1].reason, /disabled/);
 });
+
+test('model discovery returns current enablement when a provider is disabled during the refresh', async (t) => {
+  const f = await fixture(t);
+  const discover = f.codex.discover.bind(f.codex);
+  let release; const gate = new Promise((resolve) => { release = resolve; });
+  let started = false;
+  f.codex.discover = async (...args) => { started = true; await gate; return discover(...args); };
+  const loading = f.ok('GET', '/api/models');
+  await waitFor(() => started);
+  const saved = await enable(f, 'codex', false);
+  release();
+  const result = (await loading).providers.find((provider) => provider.provider === 'codex');
+  assert.equal(result.enabled, false);
+  assert.equal(result.revision, saved.revision);
+  assert.equal(result.discovery.models[0].id, 'test-model');
+});
