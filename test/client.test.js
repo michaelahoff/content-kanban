@@ -69,23 +69,24 @@ test('moving a stale card does not authorize overwriting another tab’s content
   await f.idle();
   const saved = (await f.call('GET', `/api/cards/${card.id}`)).card;
   assert.equal(saved.fields.intro, 'Other tab’s intro');
-  assert.equal(saved.title, '');
+  assert.equal(saved.title, 'My title');
   assert.equal(card.title, 'My title');
-  assert.equal(f.client.saveStatus().conflicts[0].id, card.id);
+  assert.equal(card.fields.intro, 'Other tab’s intro');
+  assert.deepEqual(f.client.saveStatus().conflicts, []);
 });
 
-test('shared prompts preserve stale revisions and allow unaffected cards to save', async (t) => {
+test('shared prompts preserve unrelated newer fields and save matching prompt versions', async (t) => {
   const f = await fixture(t);
   const stale = await f.card();
   const other = await f.card();
   await f.call('PATCH', `/api/cards/${stale.id}`, { revision: 1, fields: { script: 'External script' } });
   f.client.setProjectPrompt(f.client.project(), 'Shared prompt');
   await f.idle();
-  assert.equal(stale.revision, 1);
+  assert.equal(stale.revision, 3);
   assert.equal(stale.fields.prompt, 'Shared prompt');
   const saved = (await f.call('GET', `/api/cards/${stale.id}`)).card;
   assert.equal(saved.fields.script, 'External script');
-  assert.equal(saved.fields.prompt, '');
+  assert.equal(saved.fields.prompt, 'Shared prompt');
   assert.equal((await f.call('GET', `/api/cards/${other.id}`)).card.fields.prompt, 'Shared prompt');
 });
 
@@ -169,6 +170,25 @@ test('temporary failures can still retry the latest draft', async (t) => {
   assert.equal(f.client.hasUnsavedWork(), false);
 });
 
+test('typing an unsubmitted field during a save cannot acknowledge an unseen external field version', async (t) => {
+  const f = await fixture(t); const card = await f.card();
+  await f.call('PATCH', `/api/cards/${card.id}`, { revision: 1, fields: { intro: 'External intro' } });
+  let release; const gate = new Promise((resolve) => { release = resolve; }); let reached = false;
+  globalThis.fetch = async (url, options) => {
+    const response = await f.nativeFetch(`${f.base}${url}`, options);
+    if (options?.method === 'PATCH' && !reached) { reached = true; await gate; }
+    return response;
+  };
+  card.title = 'Matching title'; f.client.cardChanged(card); f.client.flushCards();
+  await waitFor(() => reached);
+  card.fields.intro = 'Draft typed during save'; f.client.cardChanged(card); f.client.flushCards();
+  release(); await f.idle();
+  const saved = (await f.call('GET', `/api/cards/${card.id}`)).card;
+  assert.equal(saved.title, 'Matching title'); assert.equal(saved.fields.intro, 'External intro');
+  assert.equal(card.fields.intro, 'Draft typed during save');
+  assert.equal(f.client.saveStatus().conflicts.length, 1);
+});
+
 test('entry prompts flush earlier drafts and acknowledge only their own content changes', async (t) => {
   const f = await fixture(t);
   const lane = f.client.project().lanes[1];
@@ -199,7 +219,7 @@ test('entry prompts flush earlier drafts and acknowledge only their own content 
   assert.equal(created.revision, (await f.call('GET', `/api/cards/${created.id}`)).card.revision);
 });
 
-test('an entry prompt cannot acknowledge unseen content from another tab', async (t) => {
+test('an entry prompt acknowledges only its own fields while unrelated edits can save', async (t) => {
   const f = await fixture(t);
   const lane = f.client.project().lanes[1];
   await f.call('PATCH', `/api/stages/${lane.id}`, { entryPrompt: 'Lane prompt' });
@@ -208,15 +228,15 @@ test('an entry prompt cannot acknowledge unseen content from another tab', async
   f.client.moveCard(card.id, lane.id);
   await f.idle();
   assert.equal(card.fields.prompt, 'Lane prompt');
-  assert.equal(card.revision, 1);
-  assert.equal(f.client.saveStatus().conflicts.length, 1);
+  assert.equal(card.revision, 3);
+  assert.equal(f.client.saveStatus().conflicts.length, 0);
   card.title = 'My draft';
   f.client.cardChanged(card);
   f.client.flushCards();
   await f.idle();
   const saved = (await f.call('GET', `/api/cards/${card.id}`)).card;
   assert.equal(saved.fields.intro, 'Other tab intro');
-  assert.equal(saved.title, '');
+  assert.equal(saved.title, 'My draft');
   await f.client.useSavedCard(card.id);
   assert.equal(card.fields.intro, 'Other tab intro');
   assert.equal(card.fields.prompt, 'Lane prompt');
@@ -377,4 +397,65 @@ test('undo refreshes changed fields and a failed undo does not block other card 
   f.client.flushCards();
   await f.idle();
   assert.equal((await f.call('GET', `/api/cards/${other.id}`)).card.title, 'Independent edit');
+});
+
+test('editor sessions group saves, flush on close and split when another card is selected', async (t) => {
+  const f = await fixture(t);
+  const first = await f.card();
+  const second = await f.card();
+  const states = async (card) => (await f.call('GET', `/api/cards/${card.id}/states`)).states;
+  f.client.beginCardEditing(first.id);
+  first.title = 'First save';
+  f.client.cardChanged(first);
+  f.client.flushCards();
+  await f.idle();
+  first.fields.intro = 'Second save';
+  f.client.cardChanged(first);
+  // Closing flushes the unsent draft before ending its session.
+  f.client.endCardEditing(first.id);
+  f.client.beginCardEditing(second.id);
+  await f.idle();
+  let saved = await states(first);
+  assert.deepEqual(saved.map((entry) => entry.source), ['created', 'editing_session']);
+  assert.equal(saved.at(-1).snapshot.fields.intro, 'Second save');
+  assert.ok(saved.at(-1).closedAt);
+  f.client.endCardEditing(second.id);
+  f.client.beginCardEditing(first.id);
+  first.title = 'Reopened';
+  f.client.cardChanged(first);
+  f.client.endCardEditing(first.id);
+  await f.idle();
+  saved = await states(first);
+  assert.equal(saved.length, 3);
+  assert.equal(saved[1].snapshot.title, 'First save');
+  assert.equal(saved[2].snapshot.title, 'Reopened');
+  assert.ok(saved[2].closedAt);
+});
+
+test('closing during an in-flight save retains subsequent typing in a separate checkpoint', async (t) => {
+  const f = await fixture(t);
+  const card = await f.card();
+  f.client.beginCardEditing(card.id);
+  let release;
+  let saving = false;
+  const held = new Promise((resolve) => { release = resolve; });
+  const nativeFetch = globalThis.fetch;
+  globalThis.fetch = async (url, options) => {
+    const response = await nativeFetch(url, options);
+    if (options?.method === 'PATCH' && !saving) { saving = true; await held; }
+    return response;
+  };
+  card.title = 'First';
+  f.client.cardChanged(card);
+  f.client.flushCards();
+  await waitFor(() => saving);
+  card.fields.script = 'Typed during save';
+  f.client.cardChanged(card);
+  f.client.endCardEditing(card.id);
+  release();
+  await f.idle();
+  const saved = (await f.call('GET', `/api/cards/${card.id}/states`)).states;
+  assert.equal(saved.at(-1).snapshot.fields.script, 'Typed during save');
+  assert.equal((await f.call('GET', `/api/cards/${card.id}`)).card.fields.script, 'Typed during save');
+  assert.ok(saved[1].closedAt, 'The closed session is not reopened by a delayed save');
 });

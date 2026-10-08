@@ -1,0 +1,13 @@
+.provider-settings { max-width: 800px; margin: 40px auto; padding: 0 24px 56px; }
+.provider-settings h1 { margin: 10px 0 20px; }
+.provider-settings .eyebrow { margin-top: 36px; }
+.provider-settings p { line-height: 1.6; color: var(--text-muted, #a4a6b2); }
+.provider-settings form > label { display: block; margin: 24px 0 10px; }
+.provider-settings textarea { box-sizing: border-box; width: 100%; resize: vertical; }
+.provider-settings fieldset { margin: 24px 0; padding: 16px; border: 1px solid var(--border, #30323b); border-radius: 10px; }
+.provider-settings .native-item { display: block; margin-top: 20px; overflow-wrap: anywhere; }
+.provider-settings .native-item input { width: auto; margin-right: 8px; }
+.provider-settings .native-item small { display: block; margin: 8px 0 0 26px; color: var(--text-muted, #a4a6b2); line-height: 1.5; }
+.provider-settings #availability { margin: 24px 0; }
+.provider-settings details { margin-top: 32px; line-height: 1.6; }
+.provider-settings li { margin: 10px 0; }

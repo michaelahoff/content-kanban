@@ -2,3 +2,5 @@ data/
 node_modules/
 test-results/
 .DS_Store
+backups/
+*.frameboard-lock.sqlite*

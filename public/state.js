@@ -11,6 +11,11 @@ const queuedCards = new Set();
 const conflicts = new Map();
 const statusListeners = new Set();
 const fieldListeners = new Set();
+const editingSessions = new Map();
+const savedValues = new Map();
+const leaseOwner = id();
+const leaseTimers = new Map();
+const leaseSequences = new Map();
 let saveTimer = null;
 
 const url = (...parts) => `/api/${parts.map(encodeURIComponent).join('/')}`;
@@ -25,6 +30,23 @@ export function onCardPromptChange(listener) {
   onCardFieldsChange((card, keys) => { if (keys.includes('prompt')) listener(card); });
 }
 function contentValues(card) { return { ...card.fields, title: card.title }; }
+function editableValues(card) { return { ...contentValues(card), images: card.images, imageRoles: card.imageRoles }; }
+function rememberSaved(card) { savedValues.set(card.id, structuredClone(editableValues(card))); }
+function changesFor(card) {
+  const before = savedValues.get(card.id) ?? {};
+  return Object.fromEntries(Object.entries(editableValues(card)).filter(([key, value]) => JSON.stringify(value) !== JSON.stringify(before[key])));
+}
+function renewLease(cardId) {
+  const card = locateCard(cardId)?.card;
+  if (!card) { clearInterval(leaseTimers.get(cardId)); leaseTimers.delete(cardId); return; }
+  if (!card.fieldVersions) return;
+  const fields = Object.keys(changesFor(card));
+  const sequence = (leaseSequences.get(cardId) ?? 0) + 1; leaseSequences.set(cardId, sequence);
+  void send('PUT', `${url('cards', cardId)}/draft-lease`, { owner: leaseOwner, fields, sequence }).catch(() => {});
+  if (fields.length && !leaseTimers.has(cardId)) {
+    const timer = setInterval(() => renewLease(cardId), 1500); timer.unref?.(); leaseTimers.set(cardId, timer);
+  } else if (!fields.length) { clearInterval(leaseTimers.get(cardId)); leaseTimers.delete(cardId); }
+}
 function updateLocalValues(card, values, previousValues) {
   const updated = [];
   for (const [key, value] of Object.entries(values)) {
@@ -74,7 +96,7 @@ export async function loadCards(projectId) {
   const p = state.projects.find((item) => item.id === projectId);
   if (!p || p.loaded) return;
   const { cards } = await request(`${url('projects', projectId)}/cards`);
-  for (const lane of p.lanes) lane.cards = cards.filter((card) => card.stageId === lane.id);
+  for (const lane of p.lanes) { lane.cards = cards.filter((card) => card.stageId === lane.id); lane.cards.forEach(rememberSaved); }
   p.loaded = true;
 }
 
@@ -84,7 +106,11 @@ function adopt(card, saved, contentSaved = false) {
   if ('enteredStageAt' in saved) card.enteredStageAt = saved.enteredStageAt;
   // A move acknowledges position, not the local content. Its revision may
   // belong to another tab's content and must never authorize our next edit.
-  if (contentSaved) card.revision = saved.revision;
+  if (contentSaved) {
+    card.revision = saved.revision;
+    if (saved.fieldVersions) card.fieldVersions = saved.fieldVersions;
+  }
+  if (saved.placementVersion) card.placementVersion = saved.placementVersion;
   if ('lastMove' in saved) card.lastMove = saved.lastMove;
   showEdited(card);
 }
@@ -93,6 +119,7 @@ export function cardChanged(card) {
   card.updatedAt = now();
   showEdited(card);
   dirty.add(card.id);
+  renewLease(card.id);
   clearTimeout(saveTimer);
   saveTimer = setTimeout(flushCards, 450);
   notify();
@@ -103,14 +130,52 @@ export function flushCards() {
   for (const cardId of dirty) if (!queuedCards.has(cardId) && !conflicts.has(cardId)) queueCardSave(cardId);
   notify();
 }
+export function beginCardEditing(cardId) {
+  if (!editingSessions.has(cardId)) editingSessions.set(cardId, id());
+}
+export function endCardEditing(cardId) {
+  const editingSessionId = editingSessions.get(cardId);
+  if (!editingSessionId) return;
+  flushCards();
+  editingSessions.delete(cardId);
+  enqueue(() => send('POST', `${url('cards', cardId)}/editing-session/end`, { editingSessionId }));
+}
 function queueCardSave(cardId) {
+  const editingSessionId = editingSessions.get(cardId);
   queuedCards.add(cardId);
   enqueue(async () => {
     dirty.delete(cardId);
     const card = locateCard(cardId)?.card;
     if (card) {
       try {
-        adopt(card, await send('PATCH', url('cards', cardId), { revision: card.revision, title: card.title, fields: card.fields, images: card.images, imageRoles: card.imageRoles }), true);
+        const changes = changesFor(card);
+        const sentValues = structuredClone(editableValues(card));
+        const sentVersions = { ...card.fieldVersions };
+        const saved = await send('PATCH', url('cards', cardId), card.fieldVersions
+          ? { changes, baseVersions: card.fieldVersions, editingSessionId }
+          : { revision: card.revision, title: card.title, fields: card.fields, images: card.images, imageRoles: card.imageRoles, editingSessionId });
+        const previous = savedValues.get(card.id) ?? {};
+        const failed = new Set(saved.conflicts ?? []);
+        const acknowledged = editableValues(saved);
+        const local = editableValues(card);
+        for (const key of Object.keys(acknowledged)) {
+          if (!Object.hasOwn(changes, key) && JSON.stringify(local[key]) !== JSON.stringify(sentValues[key])
+            && saved.fieldVersions[key] !== sentVersions[key]) failed.add(key);
+        }
+        for (const [key, value] of Object.entries(acknowledged)) {
+          if (failed.has(key)) continue;
+          if (JSON.stringify(local[key]) === JSON.stringify(changes[key] ?? previous[key])) {
+            if (key === 'title' || key === 'images' || key === 'imageRoles') card[key] = value; else card.fields[key] = value;
+            if (JSON.stringify(local[key]) !== JSON.stringify(value)) fieldListeners.forEach((listener) => listener(card, [key]));
+          }
+          previous[key] = structuredClone(value);
+        }
+        savedValues.set(card.id, previous);
+        const oldVersions = card.fieldVersions;
+        adopt(card, saved, true);
+        for (const key of failed) card.fieldVersions[key] = oldVersions[key];
+        renewLease(card.id);
+        if (failed.size) throw Object.assign(new Error(`Unsaved conflicts in ${[...failed].join(', ')}. Your draft has been kept. Load the saved card to resolve.`), { status: 409 });
       } catch (error) {
         if (locateCard(cardId)) dirty.add(cardId);
         throw error;
@@ -132,22 +197,55 @@ export async function useSavedCard(cardId) {
   const { card: saved } = await request(url('cards', cardId));
   const card = locateCard(cardId)?.card;
   if (!card) return;
-  Object.assign(card, { title: saved.title, fields: saved.fields, images: saved.images, imageRoles: saved.imageRoles, revision: saved.revision, lastMove: saved.lastMove, updatedAt: saved.updatedAt });
+  Object.assign(card, saved);
+  rememberSaved(card); renewLease(cardId);
   dirty.delete(cardId);
   conflicts.delete(cardId);
   showEdited(card);
   notify();
 }
 
+// Merge incoming agent/tab changes only into fields without local drafts.
+export function refreshSavedCard(saved) {
+  const found = locateCard(saved.id);
+  if (!found || syncState().pending || queuedCards.has(saved.id)) return;
+  const { card } = found; const baseline = savedValues.get(card.id);
+  if (!baseline || !card.fieldVersions) return;
+  const localChanges = changesFor(card); const values = editableValues(saved); const changed = [];
+  for (const [key, value] of Object.entries(values)) {
+    if (Object.hasOwn(localChanges, key)) continue;
+    const before = editableValues(card)[key];
+    if (JSON.stringify(before) !== JSON.stringify(value)) {
+      if (['title', 'images', 'imageRoles'].includes(key)) card[key] = value; else card.fields[key] = value;
+      changed.push(key);
+    }
+    baseline[key] = structuredClone(value); card.fieldVersions[key] = saved.fieldVersions[key];
+  }
+  card.revision = saved.revision;
+  if (saved.placementVersion !== card.placementVersion) {
+    const destination = found.project.lanes.find((lane) => lane.id === saved.stageId);
+    if (destination) {
+      found.lane.cards = found.lane.cards.filter((c) => c.id !== card.id);
+      card.stageId = saved.stageId; card.position = saved.position;
+      destination.cards.push(card); destination.cards.sort((a, b) => a.position - b.position);
+      changed.push('placement');
+    }
+  }
+  adopt(card, saved);
+  if (changed.length) fieldListeners.forEach((listener) => listener(card, changed));
+}
+
 export function createCard(lane, p = project()) {
   const at = now();
   const card = { id: id(), projectId: p.id, stageId: lane.id, template: defaultTemplate, title: '', fields: emptyFields(), images: [], imageRoles: emptyImageRoles(), revision: 1, lastMove: null, enteredStageAt: at, createdAt: at, updatedAt: at };
+  rememberSaved(card);
   lane.cards.push(card);
   enqueue(async () => {
     const previousValues = contentValues(card);
     const saved = await send('POST', `${url('projects', p.id)}/cards`, { id: card.id, stageId: lane.id, title: card.title, fields: card.fields, images: card.images, imageRoles: card.imageRoles });
     updateLocalValues(card, contentValues(saved), previousValues);
     adopt(card, saved, true);
+    savedValues.set(card.id, structuredClone(editableValues(saved))); renewLease(card.id);
   });
   return card;
 }
@@ -172,12 +270,15 @@ export function moveCard(targetId, laneId, beforeId = null) {
     const previousValues = contentValues(card);
     const result = await send('POST', `${url('cards', card.id)}/transitions`, { action: 'move', toStageId: laneId, beforeCardId: beforeIndex < 0 ? null : beforeId });
     if (result.fieldUpdate) {
+      const baseline = savedValues.get(card.id);
+      const keys = Object.keys(result.fieldUpdate.values);
       updateLocalValues(card, result.fieldUpdate.values, previousValues);
-      if (card.revision === result.fieldUpdate.beforeRevision) card.revision = result.fieldUpdate.revision;
-      else {
-        conflicts.set(card.id, 'This card changed before the lane ran its commands. Review your draft and load the saved version.');
-        notify();
+      for (const key of keys) {
+        baseline[key] = result.fieldUpdate.values[key];
+        card.fieldVersions[key] = result.card.fieldVersions[key];
       }
+      card.revision = result.card.revision;
+      renewLease(card.id);
     }
     adopt(card, result.card);
   });
@@ -200,7 +301,7 @@ export async function undoLastMove(cardId, moveId = locateCard(cardId)?.card.las
       if (conflicts.has(cardId)) throw new Error('Resolve this card’s save conflict before undoing its move.');
       const { card } = found;
       const previousValues = contentValues(card);
-      const result = await send('POST', `${url('cards', cardId)}/undo-move`, { moveId, revision: card.revision });
+      const result = await send('POST', `${url('cards', cardId)}/undo-move`, { moveId, revision: card.revision, fieldVersions: card.fieldVersions, placementVersion: card.placementVersion });
       const current = locateCard(cardId);
       const destination = current?.project.lanes.find((lane) => lane.id === result.card.stageId);
       if (!current || !destination) return;
@@ -209,7 +310,14 @@ export async function undoLastMove(cardId, moveId = locateCard(cardId)?.card.las
       destination.cards.splice(index < 0 ? destination.cards.length : index, 0, card);
       card.stageId = destination.id;
       card.position = result.card.position;
+      const versionsBeforeUndo = card.fieldVersions;
       adopt(card, result.card, true);
+      card.fieldVersions = { ...versionsBeforeUndo };
+      for (const [key, value] of Object.entries(result.fieldUpdate?.values ?? {})) {
+        savedValues.get(card.id)[key] = value;
+        card.fieldVersions[key] = result.card.fieldVersions[key];
+      }
+      renewLease(card.id);
       if (result.fieldUpdate) updateLocalValues(card, result.fieldUpdate.values, previousValues);
       return card;
     }, undefined, { rejectOnError: true });

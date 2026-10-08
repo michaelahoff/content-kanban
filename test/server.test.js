@@ -7,6 +7,7 @@ import http from 'node:http';
 import { DatabaseSync } from 'node:sqlite';
 import { createApp } from '../server.js';
 import { emptyGraph, promptGraph } from '../public/flow-graph.js';
+import { dropChatSchema } from './support/drop-chat-schema.js';
 
 async function start(dataDir, options = {}) {
   const app = await createApp({ dataDir, ...options });
@@ -27,14 +28,16 @@ async function start(dataDir, options = {}) {
 
 async function fixture(t, options) {
   const dataDir = await mkdtemp(path.join(tmpdir(), 'frameboard-test-'));
-  const server = await start(dataDir, options);
+  let server = await start(dataDir, options);
   t.after(async () => { await server.close(); await rm(dataDir, { recursive: true, force: true }); });
   const workspace = await server.ok('GET', '/api/workspace');
   const project = workspace.projects[0];
   const stages = workspace.flows.find((flow) => flow.id === project.flowId).stages;
   const card = (body = {}) => server.ok('POST', `/api/projects/${project.id}/cards`, { stageId: stages[0].id, ...body });
   const cards = async () => (await server.ok('GET', `/api/projects/${project.id}/cards`)).cards;
-  return { ...server, dataDir, workspace, project, stages, card, cards };
+  return { ...server, dataDir, workspace, project, stages, card, cards,
+    call: (...args) => server.call(...args), ok: (...args) => server.ok(...args),
+    restart: async () => { await server.close(); server = await start(dataDir, options); return server; } };
 }
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jS1kAAAAASUVORK5CYII=', 'base64');
 const imageId = (n) => `${String(n).padStart(8, '0')}-0000-4000-8000-000000000000.png`;
@@ -47,6 +50,23 @@ function commandChain(commands) {
     graph.edges.push({ id: `edge-${index}`, from: index ? `set-${index - 1}` : 'entry', to: nodeId });
   });
   return graph;
+}
+
+// Recreate the old recording tables before a fixture is downgraded. Current
+// writes live only in activity_log, whereas these fixtures exercise older apps.
+function removeHistoryMilestone(db) {
+  db.exec('PRAGMA foreign_keys = OFF;');
+  dropChatSchema(db);
+  db.exec(`
+    INSERT INTO card_events (id, workspace_id, project_id, card_id, type, actor, from_stage_id, to_stage_id, note, data, created_at)
+      SELECT card_event_id, workspace_id, project_id, entity_id, type, actor, from_stage_id, to_stage_id, note, data, created_at
+      FROM activity_log WHERE card_event_id IS NOT NULL;
+    INSERT INTO workspace_changes (id, workspace_id, entity, entity_id, project_id, type, actor, data, created_at)
+      SELECT id, workspace_id, entity, entity_id, project_id, type, actor, data, created_at FROM activity_log;
+    DROP TABLE provider_configurations;
+    DROP TABLE saved_card_states;
+    DROP TABLE activity_log;
+  `);
 }
 
 test('one Set field node saves multiple assignments and applies them together in row order', async (t) => {
@@ -106,7 +126,7 @@ test('connected Set field commands run in edge order and preserve unrelated cont
   const initial = await f.card({ stageId: f.stages[1].id, fields: { script: 'Creation script' } });
   assert.equal(initial.title, 'Final title');
   assert.equal(initial.fields.script, 'Creation script');
-  const reopened = await start(f.dataDir);
+  const reopened = await f.restart();
   try { assert.deepEqual((await reopened.ok('GET', '/api/workspace')).flows[0].stages[1].entryGraph, graph); }
   finally { await reopened.close(); }
 });
@@ -151,6 +171,7 @@ test('existing lane prompt settings upgrade to a connected Set field graph witho
     card = await first.ok('POST', `/api/projects/${projectId}/cards`, { stageId, fields: { prompt: 'Existing card prompt' } });
   } finally { await first.close(); }
   const db = new DatabaseSync(path.join(dataDir, 'frameboard.db'));
+  removeHistoryMilestone(db);
   db.exec("DROP TABLE card_moves; ALTER TABLE stages DROP COLUMN entry_graph; UPDATE meta SET value = '2' WHERE key = 'schema_version';");
   db.prepare('UPDATE stages SET entry_prompt = ? WHERE id = ?').run('Existing lane prompt', stageId);
   db.close();
@@ -231,6 +252,7 @@ test('upgrading a database adds disabled lane entry prompts without changing its
     card = await first.ok('POST', `/api/projects/${workspace.projects[0].id}/cards`, { stageId: workspace.flows[0].stages[0].id, fields: { prompt: 'Saved before upgrade' } });
   } finally { await first.close(); }
   const db = new DatabaseSync(path.join(dataDir, 'frameboard.db'));
+  removeHistoryMilestone(db);
   db.exec("DROP TABLE card_moves; ALTER TABLE stages DROP COLUMN entry_graph; ALTER TABLE stages DROP COLUMN entry_prompt; UPDATE meta SET value = '1' WHERE key = 'schema_version';");
   db.close();
   const reopened = await start(dataDir);
@@ -252,7 +274,7 @@ test('creates a workspace with a default project and keeps card text across rest
   assert.equal(updated.revision, 2);
   assert.ok(Date.parse(updated.updatedAt) >= Date.parse(created.updatedAt));
   await f.ok('PATCH', `/api/stages/${f.stages[0].id}`, { name: 'New ideas' });
-  const reopened = await start(f.dataDir);
+  const reopened = await f.restart();
   const [loaded] = (await reopened.ok('GET', `/api/projects/${f.project.id}/cards`)).cards;
   assert.deepEqual(loaded, updated);
   assert.deepEqual(loaded.fields, { ...created.fields, ...fields });
@@ -639,13 +661,10 @@ test('undo restores lane, position, and command changes while keeping later unre
   await f.ok('PATCH', `/api/stages/${f.stages[0].id}`, { entryPrompt: 'Do not run on undo' });
   const image = { id: imageId(99), name: 'Later inspiration' };
   const edited = await f.ok('PATCH', `/api/cards/${card.id}`, { revision: moved.card.revision, fields: { script: 'Newer script' }, images: [image], imageRoles: { cover: image.id } });
-  const reopened = await start(f.dataDir);
-  let undo;
-  try {
-    const loaded = (await reopened.ok('GET', `/api/cards/${card.id}`)).card;
-    assert.deepEqual(loaded.lastMove, moved.card.lastMove);
-    undo = await reopened.ok('POST', `/api/cards/${card.id}/undo-move`, { moveId: loaded.lastMove.id, revision: loaded.revision });
-  } finally { await reopened.close(); }
+  const reopened = await f.restart();
+  const loaded = (await reopened.ok('GET', `/api/cards/${card.id}`)).card;
+  assert.deepEqual(loaded.lastMove, moved.card.lastMove);
+  const undo = await reopened.ok('POST', `/api/cards/${card.id}/undo-move`, { moveId: loaded.lastMove.id, revision: loaded.revision });
   assert.equal(undo.card.stageId, card.stageId);
   assert.equal(undo.card.enteredStageAt, card.enteredStageAt);
   assert.equal(undo.card.title, card.title);
@@ -718,14 +737,38 @@ test('schema upgrade enables future undo without inventing snapshots for older m
   const f = await fixture(t);
   const card = await f.card();
   await f.ok('POST', `/api/cards/${card.id}/transitions`, { action: 'move', toStageId: f.stages[1].id });
+  await f.close();
   const db = new DatabaseSync(path.join(f.dataDir, 'frameboard.db'));
+  removeHistoryMilestone(db);
   db.exec("DROP TABLE card_moves; UPDATE meta SET value = '3' WHERE key = 'schema_version';");
   db.close();
-  const reopened = await start(f.dataDir);
+  const reopened = await f.restart();
   try {
     assert.equal((await reopened.ok('GET', `/api/cards/${card.id}`)).card.lastMove, null);
     const moved = await reopened.ok('POST', `/api/cards/${card.id}/transitions`, { action: 'approve' });
     const undone = await reopened.ok('POST', `/api/cards/${card.id}/undo-move`, { moveId: moved.card.lastMove.id, revision: moved.card.revision });
     assert.equal(undone.card.stageId, f.stages[1].id);
   } finally { await reopened.close(); }
+});
+
+test('idle provider settings never start Codex; explicit discovery and saved selection preserve revisions', async (t) => {
+  let calls = 0; let closes = 0;
+  const home = await mkdtemp(path.join(tmpdir(), 'frameboard-provider-home-'));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const codexAdapter = {
+    running: false,
+    discover: async () => { calls++; return { harness: { userAgent: 'codex/0.160.1', codexHome: home }, skills: [], models: [], hooks: [], plugins: [], configuredMcpServers: [], mcpServers: [], errors: [] }; },
+    close: async () => { closes++; },
+  };
+  const f = await fixture(t, { codexAdapter });
+  const idle = await f.ok('GET', '/api/providers/codex');
+  assert.equal(calls, 0); assert.equal(idle.revision, 0); assert.equal(idle.running, false);
+  assert.ok(idle.mandatoryBehavior.some((s) => /workspace-write/.test(s)));
+  const saved = await f.ok('PUT', '/api/providers/codex', { revision: 0, selection: { instructions: 'Frameboard guidance', selected: [] } });
+  assert.equal(saved.revision, 1); assert.equal(calls, 0);
+  assert.equal((await f.call('PUT', '/api/providers/codex', { revision: 0, selection: saved.selection })).status, 409);
+  const result = await f.ok('POST', '/api/providers/codex/discover');
+  assert.equal(calls, 1); assert.equal(result.effective.supported, true);
+  assert.match(result.effective.nativeOptions.developerInstructions, /Frameboard guidance/);
+  assert.equal(closes, 0);
 });
