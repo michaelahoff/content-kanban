@@ -5,6 +5,7 @@
   "type": "module",
   "description": "A local, image-first kanban board",
   "scripts": {
+    "prototype:assets": "node scripts/asset-library-prototype.mjs",
     "start": "node --disable-warning=ExperimentalWarning server.js",
     "dev": "node --disable-warning=ExperimentalWarning --watch server.js",
     "test": "node --disable-warning=ExperimentalWarning --test test/*.test.js",
