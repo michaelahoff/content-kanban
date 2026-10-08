@@ -95,6 +95,8 @@ Choose **Discover**, select an available model, and compose a prompt. Expand **W
 
 **Stop** preserves partial output and invalidates requests. **Start fresh context** retains previous history, resets grants and explicitly cancels queued old work; it waits for acknowledged interruption and starts no native turn until Send. Changed configuration holds queued work until cancel/resubmit, and changed native configuration needs deliberate fresh context. Ambiguous delivery stays held and is never automatically resent.
 
+Replies and images stay visible; tool activity is grouped into collapsed **Activity** details with available command output and summaries. Animated dots and an elapsed timer show ongoing work, pause when your input is needed, and disappear when the response finishes. Highlight text within a reply to reveal **Reply** (quote it in your saved draft) or **Use text…** (preview replacing or appending a card field). Highlights and expanded activity survive streamed updates; reduced-motion settings keep the dots still.
+
 See [the workbench implementation and evidence](docs/implementation/phase-1-workbench.md) for its original milestone boundary, and [the cumulative release evidence](docs/implementation/phase-1-backup-release.md) for the later card-tool, image, recovery/streaming and backup checks.
 
 ### Native images and gallery adoption (Phase 1.5)
