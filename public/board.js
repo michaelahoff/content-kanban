@@ -55,19 +55,16 @@ export function renderApp() {
   app.innerHTML = `
     <aside class="sidebar" aria-label="Projects">
       <a class="brand" href="/" aria-label="Frameboard home"><span class="brand-mark">${icon('board')}</span>Frameboard<span class="brand-period">.</span></a>
-      <div class="workspace-label">PERSONAL WORKSPACE</div>
       <div class="sidebar-section"><span>Projects</span>${iconButton('add-project', 'Add project', 'plus')}</div>
       <nav class="project-list">${state.projects.map((item) => `<button class="project-link ${item.id === state.projectId ? 'active' : ''}" data-action="switch-project" data-id="${item.id}" ${item.id === state.projectId ? 'aria-current="page"' : ''}>${icon('board')}<span>${escape(item.name)}</span><span class="project-count">${cardCount(item)}</span></button>`).join('')}</nav>
-      ${button('add-project', 'New project', 'plus', 'new-project')}
-      <div class="sidebar-bottom"><a class="button secondary" href="/codex.html">Codex settings</a><div class="local-label"><span class="online-dot"></span>Local workspace</div><p>Just you and your ideas.<br>Saved on this computer.</p><div class="workspace-owner"><span class="avatar">Y</span><div><strong>Your workspace</strong><span>No account needed</span></div>${icon('monitor')}</div></div>
+      <div class="sidebar-bottom"><a class="button secondary" href="/codex.html">Codex settings</a><div class="local-label"><span class="online-dot"></span>Saved on this computer</div></div>
     </aside>
     <main class="main">
-      <div class="topbar"><div class="breadcrumbs">${iconButton('toggle-sidebar', 'Toggle projects', 'menu')}<span>Workspace</span>${icon('chevron')}<strong>Board</strong></div><div class="workspace-chat-activity"><button class="button small secondary" data-action="workspace-chat-activity">Chat activity</button><div id="chat-activity-list" hidden></div></div><div class="save-status" data-save-status></div></div>
+      <div class="topbar"><div class="breadcrumbs">${iconButton('toggle-sidebar', 'Toggle projects', 'menu')}</div><div class="workspace-chat-activity"><button class="button small secondary" data-action="workspace-chat-activity">Chat activity</button><div id="chat-activity-list" hidden></div></div><div class="save-status" data-save-status></div></div>
       <div id="save-error" class="error-banner" role="alert" hidden></div>
-      ${p ? `<header class="board-header"><div><div class="eyebrow">A LITTLE SPACE FOR BIG IDEAS</div><div class="heading-row"><h1>${escape(p.name)}</h1>${iconButton('edit-project', 'Project settings', 'more')}</div><p class="board-subtitle">Capture the idea. Find the words. Make it happen.</p></div><div class="header-actions">${button('set-project-prompt', 'Set prompt', 'text', 'button secondary')}${button('add-lane', 'Add lane', 'plus', 'button secondary')}${button('add-card', 'New card', 'plus', 'button primary', p.lanes.length ? '' : 'disabled')}</div></header>
+      ${p ? `<header class="board-header"><div><div class="heading-row"><h1>${escape(p.name)}</h1>${iconButton('edit-project', 'Project settings', 'more')}</div></div><div class="header-actions">${button('set-project-prompt', 'Set prompt', 'text', 'button secondary')}${button('add-lane', 'Add lane', 'plus', 'button secondary')}${button('add-card', 'New card', 'plus', 'button primary', p.lanes.length ? '' : 'disabled')}</div></header>
       <div class="board-toolbar"><div class="board-tab">${icon('board')} Board <span id="total-count">${cardCount(p)}</span></div><div class="board-tools">${button('undo-move', 'Undo last move', 'undo', 'button small secondary', 'data-undo-move="board" disabled')}${button('toggle-cards', view.cardsCollapsed ? 'Expand cards' : 'Collapse cards', null, 'button small secondary', `aria-pressed="${view.cardsCollapsed}" aria-controls="board"`)}<span class="paste-hint">${icon('image')} Paste an image to start a card</span><label class="search">${icon('search')}<input id="search" type="search" placeholder="Find a card…" aria-label="Find a card" value="${escape(view.query)}"></label></div></div>
-      <div id="board" class="board" aria-label="${escape(p.name)} kanban board"></div>
-      <footer class="board-footer"><span>${icon('grip')} Drag cards to move them between lanes</span><span>Your next idea belongs here.</span></footer>` : `<div class="no-projects"><span class="empty-symbol">${icon('board')}</span><h1>Room for your ideas.</h1><p>Create a project and make it your own.</p>${button('add-project', 'Create a project', 'plus', 'button primary')}</div>`}
+      <div id="board" class="board" aria-label="${escape(p.name)} kanban board"></div>` : `<div class="no-projects"><span class="empty-symbol">${icon('board')}</span><h1>Room for your ideas.</h1><p>Create a project and make it your own.</p>${button('add-project', 'Create a project', 'plus', 'button primary')}</div>`}
     </main>`;
   renderBoard();
   renderStatus();
@@ -78,7 +75,7 @@ function cardMarkup(card) {
   const words = wordCount(`${card.fields.titleOptions} ${card.fields.intro} ${card.fields.script}`);
   return `<article class="card" draggable="true" data-card="${card.id}">
     <button class="card-open" draggable="true" data-action="open-card" data-id="${card.id}" aria-label="Open ${title}">
-      ${card.imageRoles.cover ? `<div class="card-image"><img src="${imageURL(card.imageRoles.cover)}" alt="" loading="lazy" draggable="false"><span class="card-open-label">Open card ${icon('arrow')}</span></div>` : `<div class="card-image no-image">${icon('image')}<span>Add a little inspiration</span><span class="card-open-label">Open card ${icon('arrow')}</span></div>`}
+      ${card.imageRoles.cover ? `<div class="card-image"><img src="${imageURL(card.imageRoles.cover)}" alt="" loading="lazy" draggable="false"><span class="card-open-label">Open card ${icon('arrow')}</span></div>` : `<div class="card-image no-image">${icon('image')}<span class="card-open-label">Open card ${icon('arrow')}</span></div>`}
       <div class="card-body"><h3>${escape(card.title || 'Untitled card')}</h3>${activityMarkup(card.id)}${card.fields.intro.trim() ? `<p>${escape(card.fields.intro)}</p>` : ''}<div class="card-meta"><span>${icon('text')}${words ? `${words.toLocaleString()} words` : 'Ready for your words'}</span><span>${icon('image')}${card.images.length}</span></div><span class="edited-at" data-edited-card="${card.id}">${lastEditedMarkup(card)}</span></div>
     </button></article>`;
 }

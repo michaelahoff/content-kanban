@@ -126,6 +126,9 @@ try {
       await evaluate(`Promise.all(document.querySelector('#board').getAnimations({ subtree: true }).map(animation => animation.finished.catch(() => {})))`);
     } finally { await send('Input.setInterceptDrags', { enabled: false }); }
   };
+  // The editor doesn't show Prompt; it is set through Set prompt, lane commands, or card state.
+  const openCardPrompt = () => evaluate(`(async () => (await import('/state.js')).locateCard().card.fields.prompt)()`);
+  const setOpenCardPrompt = (value) => evaluate(`(async () => { const { locateCard, cardChanged } = await import('/state.js'); const card = locateCard().card; card.fields.prompt = ${JSON.stringify(value)}; cardChanged(card); })()`);
   const saved = () => waitFor(`document.querySelector('[data-save-status]')?.textContent.includes('All changes saved')`);
   const snapshot = async (name) => {
     await evaluate(`Promise.all(document.getAnimations().map(animation => animation.finished.catch(() => {})))`);
@@ -215,7 +218,7 @@ try {
 
   // Exercise actual clipboard paste through Chromium, not just the file picker.
   await send('Browser.grantPermissions', { origin: base, permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite'] }, null);
-  await fill('#card-prompt', 'Compare the original and inspiration.\nSuggest a stronger hook.');
+  await setOpenCardPrompt('Compare the original and inspiration.\nSuggest a stronger hook.');
   await click('.image-tile:nth-child(1) [data-role="original"]');
   await click('.image-tile:nth-child(2) [data-role="inspiration"]');
   await click('[data-action="copy-trifecta"]');
@@ -498,7 +501,7 @@ try {
   const entryBefore = await evaluate(`(async () => { const { locateCard } = await import('/state.js'); const card = locateCard().card; return { title: card.title, fields: { ...card.fields } }; })()`);
   await select('#card-lane', addedLane);
   await saved();
-  assert.equal(await evaluate(`document.querySelector('#card-prompt').value`), entryPrompt);
+  assert.equal(await openCardPrompt(), entryPrompt);
   assert.equal(await evaluate(`document.querySelector('#card-intro').value`), 'An introduction from the lane');
   assert.equal(await evaluate(`document.querySelector('#card-title').value`), 'Ready for review');
   assert.equal(await evaluate(`document.querySelector('#card-original-video-title').value`), 'An inspiration set in the same node');
@@ -507,13 +510,13 @@ try {
   await saved();
   assert.equal(await evaluate(`document.querySelector('#card-lane').value`), entrySourceLane);
   assert.equal(await evaluate(`document.querySelector('#card-title').value`), entryBefore.title);
-  assert.equal(await evaluate(`document.querySelector('#card-prompt').value`), entryBefore.fields.prompt);
+  assert.equal(await openCardPrompt(), entryBefore.fields.prompt);
   assert.equal(await evaluate(`document.querySelector('#card-intro').value`), entryBefore.fields.intro);
   assert.equal(await evaluate(`document.querySelector('#card-script').value`), entryBefore.fields.script);
   assert.equal(await evaluate(`document.querySelector('#card-dialog [data-action="undo-move"]').disabled`), true);
   await select('#card-lane', addedLane);
   await saved();
-  await fill('#card-prompt', 'My prompt after entering');
+  await setOpenCardPrompt('My prompt after entering');
   await saved();
   await select('#card-lane', entrySourceLane);
   await click('#card-dialog [data-action="close-card"]');
@@ -538,7 +541,7 @@ try {
   await saved();
   await click(`[data-lane="${addedLane}"] .lane-actions [data-action="add-card"]`);
   await saved();
-  assert.equal(await evaluate(`document.querySelector('#card-prompt').value`), entryPrompt, 'Cards created in the lane start with its prompt');
+  assert.equal(await openCardPrompt(), entryPrompt, 'Cards created in the lane start with its prompt');
   await click('#card-dialog [data-action="close-card"]');
   await click(`[data-action="edit-flow"][data-id="${addedLane}"]`);
   assert.equal(await evaluate(`document.querySelectorAll('.flow-node').length`), 4);
@@ -573,7 +576,7 @@ try {
   assert.equal((await state()).projects[0].lanes.length, 4);
   console.log('PASS lane creation, editing, reordering, deletion');
 
-  await click('.new-project');
+  await click('.sidebar-section [data-action="add-project"]');
   await fill('#name-input', 'Another project');
   await click('#small-form [type="submit"]');
   await saved();
