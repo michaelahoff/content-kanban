@@ -50,14 +50,18 @@ export function createLaneRunner({ store, service, providers, ctx }) {
       waitingForChat.delete(run.id);
     }
     const trigger = run.trigger === 'manual' ? 'manual' : 'enter';
+    const enabled = (settings) => settings.run !== 'off' && (trigger === 'manual' || settings.run === 'on-enter');
+    const cancelDisabled = () => finish('cancelled', 'The playbook was turned off or its trigger changed before this run started.');
     let prepared = prepare(info.card, info.stage, info.project, info.stages, trigger);
     if (prepared.error) return finish('failed', prepared.error);
+    if (!enabled(prepared.settings)) return cancelDisabled();
     // Models are listed once and saved; list them now if that never happened.
     if (!prepared.model && !store.providerCatalog(ctx, prepared.provider).discovery && providers) {
       try { await providers.refresh(ctx, prepared.provider); } catch (error) { return finish('failed', error.message); }
       if (closed || !(info = current(run))) return;
       prepared = prepare(info.card, info.stage, info.project, info.stages, trigger);
       if (prepared.error) return finish('failed', prepared.error);
+      if (!enabled(prepared.settings)) return cancelDisabled();
     }
     if (!prepared.model) return finish('failed', prepared.warning);
     const { card, stage } = info;

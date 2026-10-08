@@ -121,7 +121,7 @@ export function createChatWorker({ store, adapter, adapters = { codex: adapter }
       work.items.set(item.id, item); flush(work);
       if (native.type === 'imageGeneration' && event.type === 'item-completed') capture(work.attempt, work.submission, native, { threadId: work.threadId, turnId: event.turnId ?? work.turnId });
     } else if (event.type === 'turn-completed') {
-      if (event.status === 'completed' && work.submission.lane) laneResult(work);
+      if (event.status === 'completed' && work.submission.lane && live.get(work.submission.cardId) === work) laneResult(work);
       end(work, event.status === 'completed' ? 'completed' : event.status === 'interrupted' ? 'interrupted' : 'failed', failureReason(event.error));
     } else if (event.type === 'process-exited' || event.type === 'target-unavailable') {
       end(work, 'uncertain', event.error?.message ?? 'The selected target changed. Reconcile this conversation before continuing.', { exited: event.type === 'process-exited' });

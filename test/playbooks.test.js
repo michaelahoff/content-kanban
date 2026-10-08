@@ -117,6 +117,43 @@ test('Stop prevents even a notes-only late result, and an explicit retry can fin
   assert.equal((await f.ok('GET', `/api/cards/${card.id}`)).card.fields.intro, 'Retried successfully');
 });
 
+test('a stopped attempt finishing late cannot fail its running retry', async (t) => {
+  const f = await fixture(t);
+  const { flowId, stages } = await lanes(f);
+  await setPlaybook(f.ok, flowId, stages[0], { run: 'manual', model: 'test-model', may_edit: ['intro'] }, 'Write an intro.');
+  const card = await f.card();
+  await f.ok('POST', `/api/cards/${card.id}/lane-runs`, {});
+  const stopped = await waitFor(() => f.codex.sends[0]);
+  await f.ok('POST', `/api/cards/${card.id}/chat/stop`, {});
+  const failed = await waitFor(async () => (await runs(f, card.id)).find((run) => run.status === 'failed'));
+  await f.ok('POST', `/api/cards/${card.id}/chat/retry`, { submissionId: failed.submissionId });
+  const retried = await waitFor(() => f.codex.sends[1]);
+  f.codex.finish(stopped, 'completed', result({ fields: { intro: 'Old intro' }, notes: 'Old attempt.' }));
+  assert.equal((await runs(f, card.id))[0].status, 'queued');
+  assert.equal((await f.ok('GET', `/api/cards/${card.id}/notes`)).text, '');
+  f.codex.finish(retried, 'completed', result({ fields: { intro: 'Current intro' }, notes: 'Current attempt.' }));
+  await waitFor(async () => (await runs(f, card.id))[0]?.status === 'completed');
+  assert.equal((await f.ok('GET', `/api/cards/${card.id}`)).card.fields.intro, 'Current intro');
+  assert.match((await f.ok('GET', `/api/cards/${card.id}/notes`)).text, /Current attempt\./);
+});
+
+for (const mode of ['off', 'manual']) test(`changing a waiting automatic playbook to ${mode} cancels it before submission`, async (t) => {
+  const f = await fixture(t);
+  const { flowId, stages } = await lanes(f);
+  await setPlaybook(f.ok, flowId, stages[1], { conversation: 'fresh', model: 'test-model' }, 'Start over.');
+  const card = await f.card();
+  await f.queue(card.id, await f.compose(card.id));
+  const manual = await waitFor(() => f.codex.sends[0]);
+  await f.ok('POST', `/api/cards/${card.id}/transitions`, { action: 'move', toStageId: stages[1].id });
+  await waitFor(async () => (await runs(f, card.id))[0]?.reason.includes('Waiting for the card chat'));
+  await setPlaybook(f.ok, flowId, stages[1], { run: mode, conversation: 'fresh', model: 'test-model' }, 'Start over.');
+  f.codex.finish(manual);
+  await waitFor(async () => (await runs(f, card.id))[0]?.status !== 'pending');
+  assert.equal((await runs(f, card.id))[0].status, 'cancelled');
+  assert.equal((await f.chat(card.id)).submissions.length, 1);
+  assert.equal(f.codex.sends.length, 1);
+});
+
 test('moving while provider discovery is pending cancels the run before any submission exists', async (t) => {
   const f = await fixture(t);
   const { flowId, stages } = await lanes(f);
