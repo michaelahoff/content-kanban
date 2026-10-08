@@ -54,25 +54,21 @@ function updateComposerControls(item) {
 function applyLayout() {
   const dialog = $('#card-dialog'); if (!dialog?.open) return;
   dialog.classList.toggle('with-chat', !hidden);
-  document.body.classList.toggle('workbench-open', !hidden);
   dialog.classList.toggle('chat-tab', !hidden && chats.get(selected)?.view.tab === 'chat');
   const panel = $('#card-chat'); if (panel) panel.hidden = hidden;
   const handle = $('#chat-resizer'); if (handle) handle.hidden = hidden;
   const toggle = $('[data-action="toggle-chat"]');
   if (toggle) { toggle.textContent = hidden ? 'Show chat' : 'Hide chat'; toggle.setAttribute('aria-expanded', String(!hidden)); }
   const width = Number(preference('frameboard-chat-width'));
-  if (width) dialog.style.setProperty('--chat-width', `${Math.max(300, Math.min(width, dialog.clientWidth - 520))}px`);
+  if (width) dialog.style.setProperty('--chat-width', `${Math.min(width, maxChatWidth())}px`);
   const tabs = $('.workbench-tabs'); if (tabs) tabs.hidden = hidden;
   document.querySelectorAll('[data-action="workbench-tab"]').forEach((button) => button.setAttribute('aria-selected', String(button.dataset.tab === chats.get(selected)?.view.tab)));
   updateSelectionActions();
 }
 function setDialogMode() {
+  // The panel is always non-modal so another card can be chosen on the board.
   const dialog = $('#card-dialog');
-  // Visible workbenches allow choosing a different card on the board. Hidden
-  // chats return to the established modal editor. Reopen synchronously so its
-  // asynchronous close event cannot discard the selected card.
-  if (dialog.open) dialog.close();
-  if (hidden) dialog.showModal(); else dialog.show();
+  if (!dialog.open) dialog.show();
   applyLayout();
 }
 export function mountChat(cardId) {
@@ -94,7 +90,7 @@ export function mountChat(cardId) {
   $('#chat-transcript').addEventListener('scroll', () => { rememberView(); updateSelectionActions(); }, { passive: true });
   $('.editor-content').scrollTop = item.view.editorScroll;
 }
-export function unmountChat() { rememberView(); clearReplySelection(chats.get(selected)); selected = null; document.body.classList.remove('workbench-open'); }
+export function unmountChat() { rememberView(); clearReplySelection(chats.get(selected)); selected = null; }
 export function hasUnsentChatChanges() { return [...chats.values()].some((item) => item.dirty || item.saving || item.sending || item.pending); }
 export function flushComposers() { for (const item of chats.values()) if (item.dirty) void saveComposer(item).catch((error) => showError(item, error)); }
 function showError(item, error) {
@@ -379,11 +375,12 @@ async function sendPrompt(item) {
     if (selected === item.id) renderComposer(item);
   } finally { item.sending = false; updateComposerControls(item); }
 }
+// The panel grows leftward with the chat, so leave the editor a usable width.
+function maxChatWidth() { return Math.max(300, Math.min(640, innerWidth - 500)); }
 function wireResize() {
   const handle = $('#chat-resizer');
   const resize = (width) => {
-    const max = Math.max(300, $('#card-dialog').clientWidth - 520);
-    const value = Math.round(Math.max(300, Math.min(max, width)));
+    const value = Math.round(Math.max(300, Math.min(maxChatWidth(), width)));
     $('#card-dialog').style.setProperty('--chat-width', `${value}px`); preference('frameboard-chat-width', String(value));
   };
   handle.addEventListener('pointerdown', (event) => {

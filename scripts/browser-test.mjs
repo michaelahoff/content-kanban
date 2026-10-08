@@ -398,6 +398,18 @@ try {
   await click('#card-dialog [data-action="close-card"]');
   await waitFor(`!document.querySelector('#card-dialog').open`);
   await saved(); // Closing now persists the editing-session boundary.
+  // The panel overlays the board: Escape and clicking off it both close it.
+  await click(`[data-card="${tallCards[0]}"] [data-action="open-card"]`);
+  await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+  await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 });
+  await waitFor(`!document.querySelector('#card-dialog').open`);
+  await click(`[data-card="${tallCards[0]}"] [data-action="open-card"]`);
+  const outside = await evaluate(`(() => { const box = document.querySelector('.board-header h1').getBoundingClientRect(); return { x: box.left + 10, y: box.top + box.height / 2 }; })()`);
+  assert.ok(outside.x < await evaluate(`document.querySelector('#card-dialog').getBoundingClientRect().left`), 'The board stays visible beside the panel');
+  await send('Input.dispatchMouseEvent', { type: 'mousePressed', ...outside, button: 'left', clickCount: 1 });
+  await send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...outside, button: 'left', clickCount: 1 });
+  await waitFor(`!document.querySelector('#card-dialog').open`);
+  await saved();
   await evaluate(`window.beforeCompactReload = true`);
   await send('Page.reload');
   await waitFor(`!window.beforeCompactReload && document.querySelector('#board')?.classList.contains('cards-collapsed')`);
@@ -413,7 +425,7 @@ try {
   })()`);
   await saved();
   assert.equal((await state()).projects[0].lanes.reduce((sum, lane) => sum + lane.cards.length, 0), 2);
-  console.log('PASS titles-only cards open, reorder, search, and remember their display preference');
+  console.log('PASS titles-only cards open, reorder, search, close on Escape or click-off, and remember their display preference');
 
   await click('.header-actions [data-action="add-lane"]');
   await fill('#name-input', 'Published');
@@ -521,6 +533,7 @@ try {
   await saved();
   await select('#card-lane', entrySourceLane);
   await click('#card-dialog [data-action="close-card"]');
+  await waitFor(`!document.querySelector('#card-dialog').open`); // Closing animates before the board settles.
   await saved();
   await drag(`[data-card="${entryCardId}"] h3`, `[data-lane="${addedLane}"]`, entryCardId);
   await saved();
