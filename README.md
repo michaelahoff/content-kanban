@@ -42,7 +42,9 @@ Supports PNG, JPEG, WebP, GIF, and AVIF, up to 20 MB per image and 200 images pe
 
 The server listens only on this computer (`127.0.0.1`). Board editing works offline. **Get title & thumbnail** contacts YouTube and saves its thumbnail in `data/images/`. Explicit Codex discovery and chat Send use the installed native harness; inference uses its existing authentication and online access. Projects, lanes, cards, chat/composer state and history live in `data/frameboard.db`; original images live in `data/images/`; card workspaces live in `data/workspaces/<cardId>/`. The browser remembers display preferences and per-card workbench view state.
 
-**Stop the server and back up the whole `data/` directory.** To restore a backup, stop the server, replace `data/` with your backup, and restart. This preserves app history and workspace files; it does not include native conversations outside `data/` or guarantee native resume. Verified native backup/restore comes in the later release gate. Set `DATA_DIR` to use a different storage location. On the first start with an older `board.json`, the server transfers its board to SQLite in one transaction and keeps the original file as `board.json.migrated`.
+**Stop the server, then run `npm run backup -- --output backups`.** This creates a timestamped backup with a consistent SQLite snapshot, hash-validated images, card workspaces, a manifest and only this board's relevant native conversation files. To restore, stop the server and run `npm run restore -- --backup backups/<folder> --data-dir restored-data`, then `DATA_DIR=restored-data npm start`. Restore needs a new or empty app directory and never overwrites existing native files. Both commands support `--data-dir` and `--codex-home`. Backups are **history-only; native resume not verified**: global credentials/configuration and Codex's native index are excluded, and missing native history is never replayed. See [backup details and cumulative evidence](docs/implementation/phase-1-backup-release.md).
+
+Set `DATA_DIR` to use a different storage location. On the first start with an older `board.json`, the server transfers its board to SQLite in one transaction and keeps the original file as `board.json.migrated`. One app or backup/restore command may use a data directory at a time; the separate sibling lock database releases its OS lock after a crash.
 
 Deleting a card hides it from the board while retaining its saved data and history. Removing an image removes its association with the card. Uploaded and chat-produced images are immutable, hash-recorded versions in `data/images/`; deleting cards or removing gallery images does not reclaim image storage, so chat history keeps its image versions. Damaged image bytes are refused rather than shown or sent.
 
@@ -69,7 +71,7 @@ Moves save their before/after card snapshots and neighbouring card IDs in `card_
 
 ## Phase 1 implementation
 
-[Phase 1 implementation tracker](https://github.com/michaelahoff/content-kanban/issues/18) contains the ordered tickets and dependencies from the [completed specification](https://github.com/michaelahoff/content-kanban/issues/12#issuecomment-6041712115). The first milestone records durable activity and saved card states. Codex chat, native image generation/reference editing, permissions, restart reconciliation, indicators and verified backups remain subsequent requirements; the Phase 1 daily-use release requires all of them.
+[Phase 1 implementation tracker](https://github.com/michaelahoff/content-kanban/issues/18) contains the ordered tickets and dependencies from the [completed specification](https://github.com/michaelahoff/content-kanban/issues/12#issuecomment-6041712115). Codex chat, protected card tools/permissions, native image generation/reference editing, restart reconciliation, activity indicators and history-only backup/restore are implemented. The [cumulative cases 1–12 and native gates](docs/implementation/phase-1-backup-release.md) record the daily-use evidence and its supported configuration limits. Native backup resume is explicitly unverified; Claude, overrides, reviewed transfer and Send graphs/full timeline/restoration remain later phases.
 
 Schema version 5 copies the available historical facts into the activity log and creates one **history-begins** saved card state for each existing card, including deleted cards. It preserves move-undo snapshots and does not reconstruct unknown earlier card states. Legacy JSON imports get a baseline at their imported state.
 
@@ -93,7 +95,7 @@ Choose **Discover**, select an available model, and compose a prompt. Expand **W
 
 **Stop** preserves partial output and invalidates requests. **Start fresh context** retains previous history, resets grants and explicitly cancels queued old work; it waits for acknowledged interruption and starts no native turn until Send. Changed configuration holds queued work until cancel/resubmit, and changed native configuration needs deliberate fresh context. Ambiguous delivery stays held and is never automatically resent.
 
-This is a development milestone. Card tools, full grants/input handling, native image adoption, complete recovery/streaming and verified backups remain required before the Phase 1 daily-use release. See [the workbench implementation and evidence](docs/implementation/phase-1-workbench.md).
+See [the workbench implementation and evidence](docs/implementation/phase-1-workbench.md) for its original milestone boundary, and [the cumulative release evidence](docs/implementation/phase-1-backup-release.md) for the later card-tool, image, recovery/streaming and backup checks.
 
 ### Native images and gallery adoption (Phase 1.5)
 

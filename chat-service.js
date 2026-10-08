@@ -19,7 +19,7 @@ export function createChatService({ store, adapter, dataDir }) {
     return bytes;
   }
   const imagesDir = path.join(dataDir, 'images');
-  return {
+  const service = {
     workspace,
     async importNative(native, nativeHome) { return storeImage(imagesDir, await nativeImageBytes(native, nativeHome)); },
     // register_image: an explicitly named regular file inside the originating
@@ -87,4 +87,18 @@ export function createChatService({ store, adapter, dataDir }) {
       return input;
     },
   };
+  // Finish filesystem operations before the app releases its backup/restore
+  // lock. Native events can already have started an import when shutdown begins.
+  const pending = new Set();
+  for (const name of ['importNative', 'renderedImage', 'preview', 'discover', 'queue', 'references']) {
+    const operation = service[name];
+    service[name] = function (...args) {
+      const task = operation.apply(this, args);
+      pending.add(task);
+      task.finally(() => pending.delete(task)).catch(() => {});
+      return task;
+    };
+  }
+  service.drain = async () => { while (pending.size) await Promise.allSettled([...pending]); };
+  return service;
 }

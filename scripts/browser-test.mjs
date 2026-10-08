@@ -4,13 +4,15 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
 import { createApp } from '../server.js';
+import { ControlledCodex } from '../test/support/controlled-codex.js';
 
 const temporary = await mkdtemp(path.join(tmpdir(), 'frameboard-browser-'));
 // Stand-in for YouTube so the checks run offline.
 const fakeYoutube = async (url) => url.startsWith('https://www.youtube.com/oembed')
   ? new Response(JSON.stringify({ title: 'A borrowed idea' }))
   : new Response(Buffer.from([255, 216, 255, 224, 0, 16]));
-const server = await createApp({ dataDir: path.join(temporary, 'data'), fetch: fakeYoutube });
+const codex = new ControlledCodex(path.join(temporary, 'data'));
+const server = await createApp({ dataDir: path.join(temporary, 'data'), fetch: fakeYoutube, codexAdapter: codex });
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 const base = `http://127.0.0.1:${server.address().port}`;
 const chrome = spawn(process.env.CHROME_PATH || 'chromium', ['--headless', '--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage', '--remote-debugging-port=0', `--user-data-dir=${path.join(temporary, 'chrome')}`, 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'] });
@@ -41,13 +43,19 @@ try {
     if (message.method === 'Runtime.exceptionThrown') browserErrors.push(message.params.exceptionDetails);
     if (message.id) {
       const handler = pending.get(message.id);
+      if (!handler) return;
       pending.delete(message.id);
+      clearTimeout(handler.timer);
       if (message.error) handler.reject(new Error(message.error.message)); else handler.resolve(message.result);
     }
   };
   const send = (method, params = {}, session = sessionId) => new Promise((resolve, reject) => {
     const id = ++sequence;
-    pending.set(id, { resolve, reject });
+    const timer = setTimeout(() => {
+      pending.delete(id);
+      reject(new Error(`Chromium command timed out: ${method}`));
+    }, 15000);
+    pending.set(id, { resolve, reject, timer });
     socket.send(JSON.stringify({ id, method, params, ...(session ? { sessionId: session } : {}) }));
   });
   const { targetId } = await send('Target.createTarget', { url: 'about:blank' });
@@ -678,6 +686,86 @@ try {
   await saved();
   assert.equal((await (await fetch(`${base}/api/cards/${conflictId}`)).json()).card.fields.intro, 'Resolved and saved');
   console.log('PASS unrelated cards save during conflict, and confirmed resolution resumes saving');
+
+  // Cumulative cases 1 and 12 use controlled native events through the real
+  // HTTP/worker/browser path. Native availability has its separate live gate.
+  await click('[data-action="close-card"]');
+  await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
+  async function api(method, url, body) {
+    const response = await fetch(base + url, { method, headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
+    const value = await response.json(); assert.ok(response.ok, JSON.stringify(value)); return value;
+  }
+  const chatWorkspace = await api('GET', '/api/workspace'); const chatProject = chatWorkspace.projects[0];
+  const chatStage = chatWorkspace.flows.find((flow) => flow.id === chatProject.flowId).stages[0].id;
+  const a = await api('POST', `/api/projects/${chatProject.id}/cards`, { stageId: chatStage, title: 'Chat browser A', images: fetchedCard.images, imageRoles: fetchedCard.imageRoles });
+  const b = await api('POST', `/api/projects/${chatProject.id}/cards`, { stageId: chatStage, title: 'Chat browser B' });
+  await send('Page.navigate', { url: base });
+  const open = async (id) => {
+    await waitFor(`!!document.querySelector('[data-action="open-card"][data-id="${id}"]')`);
+    await click(`[data-action="open-card"][data-id="${id}"]`);
+    await waitFor(`!!document.querySelector('#chat-prompt')`);
+  };
+  const chat = (id) => api('GET', `/api/cards/${id}/chat`);
+  await open(a.id);
+  await fill('#chat-prompt', 'Draft A persists');
+  await click('[data-action="toggle-chat"]');
+  await click('[data-action="toggle-chat"]');
+  assert.equal(await evaluate(`document.querySelector('#chat-prompt').value`), 'Draft A persists');
+  await open(b.id); await fill('#chat-prompt', 'Draft B persists');
+  await open(a.id); assert.equal(await evaluate(`document.querySelector('#chat-prompt').value`), 'Draft A persists');
+  assert.equal(codex.threads.size, 0, 'Idle views never create native conversations.');
+  await click('[data-action="chat-discover"]');
+  await waitFor(`!!document.querySelector('#chat-model option[value="test-model"]')`);
+  await select('#chat-model', 'test-model');
+  await click('[data-action="chat-send"]');
+  for (let i = 0; i < 100 && !codex.sends.length; i++) await pause(20);
+  assert.equal(codex.sends.length, 1);
+  const first = codex.sends[0];
+  codex.emit(first.threadId, { type: 'delta', turnId: first.turnId, itemId: 'browser-partial', delta: 'Streamed browser evidence' });
+  await waitFor(`document.querySelector('#chat-transcript').textContent.includes('Streamed browser evidence')`);
+  await open(b.id);
+  assert.equal(await evaluate(`document.querySelector('#chat-prompt').value`), 'Draft B persists');
+  await waitFor(`!!document.querySelector('[data-activity-card="${a.id}"].working')`);
+  const firstTimer = await evaluate(`document.querySelector('[data-activity-card="${a.id}"]').textContent`);
+  await waitFor(`document.querySelector('[data-activity-card="${a.id}"]').textContent !== ${JSON.stringify(firstTimer)}`);
+  assert.equal((await chat(a.id)).attempts[0].status, 'running', 'Switching does not stop work.');
+  await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
+  assert.equal(await evaluate(`document.querySelector('[data-activity-card="${a.id}"].working').getAnimations().length`), 0);
+  await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+  await click('[data-action="workbench-tab"][data-tab="chat"]');
+  assert.equal(await evaluate(`document.querySelector('#chat-prompt').value`), 'Draft B persists');
+  await snapshot('phase-1-mobile-chat');
+  await click('[data-action="close-card"]'); await open(b.id);
+  assert.equal(await evaluate(`document.querySelector('#chat-prompt').value`), 'Draft B persists');
+  await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
+  await open(a.id);
+  await waitFor(`document.querySelector('#chat-transcript').textContent.includes('Streamed browser evidence')`);
+  const frozen = (await chat(a.id)).submissions[0];
+  assert.equal(frozen.context.images[0].id, fetchedCard.images[0].id, 'Exact role reference remains frozen.');
+  console.log('PASS idle chats, desktop/mobile drafts and references, switch/hide/reopen, independent work and static reduced-motion indication');
+
+  await click('[data-action="close-card"]');
+  codex.request(first);
+  await waitFor(`!!document.querySelector('[data-activity-card="${a.id}"].input-needed')`);
+  await click('[data-action="workspace-chat-activity"]');
+  await click(`[data-action="chat-activity-card"][data-id="${a.id}"]`);
+  await waitFor(`document.activeElement?.dataset.action === 'chat-answer'`);
+  assert.equal(await evaluate(`document.activeElement.dataset.id`), (await chat(a.id)).requests.find((entry) => entry.status === 'pending').id);
+  await snapshot('phase-1-input-needed');
+  await click('[data-action="chat-answer"][data-decision="accept"]');
+  await click('[data-action="close-card"]'); codex.finish(first);
+  await waitFor(`!!document.querySelector('[data-activity-card="${a.id}"].done')`);
+  await api('POST', `/api/cards/${a.id}/chat/viewed`, {});
+  await waitFor(`!document.querySelector('[data-activity-card="${a.id}"].done')`);
+  await open(a.id);
+  await fill('#chat-prompt', 'Second response for hidden-view Done'); await click('[data-action="chat-send"]');
+  for (let i = 0; i < 100 && codex.sends.length < 2; i++) await pause(20);
+  assert.equal(codex.sends.length, 2);
+  await click('[data-action="toggle-chat"]'); codex.finish(codex.sends[1]);
+  await waitFor(`!!document.querySelector('[data-activity-card="${a.id}"].done')`);
+  await click('[data-action="toggle-chat"]');
+  await waitFor(`!document.querySelector('[data-activity-card="${a.id}"].done')`);
+  console.log('PASS Working timer, streamed text, Input needed navigation/focus, other-tab Done clearing and hidden-chat reveal');
   assert.deepEqual(browserErrors, []);
   console.log('All browser checks passed. Screenshots: test-results/');
 } finally {

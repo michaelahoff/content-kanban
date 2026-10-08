@@ -28,14 +28,16 @@ async function start(dataDir, options = {}) {
 
 async function fixture(t, options) {
   const dataDir = await mkdtemp(path.join(tmpdir(), 'frameboard-test-'));
-  const server = await start(dataDir, options);
+  let server = await start(dataDir, options);
   t.after(async () => { await server.close(); await rm(dataDir, { recursive: true, force: true }); });
   const workspace = await server.ok('GET', '/api/workspace');
   const project = workspace.projects[0];
   const stages = workspace.flows.find((flow) => flow.id === project.flowId).stages;
   const card = (body = {}) => server.ok('POST', `/api/projects/${project.id}/cards`, { stageId: stages[0].id, ...body });
   const cards = async () => (await server.ok('GET', `/api/projects/${project.id}/cards`)).cards;
-  return { ...server, dataDir, workspace, project, stages, card, cards };
+  return { ...server, dataDir, workspace, project, stages, card, cards,
+    call: (...args) => server.call(...args), ok: (...args) => server.ok(...args),
+    restart: async () => { await server.close(); server = await start(dataDir, options); return server; } };
 }
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jS1kAAAAASUVORK5CYII=', 'base64');
 const imageId = (n) => `${String(n).padStart(8, '0')}-0000-4000-8000-000000000000.png`;
@@ -124,7 +126,7 @@ test('connected Set field commands run in edge order and preserve unrelated cont
   const initial = await f.card({ stageId: f.stages[1].id, fields: { script: 'Creation script' } });
   assert.equal(initial.title, 'Final title');
   assert.equal(initial.fields.script, 'Creation script');
-  const reopened = await start(f.dataDir);
+  const reopened = await f.restart();
   try { assert.deepEqual((await reopened.ok('GET', '/api/workspace')).flows[0].stages[1].entryGraph, graph); }
   finally { await reopened.close(); }
 });
@@ -272,7 +274,7 @@ test('creates a workspace with a default project and keeps card text across rest
   assert.equal(updated.revision, 2);
   assert.ok(Date.parse(updated.updatedAt) >= Date.parse(created.updatedAt));
   await f.ok('PATCH', `/api/stages/${f.stages[0].id}`, { name: 'New ideas' });
-  const reopened = await start(f.dataDir);
+  const reopened = await f.restart();
   const [loaded] = (await reopened.ok('GET', `/api/projects/${f.project.id}/cards`)).cards;
   assert.deepEqual(loaded, updated);
   assert.deepEqual(loaded.fields, { ...created.fields, ...fields });
@@ -659,13 +661,10 @@ test('undo restores lane, position, and command changes while keeping later unre
   await f.ok('PATCH', `/api/stages/${f.stages[0].id}`, { entryPrompt: 'Do not run on undo' });
   const image = { id: imageId(99), name: 'Later inspiration' };
   const edited = await f.ok('PATCH', `/api/cards/${card.id}`, { revision: moved.card.revision, fields: { script: 'Newer script' }, images: [image], imageRoles: { cover: image.id } });
-  const reopened = await start(f.dataDir);
-  let undo;
-  try {
-    const loaded = (await reopened.ok('GET', `/api/cards/${card.id}`)).card;
-    assert.deepEqual(loaded.lastMove, moved.card.lastMove);
-    undo = await reopened.ok('POST', `/api/cards/${card.id}/undo-move`, { moveId: loaded.lastMove.id, revision: loaded.revision });
-  } finally { await reopened.close(); }
+  const reopened = await f.restart();
+  const loaded = (await reopened.ok('GET', `/api/cards/${card.id}`)).card;
+  assert.deepEqual(loaded.lastMove, moved.card.lastMove);
+  const undo = await reopened.ok('POST', `/api/cards/${card.id}/undo-move`, { moveId: loaded.lastMove.id, revision: loaded.revision });
   assert.equal(undo.card.stageId, card.stageId);
   assert.equal(undo.card.enteredStageAt, card.enteredStageAt);
   assert.equal(undo.card.title, card.title);
@@ -738,11 +737,12 @@ test('schema upgrade enables future undo without inventing snapshots for older m
   const f = await fixture(t);
   const card = await f.card();
   await f.ok('POST', `/api/cards/${card.id}/transitions`, { action: 'move', toStageId: f.stages[1].id });
+  await f.close();
   const db = new DatabaseSync(path.join(f.dataDir, 'frameboard.db'));
   removeHistoryMilestone(db);
   db.exec("DROP TABLE card_moves; UPDATE meta SET value = '3' WHERE key = 'schema_version';");
   db.close();
-  const reopened = await start(f.dataDir);
+  const reopened = await f.restart();
   try {
     assert.equal((await reopened.ok('GET', `/api/cards/${card.id}`)).card.lastMove, null);
     const moved = await reopened.ok('POST', `/api/cards/${card.id}/transitions`, { action: 'approve' });

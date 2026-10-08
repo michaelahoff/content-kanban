@@ -9,7 +9,9 @@
     "dev": "node --disable-warning=ExperimentalWarning --watch server.js",
     "test": "node --disable-warning=ExperimentalWarning --test test/*.test.js",
     "test:browser": "node --disable-warning=ExperimentalWarning scripts/browser-test.mjs",
-    "test:native": "FRAMEBOARD_NATIVE_TEST=1 node --disable-warning=ExperimentalWarning --test test/codex-native.test.js"
+    "test:native": "FRAMEBOARD_NATIVE_TEST=1 node --disable-warning=ExperimentalWarning --test test/codex-native.test.js",
+    "backup": "node --disable-warning=ExperimentalWarning scripts/backup.mjs create",
+    "restore": "node --disable-warning=ExperimentalWarning scripts/backup.mjs restore"
   },
   "engines": { "node": ">=22.13" }
 }

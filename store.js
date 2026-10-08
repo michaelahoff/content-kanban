@@ -14,6 +14,38 @@ import { protectionMigration, createProtectionStore } from './store-protection.j
 import { imagesMigration, createImageStore } from './store-images.js';
 
 export const imageIdPattern = /^[a-f0-9-]{36}\.(png|jpg|webp|gif|avif)$/;
+
+// Backup reads never migrate or recover app state. VACUUM includes SQLite's
+// current committed contents, including WAL data, in one standalone database.
+export function snapshotDatabase(filename, destination) {
+  const db = new DatabaseSync(filename, { readOnly: true });
+  try { db.exec(`VACUUM INTO '${destination.replaceAll("'", "''")}'`); }
+  finally { db.close(); }
+}
+
+export function inspectBackupDatabase(filename) {
+  const db = new DatabaseSync(filename, { readOnly: true });
+  try {
+    if (db.prepare('PRAGMA integrity_check').get().integrity_check !== 'ok' || db.prepare('PRAGMA foreign_key_check').all().length) throw new Error('The backup database is damaged.');
+    const images = new Map(db.prepare('SELECT id, hash FROM image_versions').all().map((image) => [image.id, image]));
+    const include = (references) => {
+      for (const image of references ?? []) {
+        if (!imageIdPattern.test(image.id)) throw new Error('The database contains an invalid image version.');
+        const existing = images.get(image.id);
+        if (existing?.hash && image.hash && existing.hash !== image.hash) throw new Error(`Conflicting image hashes: ${image.id}`);
+        images.set(image.id, { id: image.id, hash: existing?.hash ?? image.hash ?? null });
+      }
+    };
+    for (const row of db.prepare('SELECT images FROM cards').all()) include(JSON.parse(row.images));
+    for (const row of db.prepare('SELECT snapshot FROM saved_card_states').all()) include(JSON.parse(row.snapshot).images);
+    for (const row of db.prepare('SELECT before_card, after_card FROM card_moves').all()) { include(JSON.parse(row.before_card).images); include(JSON.parse(row.after_card).images); }
+    for (const row of db.prepare('SELECT frozen FROM chat_submissions').all()) include(JSON.parse(row.frozen).context.images);
+    const nativeThreads = [...new Set(db.prepare("SELECT binding FROM chat_conversations WHERE provider = 'codex' AND binding IS NOT NULL").all()
+      .map((row) => JSON.parse(row.binding).threadId).filter((id) => /^[a-f0-9-]{36}$/.test(id)))];
+    return { schemaVersion: db.prepare('SELECT value FROM meta WHERE key = ?').get('schema_version')?.value, images: [...images.values()], nativeThreads };
+  } finally { db.close(); }
+}
+
 export const laneColors = ['lavender', 'blue', 'amber', 'green', 'pink', 'gray', 'teal', 'cyan', 'orange', 'red', 'purple', 'lime'];
 const defaultStages = [['Ideas', 'lavender'], ['In progress', 'blue'], ['Review', 'amber'], ['Done', 'green']];
 const idPattern = /^[\w-]{1,100}$/;
