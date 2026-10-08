@@ -9,10 +9,14 @@
   .workbench-open .topbar .save-status { display: none; }
   .workbench-open .board-toolbar { flex-wrap: wrap; padding-inline: 18px; }
   .workbench-open .board-tools { flex-wrap: wrap; }
-  .workbench-open .paste-hint, .workbench-open .board-footer { display: none; }
+  .workbench-open .paste-hint { display: none; }
   .workbench-open .board { padding-inline: 18px; }
 }
 .with-chat .editor-content { grid-template-columns: minmax(0, 1fr) 260px; padding-inline: 24px; }
+/* Keep a readable measure on wide screens; the scroll container stays full width so its scrollbar sits at the pane edge. */
+@media (min-width: 1180px) {
+  .with-chat .original-video, .with-chat .editor-title, .with-chat .editor-content { padding-inline: max(24px, calc((100% - 1000px) / 2)); }
+}
 .with-chat .writing-panel { padding-right: 20px; }
 .workbench-tabs { display: none; }
 #chat-resizer { cursor: col-resize; background: #201f28; border-inline: 1px solid #34303f; touch-action: none; }
