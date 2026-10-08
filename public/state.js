@@ -84,7 +84,8 @@ export function locateCard(targetId = state.cardId) {
 }
 export function cardCount(p) { return p.loaded ? p.lanes.reduce((sum, lane) => sum + lane.cards.length, 0) : p.cardCount; }
 export function searchText(card) {
-  return [card.title, ...templates[card.template].fields.map((field) => card.fields[field.key] || '')].join('\n');
+  // Hidden fields such as Prompt are often shared by every card, so they would match everything.
+  return [card.title, ...templates[card.template].fields.filter((field) => field.editor !== false).map((field) => card.fields[field.key] || '')].join('\n');
 }
 
 const toLane = (stage) => ({ ...stage, cards: [] });

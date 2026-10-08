@@ -76,7 +76,7 @@ function cardMarkup(card) {
   return `<article class="card" draggable="true" data-card="${card.id}">
     <button class="card-open" draggable="true" data-action="open-card" data-id="${card.id}" aria-label="Open ${title}">
       ${card.imageRoles.cover ? `<div class="card-image"><img src="${imageURL(card.imageRoles.cover)}" alt="" loading="lazy" draggable="false"><span class="card-open-label">Open card ${icon('arrow')}</span></div>` : `<div class="card-image no-image">${icon('image')}<span class="card-open-label">Open card ${icon('arrow')}</span></div>`}
-      <div class="card-body"><h3>${escape(card.title || 'Untitled card')}</h3>${activityMarkup(card.id)}${card.fields.intro.trim() ? `<p>${escape(card.fields.intro)}</p>` : ''}<div class="card-meta"><span>${icon('text')}${words ? `${words.toLocaleString()} words` : 'Ready for your words'}</span><span>${icon('image')}${card.images.length}</span></div><span class="edited-at" data-edited-card="${card.id}">${lastEditedMarkup(card)}</span></div>
+      <div class="card-body"><h3>${escape(card.title || 'Untitled card')}</h3>${activityMarkup(card.id)}${card.fields.intro.trim() ? `<p>${escape(card.fields.intro)}</p>` : ''}<div class="card-meta"><span>${icon('text')}${words.toLocaleString()} words</span><span>${icon('image')}${card.images.length}</span></div><span class="edited-at" data-edited-card="${card.id}">${lastEditedMarkup(card)}</span></div>
     </button></article>`;
 }
 export function renderBoard() {
