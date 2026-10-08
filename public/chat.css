@@ -1,23 +1,6 @@
 #card-editor-pane { display: flex; flex-direction: column; flex: 1; min-height: 0; min-width: 0; }
-#card-dialog.with-chat[open] { --chat-width: 350px; position: fixed; display: grid; grid-template-columns: minmax(0, 1fr) 8px minmax(300px, var(--chat-width)); width: calc(100vw - 350px); height: calc(100dvh - 36px); inset: 18px 18px auto auto; margin: 0; z-index: 10; }
-@media (min-width: 1180px) {
-  .workbench-open .sidebar { display: none; }
-  .workbench-open .main { margin-left: 0; width: 332px; }
-  .workbench-open .board-header { flex-wrap: wrap; gap: 16px; padding-inline: 18px; }
-  .workbench-open .header-actions { flex-wrap: wrap; width: 100%; }
-  .workbench-open .topbar { padding-inline: 18px; gap: 8px; flex-wrap: wrap; }
-  .workbench-open .topbar .save-status { display: none; }
-  .workbench-open .board-toolbar { flex-wrap: wrap; padding-inline: 18px; }
-  .workbench-open .board-tools { flex-wrap: wrap; }
-  .workbench-open .paste-hint { display: none; }
-  .workbench-open .board { padding-inline: 18px; }
-}
-.with-chat .editor-content { grid-template-columns: minmax(0, 1fr) 260px; padding-inline: 24px; }
-/* Keep a readable measure on wide screens; the scroll container stays full width so its scrollbar sits at the pane edge. */
-@media (min-width: 1180px) {
-  .with-chat .original-video, .with-chat .editor-title, .with-chat .editor-content { padding-inline: max(24px, calc((100% - 1000px) / 2)); }
-}
-.with-chat .writing-panel { padding-right: 20px; }
+/* With chat shown, the panel widens leftward; the editor keeps its width. */
+#card-dialog.with-chat[open] { --chat-width: 340px; display: grid; grid-template-columns: minmax(0, 1fr) 8px minmax(300px, var(--chat-width)); width: min(calc(var(--editor-width) + 8px + var(--chat-width)), calc(100vw - 24px)); }
 .workbench-tabs { display: none; }
 #chat-resizer { cursor: col-resize; background: #201f28; border-inline: 1px solid #34303f; touch-action: none; }
 #chat-resizer:hover, #chat-resizer:focus-visible { background: #7056a4; }
@@ -103,9 +86,8 @@
 #chat-activity-list { position: absolute; top: 38px; right: 0; z-index: 20; width: min(320px, calc(100vw - 40px)); padding: 12px; border: 1px solid #514463; border-radius: 8px; background: #19171f; box-shadow: 0 15px 40px #0009; }
 .chat-activity-entry { width: 100%; display: flex; flex-direction: column; gap: 5px; padding: 10px; background: transparent; color: var(--text); border: 0; border-bottom: 1px solid #34303d; text-align: left; cursor: pointer; }
 .chat-activity-entry span, #chat-activity-list p { color: var(--muted); font-size: 11px; }
-@media (max-width: 1200px) { .with-chat .editor-content { display: block; } .with-chat .writing-panel { padding-right: 0; } }
 @media (max-width: 1179px) {
-  #card-dialog.with-chat[open] { display: flex; flex-direction: column; width: calc(100vw - 28px); height: calc(100dvh - 28px); inset: 14px; }
+  #card-dialog.with-chat[open] { display: flex; flex-direction: column; width: min(var(--editor-width), calc(100vw - 24px)); }
   .workbench-tabs { display: flex; flex-shrink: 0; border-bottom: 1px solid #3c3549; }
   .workbench-tabs button { flex: 1; border: 0; padding: 13px; background: #17151d; color: var(--muted); cursor: pointer; }
   .workbench-tabs button[aria-selected="true"] { color: #dfcaef; box-shadow: inset 0 -2px #ac8cec; }
@@ -118,3 +100,4 @@
   .editor-header { gap: 8px; }
   .chat-composer { max-height: 65%; }
 }
+@media (max-width: 620px) { #card-dialog.with-chat[open] { width: auto; } }

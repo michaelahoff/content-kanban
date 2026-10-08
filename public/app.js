@@ -4,11 +4,10 @@ import { retry } from './api.js';
 import { templates, fieldInputId } from './card-template.js';
 import { state, project, locateCard, cardCount, loadWorkspace, loadCards, cardChanged, flushCards, createCard, moveCard, deleteCard, deleteLane, deleteProject, saveStatus, hasUnsavedWork, onStatusChange, useSavedCard, undoLastMove } from './state.js';
 import { view, selectProject, renderApp, renderBoard, renderStatus, editProject, editLane, editProjectPrompt, toggleCards } from './board.js';
-import { openCard, closeCard, renderImages, copyText, copyTrifecta, fetchYoutube, addImages, originalVideoMarkup, videoLinkMarkup } from './editor.js';
+import { openCard, closeCard, cardPanelOpen, renderImages, copyText, copyTrifecta, fetchYoutube, addImages, originalVideoMarkup, videoLinkMarkup } from './editor.js';
 import { openFlow } from './flow-editor.js';
 import { initializeChats, hasUnsentChatChanges, flushComposers } from './chat.js';
 
-const cardDialog = $('#card-dialog');
 const formDialog = $('#form-dialog');
 const imageDialog = $('#image-dialog');
 const app = $('#app');
@@ -180,9 +179,9 @@ document.addEventListener('paste', (event) => {
   if (!state.projects.length || formDialog.open || imageDialog.open) return;
   const files = [...(event.clipboardData?.items || [])].filter((item) => item.kind === 'file' && item.type.startsWith('image/')).map((item) => item.getAsFile()).filter(Boolean);
   if (!files.length) return;
-  if (!cardDialog.open && event.target.closest('input, textarea, [contenteditable]')) return;
+  if (!cardPanelOpen() && event.target.closest('input, textarea, [contenteditable]')) return;
   event.preventDefault();
-  let targetId = cardDialog.open ? state.cardId : null;
+  let targetId = cardPanelOpen() ? state.cardId : null;
   if (!targetId) targetId = makeCard(view.pasteLaneId)?.id;
   if (targetId) addImages(files, targetId);
 });
@@ -259,7 +258,7 @@ function slideCards(previous) {
 }
 document.addEventListener('dragend', () => { draggedId = null; clearDrag(); });
 document.addEventListener('dragenter', (event) => {
-  if (!draggedId || cardDialog.open || formDialog.open || imageDialog.open || !event.target.closest('[data-lane]')) return;
+  if (!draggedId || cardPanelOpen() || formDialog.open || imageDialog.open || !event.target.closest('[data-lane]')) return;
   // Opening the insertion gap can put a different child under the pointer.
   // Accept that child immediately, including a drop before the next dragover.
   event.preventDefault();
@@ -269,7 +268,7 @@ document.addEventListener('dragover', (event) => {
   const files = event.dataTransfer.types.includes('Files');
   if (files) event.preventDefault();
   if (formDialog.open || imageDialog.open) return;
-  if (cardDialog.open && files) { $('#image-drop').classList.add('drag-over'); return; }
+  if (cardPanelOpen() && files) { $('#image-drop').classList.add('drag-over'); return; }
   const lane = event.target.closest('[data-lane]');
   if (!lane || (!files && !draggedId)) { clearDropTarget(); return; }
   event.preventDefault();
@@ -298,7 +297,7 @@ document.addEventListener('drop', (event) => {
   const previous = target ? cardPositions() : null;
   clearDrag();
   if (formDialog.open || imageDialog.open) return;
-  if (cardDialog.open && files.length) { addImages(files, state.cardId); return; }
+  if (cardPanelOpen() && files.length) { addImages(files, state.cardId); return; }
   if (!lane) return;
   event.preventDefault();
   if (files.length) {
@@ -311,7 +310,7 @@ document.addEventListener('drop', (event) => {
   }
   draggedId = null;
 });
-for (const dialog of [cardDialog, formDialog, imageDialog]) {
+for (const dialog of [formDialog, imageDialog]) {
   let downOnBackdrop = false;
   dialog.addEventListener('pointerdown', (event) => { downOnBackdrop = event.target === dialog && (event.offsetX < 0 || event.offsetY < 0 || event.offsetX > dialog.clientWidth || event.offsetY > dialog.clientHeight); });
   dialog.addEventListener('click', (event) => { if (downOnBackdrop && event.target === dialog) dialog.close(); downOnBackdrop = false; });
