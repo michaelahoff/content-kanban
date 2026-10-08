@@ -1,6 +1,6 @@
 # Project assets for card prompts
 
-Status: consolidated specification awaiting final confirmation for [Set project asset acceptance criteria and implementation specification](https://github.com/michaelahoff/content-kanban/issues/42). Planning only. The established decisions and both synthesis refinements in section 12 are approved. This ticket stays open until the user confirms the complete specification, delivery sequence and that no in-scope decisions remain.
+Status: approved implementation-ready specification for [Set project asset acceptance criteria and implementation specification](https://github.com/michaelahoff/content-kanban/issues/42). On 2026-10-08, the user confirmed the complete specification and six-stage delivery sequence, with no in-scope decisions remaining. Planning is complete; production implementation is a subsequent effort.
 
 Baseline: `main` at `221b580e73ec21d92306c47262e7df03e125108a`, checked 2026-10-08. Changes after that baseline require an integration check before implementation. The [project asset map](https://github.com/michaelahoff/content-kanban/issues/34) ends at an implementation-ready specification, with production work following separately.
 
@@ -212,7 +212,7 @@ The audit's 47 passing baseline checks establish existing main behavior only. Ne
 
 ## 12. Approved synthesis refinements
 
-The user approved both refinements in the live review on 2026-10-08: “Use this order (recommended)” for input ordering and “Use this contract (recommended)” for lane output registration. These extend the earlier resolutions with the concrete integration contracts below. Final confirmation of the complete specification and delivery sequence remains outstanding.
+The user approved both refinements in the live review on 2026-10-08: “Use this order (recommended)” for input ordering and “Use this contract (recommended)” for lane output registration. These extend the earlier resolutions with the concrete integration contracts below. The user subsequently confirmed the complete specification and delivery sequence, with no in-scope decisions remaining.
 
 ### A. Order and identity across the full input union
 
@@ -241,4 +241,4 @@ These are implementation stages for the subsequent effort, not child decision ti
 5. **Explicit saved results and reuse.** Implement the confirmed lane registration extension, user text/file saves, retained output browsing/download/retry, same-card selection and user-only promotion with provenance. Include every store in backup before exposing saves. Evidence: 17–19, 23–26; retain native image adoption semantics.
 6. **Native gates and integrated release evidence.** Run installed-harness and required subscribed-account format checks, bounded-memory large-file/failure trials, archive/restart/restore races and full workflow checks. Enable Claude PDF only on passing evidence; unsupported routes remain explicit. Update user-facing capability descriptions and current-main integration evidence. All applicable acceptance cases must pass; baseline/fake-provider tests alone cannot certify this feature.
 
-Both synthesis refinements are approved and the specification has a durable planning-branch pointer. Completion of this planning ticket still requires the user's final confirmation of the complete specification, delivery sequence and that no in-scope decisions remain. Production implementation has not started.
+Both synthesis refinements, the complete specification and the delivery sequence are approved. The user confirmed that no in-scope decisions remain; this completes the planning map's destination. Native capability verification and protection/acceptance evidence remain requirements for the subsequent implementation effort. Production implementation has not started.
