@@ -77,7 +77,8 @@ export async function createBackup({ dataDir, output, codexHome }) {
   const staging = await mkdtemp(path.join(output, '.incomplete-'));
   try {
     snapshotDatabase(path.join(dataDir, 'frameboard.db'), path.join(staging, 'frameboard.db'));
-    const { schemaVersion, images: versions, nativeThreads: threads } = inspectBackupDatabase(path.join(staging, 'frameboard.db'));
+    const { schemaVersion, images: versions, nativeThreads: threads, retainedCount } = inspectBackupDatabase(path.join(staging, 'frameboard.db'));
+    if (retainedCount) fail('Retained storage export is not available yet. This backup format cannot preserve retained payloads.');
     await chmod(path.join(staging, 'frameboard.db'), 0o600);
     const files = ['frameboard.db']; const directories = [];
     await inventory(dataDir, 'images', files, directories);
@@ -144,7 +145,8 @@ export async function restoreBackup({ backupDir, dataDir, codexHome }) {
   }
   if (!seen.has('frameboard.db')) fail('The backup database is missing.');
   for (const directory of manifest.directories) if (!validPath(directory) || !appPath(directory) || seen.has(directory) || directory === 'frameboard.db') fail('Invalid backup directory entry.');
-  const { images, nativeThreads: threads } = inspectBackupDatabase(path.join(backupDir, 'frameboard.db'));
+  const { images, nativeThreads: threads, retainedCount } = inspectBackupDatabase(path.join(backupDir, 'frameboard.db'));
+  if (retainedCount) fail('Retained storage export/restore is not available in this backup format.');
   for (const image of images) {
     const entry = manifest.files.find((item) => item.path === `images/${image.id}`);
     if (!entry) fail(`Missing image: ${image.id}`);

@@ -13,6 +13,8 @@ import { parseDocument, playbookSettings, describeSettings } from './public/play
 import { chatMigration, recoveryMigration, createChatStore } from './store-chat.js';
 import { protectionMigration, createProtectionStore } from './store-protection.js';
 import { imagesMigration, createImageStore } from './store-images.js';
+import { retainedMigration, createRetainedMetadata } from './store-retained.js';
+import { createRetainedStorage } from './retained-storage.js';
 
 export const imageIdPattern = /^[a-f0-9-]{36}\.(png|jpg|webp|gif|avif)$/;
 
@@ -43,7 +45,9 @@ export function inspectBackupDatabase(filename) {
     for (const row of db.prepare('SELECT frozen FROM chat_submissions').all()) include(JSON.parse(row.frozen).context.images);
     const nativeThreads = [...new Set(db.prepare("SELECT binding FROM chat_conversations WHERE provider = 'codex' AND binding IS NOT NULL").all()
       .map((row) => JSON.parse(row.binding).threadId).filter((id) => /^[a-f0-9-]{36}$/.test(id)))];
-    return { schemaVersion: db.prepare('SELECT value FROM meta WHERE key = ?').get('schema_version')?.value, images: [...images.values()], nativeThreads };
+    return { schemaVersion: db.prepare('SELECT value FROM meta WHERE key = ?').get('schema_version')?.value, images: [...images.values()], nativeThreads,
+      retainedCount: db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'retained_versions'").get()
+        ? db.prepare("SELECT count(*) AS count FROM retained_versions WHERE state = 'committed'").get().count : 0 };
   } finally { db.close(); }
 }
 
@@ -179,7 +183,7 @@ const migrations = [`
     reason TEXT NOT NULL DEFAULT '', submission_id TEXT, result TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
   CREATE INDEX lane_runs_by_card ON lane_runs(card_id, created_at);
   CREATE INDEX lane_runs_by_status ON lane_runs(workspace_id, status);
-`];
+`, retainedMigration];
 
 const now = () => new Date().toISOString();
 const fail = (status, message) => { throw Object.assign(new Error(message), { status }); };
@@ -284,7 +288,7 @@ function unmetCriteria(stage, card) {
     : !card.imageRoles[item.imageRole]).map((item) => item.label || (item.field ? `${item.field} is filled` : `${item.imageRole} image is set`));
 }
 
-export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = () => {}, clock = now, playbooks = createPlaybooks({ dataDir }) }) {
+export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = () => {}, clock = now, retainedCheckpoint, playbooks = createPlaybooks({ dataDir }) }) {
   const now = clock;
   const file = path.join(dataDir, 'frameboard.db');
   const legacyFile = path.join(dataDir, 'board.json');
@@ -1057,5 +1061,8 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
       return all('SELECT * FROM activity_log WHERE workspace_id = ? AND id > ? ORDER BY id LIMIT ?', ctx.workspaceId, since, limit).map(changeFrom);
     },
   };
+  try {
+    api.retained = await createRetainedStorage({ dataDir, checkpoint: retainedCheckpoint, metadata: createRetainedMetadata({ all, get, run, transaction, now }) });
+  } catch (error) { db.close(); throw error; }
   return api;
 }

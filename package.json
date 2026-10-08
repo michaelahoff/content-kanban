@@ -11,7 +11,9 @@
     "test:browser": "node --disable-warning=ExperimentalWarning scripts/browser-test.mjs",
     "test:native": "FRAMEBOARD_NATIVE_TEST=1 node --disable-warning=ExperimentalWarning --test test/codex-native.test.js",
     "backup": "node --disable-warning=ExperimentalWarning scripts/backup.mjs create",
-    "restore": "node --disable-warning=ExperimentalWarning scripts/backup.mjs restore"
+    "restore": "node --disable-warning=ExperimentalWarning scripts/backup.mjs restore",
+    "test:retained-large": "node --disable-warning=ExperimentalWarning scripts/retained-storage-large.mjs",
+    "test:retained-disk-full": "unshare --user --map-root-user --mount node --disable-warning=ExperimentalWarning scripts/retained-storage-disk-full.mjs"
   },
   "engines": { "node": ">=22.13" }
 }

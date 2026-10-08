@@ -52,6 +52,8 @@ test('upgrading an already-versioned database repairs legacy move foreign keys a
     INSERT INTO card_moves SELECT * FROM current_card_moves;
     DROP TABLE current_card_moves;
     CREATE INDEX card_moves_by_card ON card_moves(card_id, id);
+    DROP TABLE retained_versions;
+    DROP TABLE retained_objects;
     DROP TABLE lane_runs;
     UPDATE meta SET value = '11' WHERE key = 'schema_version';`);
   db.close();
