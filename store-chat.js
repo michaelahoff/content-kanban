@@ -252,6 +252,14 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
     },
     attempt,
     activeAttempt,
+    bindingConfiguration(conversationId) {
+      const conversation = get('SELECT binding FROM chat_conversations WHERE id = ?', conversationId);
+      const binding = conversation?.binding && JSON.parse(conversation.binding);
+      if (!binding) return null;
+      const row = get(`SELECT json_extract(frozen, '$.configuration') AS configuration FROM chat_submissions
+        WHERE conversation_id = ? AND json_extract(frozen, '$.configuration.id') = ? ORDER BY sequence DESC LIMIT 1`, conversationId, binding.configurationId);
+      return row ? JSON.parse(row.configuration) : null;
+    },
     turnIds(ctx, cardId) {
       retainedCard(ctx, cardId);
       return all('SELECT turn_id FROM chat_attempts WHERE card_id = ? AND turn_id IS NOT NULL', cardId).map((row) => row.turn_id);

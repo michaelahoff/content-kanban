@@ -155,6 +155,18 @@ const migrations = [`
     workspace_id TEXT NOT NULL REFERENCES workspaces(id), provider TEXT NOT NULL,
     discovery TEXT NOT NULL, updated_at TEXT NOT NULL,
     PRIMARY KEY (workspace_id, provider));
+`, `
+  -- Some databases already reached v5 before move foreign keys were repaired.
+  -- Their schema version alone cannot distinguish them from correct databases.
+  ALTER TABLE card_moves RENAME TO legacy_card_moves;
+  CREATE TABLE card_moves (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, card_id TEXT NOT NULL REFERENCES cards(id),
+    event_id INTEGER REFERENCES activity_log(card_event_id), before_card TEXT NOT NULL, after_card TEXT NOT NULL,
+    placement TEXT NOT NULL, created_at TEXT NOT NULL, undone_at TEXT,
+    undo_event_id INTEGER REFERENCES activity_log(card_event_id));
+  INSERT INTO card_moves SELECT * FROM legacy_card_moves;
+  DROP TABLE legacy_card_moves;
+  CREATE INDEX card_moves_by_card ON card_moves(card_id, id);
 `];
 
 const now = () => new Date().toISOString();
