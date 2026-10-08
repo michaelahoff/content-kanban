@@ -11,4 +11,4 @@ createServer(async (request, response) => {
   }
   response.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
   response.end(await readFile(page));
-}).listen(port, '127.0.0.1', () => console.log(`Asset library prototype: http://localhost:${port}/asset-library-prototype.html?variant=C`));
+}).listen(port, '127.0.0.1', () => console.log(`Asset library prototype: http://localhost:${port}/asset-library-prototype.html?variant=A`));

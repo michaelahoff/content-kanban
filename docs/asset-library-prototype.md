@@ -3,13 +3,15 @@
 Question: where should the project library live, and how should creators organize,
 edit and select its files while composing a card prompt? This is the primary-source
 prototype for issue #38, using the settled #35 lifecycle and #37 selection contracts.
-It is not production implementation. Through live review, the user chose C — the
-persistent library dock — as the preferred placement. C is now the default; A and B
-remain available for comparison. This response settles placement, not every detail
-of selection, editing, version inspection or delivery-error presentation.
+It is not production implementation. The user's latest live review selects **A — the
+project Library tab**, with superfluous text removed. This supersedes the earlier C
+placement preference. A is now the default; B and C remain comparison variants.
+The selected presentation uses filenames and thumbnails/icons, compact folder/file
+chips, and an expandable “What will be sent” reference list for paths, saved versions,
+recursive contents and delivery methods.
 
 Run `npm run prototype:assets`, then open
-`http://localhost:3038/asset-library-prototype.html?variant=C`.
+`http://localhost:3038/asset-library-prototype.html?variant=A`.
 Alternatively, download `public/asset-library-prototype.html` and open it directly;
 it is completely self-contained. All mutations and submissions stay in memory.
 
@@ -44,6 +46,18 @@ bytes. Provider capabilities and the 120 KB text limit are demo fixtures, not na
 adapter verification. Send freezes a snapshot without running an agent; failure and
 retry controls simulate delivery-attempt history.
 
-This work stays on `prototype/issue-38-asset-library`, outside main. Issue #38 remains
-open until live user feedback settles the design. Any eventual implementation must
+This work stays on `prototype/issue-38-asset-library`, outside main. The selected
+direction is recorded in issue #38 from the live user review. Any eventual implementation must
 be written as production code, not promoted from this disposable file.
+
+The copy pass removes repeated project/folder explanations, file-type captions,
+selection instructions and routine implementation notes. Fixture buttons and full
+state inspection live under collapsed Prototype tools. The single prototype/reset
+label remains; version labels, draft status, delivery errors and the consequences of
+replacement/removal/fresh context remain where a decision needs them.
+
+Post-copy browser checks confirmed A as the default, six unique reference inputs for
+the folder/overlap example with both logo origins retained, path/version/delivery
+labels in the preview, and separate-asset creation as the collision default. The
+simplified page rendered at 728 px and 360 px without console exceptions. Issue #38
+is resolved with A and concise interface copy as the selected design direction.
