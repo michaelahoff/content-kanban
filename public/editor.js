@@ -80,6 +80,7 @@ export function originalVideoMarkup(card) {
 export function openCard(targetId) {
   const found = locateCard(targetId);
   if (!found) return;
+  cancelClose();
   unmountChat();
   if (state.cardId && state.cardId !== targetId) endCardEditing(state.cardId);
   beginCardEditing(targetId);
@@ -87,7 +88,7 @@ export function openCard(targetId) {
   lastCardTrigger = document.activeElement;
   const { card, lane, project: p } = found;
   const template = templates[card.template];
-  cardDialog.innerHTML = `<div class="editor-header"><div class="editor-breadcrumb">${icon('board')}<span>${escape(p.name)}</span>${icon('chevron')}<label class="sr-only" for="card-lane">Move card to lane</label><select id="card-lane">${p.lanes.map((item) => `<option value="${item.id}" ${item.id === lane.id ? 'selected' : ''}>${escape(item.name)}</option>`).join('')}</select></div><div class="editor-header-right">${button('undo-move', 'Undo last move', 'undo', 'button small secondary', 'data-undo-move="card" disabled')}<span class="save-status" data-save-status></span>${iconButton('close-card', 'Close card editor', 'close')}</div></div>
+  cardDialog.innerHTML = `<div class="editor-header"><div class="editor-breadcrumb">${icon('board')}<label class="sr-only" for="card-lane">Move card to lane</label><select id="card-lane">${p.lanes.map((item) => `<option value="${item.id}" ${item.id === lane.id ? 'selected' : ''}>${escape(item.name)}</option>`).join('')}</select></div><div class="editor-header-right">${iconButton('undo-move', 'Undo last move', 'undo', 'data-undo-move="card" disabled')}<span class="save-status" data-save-status></span>${iconButton('close-card', 'Close card editor', 'close')}</div></div>
     <div id="editor-save-error" class="error-banner" role="alert" hidden></div>
     ${template.fields.filter((field) => field.placement === 'header').map((field) => editorField(field, card)).join('')}
     <div class="editor-title"><label class="sr-only" for="card-title">${escape(template.title.label)}</label><input id="card-title" placeholder="Untitled card" maxlength="${template.title.max}" value="${escape(card.title)}" autocomplete="off"></div>
@@ -99,6 +100,7 @@ export function openCard(targetId) {
   renderImages();
   renderStatus();
   mountChat(targetId);
+  document.body.classList.add('card-panel-open');
   if (!card.title) $(card.fields.originalVideoUrl ? '#card-title' : '#card-original-video-url').focus();
 }
 export function renderImages() {
@@ -108,18 +110,54 @@ export function renderImages() {
   $('#image-count').textContent = card.images.length ? `${card.images.length} ${card.images.length === 1 ? 'image' : 'images'}` : '';
   const { cover: coverImageId, original: originalImageId, inspiration: inspirationImageId } = card.imageRoles;
   const cover = card.images.find((image) => image.id === coverImageId);
-  $('#card-images').innerHTML = `${cover ? `<div class="display-image"><button data-action="preview-image" data-id="${cover.id}" aria-label="Preview display image"><img src="${imageURL(cover.id)}" alt="${escape(cover.name)}"></button><span class="display-badge">${icon('star')} Display image</span></div>` : `<div class="display-placeholder">${icon('image')}<span>No images yet</span></div>`}
+  $('#card-images').innerHTML = `${cover ? `<div class="display-image"><button data-action="preview-image" data-id="${cover.id}" aria-label="Preview display image"><img src="${imageURL(cover.id)}" alt="${escape(cover.name)}"></button><span class="display-badge">${icon('star')} Display image</span></div>` : ''}
     ${card.images.length ? `<div class="image-gallery">${card.images.map((item) => `<div class="image-tile ${item.id === coverImageId ? 'is-display' : ''}"><button class="thumbnail" data-action="preview-image" data-id="${item.id}" aria-label="Preview ${escape(item.name)}"><img src="${imageURL(item.id)}" alt="${escape(item.name)}" loading="lazy"></button>${iconButton('remove-image', `Remove ${item.name}`, 'close', `data-id="${item.id}"`)}<div class="image-flags"><button class="set-display" data-action="set-display" data-id="${item.id}" aria-pressed="${item.id === coverImageId}">${icon(item.id === coverImageId ? 'check' : 'star')}${item.id === coverImageId ? 'Display image' : 'Set as display'}</button><button class="set-image-role ${item.id === originalImageId ? 'selected' : ''}" data-action="set-image-role" data-role="original" data-id="${item.id}" aria-pressed="${item.id === originalImageId}">${item.id === originalImageId ? '✓ ' : ''}Original</button><button class="set-image-role ${item.id === inspirationImageId ? 'selected' : ''}" data-action="set-image-role" data-role="inspiration" data-id="${item.id}" aria-pressed="${item.id === inspirationImageId}">${item.id === inspirationImageId ? '✓ ' : ''}Inspiration</button></div></div>`).join('')}</div>` : ''}`;
 }
+// The panel swings back toward the board edge before the dialog closes.
+// Opening a card mid-animation cancels it, so the close never lands.
+const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)');
+let closing = null;
+export const cardPanelOpen = () => cardDialog.open && !closing;
 export function closeCard() {
+  if (!cardPanelOpen()) return;
+  document.body.classList.remove('card-panel-open');
+  if (reduceMotion.matches) return finishClose();
+  cardDialog.inert = true;
+  closing = cardDialog.animate([{}, { opacity: 0, transform: 'perspective(1800px) translateX(56px) rotateY(-9deg)' }], { duration: 180, easing: 'cubic-bezier(.4, 0, 1, 1)' });
+  closing.finished.then(finishClose, () => { /* Cancelled by reopening. */ });
+}
+function finishClose() {
+  closing = null;
+  cardDialog.inert = false;
   unmountChat();
   if (state.cardId) endCardEditing(state.cardId);
   cardDialog.close();
 }
-cardDialog.addEventListener('cancel', () => { if (state.cardId) endCardEditing(state.cardId); });
+function cancelClose() {
+  closing?.cancel();
+  closing = null;
+  cardDialog.inert = false;
+}
+// The panel is non-modal so the board stays visible; clicking anywhere off it
+// closes it, except opening another card (which swaps the panel's contents)
+// and the chat activity menu (which can jump to a card).
+document.addEventListener('pointerdown', (event) => {
+  if (!cardPanelOpen() || cardDialog.contains(event.target)) return;
+  if (event.target.closest('dialog, #toast, .workspace-chat-activity, [data-action="open-card"]')) return;
+  closeCard();
+});
+// Listen on window so the chat's own Escape handling (clearing a highlighted
+// reply) runs first, and leave Escape to any modal dialog stacked above.
+window.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape' || event.defaultPrevented || event.isComposing || !cardPanelOpen()) return;
+  if (document.querySelector('dialog:modal')) return;
+  event.preventDefault();
+  closeCard();
+});
 cardDialog.addEventListener('close', () => {
   // The close event arrives as a separate task, so ignore it if a card was reopened first.
   if (cardDialog.open) return;
+  document.body.classList.remove('card-panel-open');
   unmountChat();
   if (state.cardId) endCardEditing(state.cardId);
   state.cardId = null;
