@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createApp } from '../server.js';
-import { promptGraph } from '../public/flow-graph.js';
+import { serializeDocument } from '../public/playbook-format.js';
 
 async function waitFor(condition) {
   for (let n = 0; n < 200; n++) {
@@ -37,7 +37,7 @@ async function fixture(t) {
   // Fresh module copies isolate each client's queue, dirty cards, and conflicts.
   await mkdir(path.join(temporary, 'public'));
   await writeFile(path.join(temporary, 'package.json'), '{"type":"module"}');
-  for (const file of ['api.js', 'state.js', 'ui.js', 'card-template.js', 'flow-graph.js']) {
+  for (const file of ['api.js', 'state.js', 'ui.js', 'card-template.js']) {
     await copyFile(new URL(`../public/${file}`, import.meta.url), path.join(temporary, 'public', file));
   }
   globalThis.document = { querySelector: () => null, querySelectorAll: () => [] };
@@ -53,7 +53,13 @@ async function fixture(t) {
     await idle();
     return created;
   };
-  return { client, api, nativeFetch, base, call, idle, card };
+  // Writes a lane playbook on the server, as another tab or editor would.
+  const playbook = async (lane, set) => {
+    const { lanes } = await call('GET', `/api/flows/${lane.flowId}/playbooks`);
+    const existing = lanes.find((document) => document.laneId === lane.id);
+    await call('PUT', `/api/flows/${lane.flowId}/playbooks`, { path: existing?.path ?? `lanes/${lane.id}.md`, text: serializeDocument({ lane: lane.id, set }, ''), baseHash: existing?.hash ?? null });
+  };
+  return { client, api, nativeFetch, base, call, idle, card, playbook };
 }
 
 test('moving a stale card does not authorize overwriting another tab’s content', async (t) => {
@@ -193,7 +199,7 @@ test('entry prompts flush earlier drafts and acknowledge only their own content 
   const f = await fixture(t);
   const lane = f.client.project().lanes[1];
   // Simulates a rule configured elsewhere, so the local lane is out of date.
-  await f.call('PATCH', `/api/stages/${lane.id}`, { entryPrompt: 'Lane instructions' });
+  await f.playbook(lane, { prompt: 'Lane instructions' });
   const card = await f.card();
   card.fields.intro = 'Unsaved intro';
   card.fields.prompt = 'Earlier prompt';
@@ -222,7 +228,7 @@ test('entry prompts flush earlier drafts and acknowledge only their own content 
 test('an entry prompt acknowledges only its own fields while unrelated edits can save', async (t) => {
   const f = await fixture(t);
   const lane = f.client.project().lanes[1];
-  await f.call('PATCH', `/api/stages/${lane.id}`, { entryPrompt: 'Lane prompt' });
+  await f.playbook(lane, { prompt: 'Lane prompt' });
   const card = await f.card();
   await f.call('PATCH', `/api/cards/${card.id}`, { revision: 1, fields: { intro: 'Other tab intro' } });
   f.client.moveCard(card.id, lane.id);
@@ -245,7 +251,7 @@ test('an entry prompt acknowledges only its own fields while unrelated edits can
 test('typing during a lane transition preserves the newer draft and saves against the action revision', async (t) => {
   const f = await fixture(t);
   const lane = f.client.project().lanes[1];
-  await f.call('PATCH', `/api/stages/${lane.id}`, { entryPrompt: 'Automatic prompt' });
+  await f.playbook(lane, { prompt: 'Automatic prompt' });
   const card = await f.card();
   let release;
   const held = new Promise((resolve) => { release = resolve; });
@@ -270,12 +276,10 @@ test('typing during a lane transition preserves the newer draft and saves agains
   assert.equal(f.client.hasUnsavedWork(), false);
 });
 
-test('a multi-field Set node refreshes title and text without overwriting typing during the move', async (t) => {
+test('a multi-field playbook set refreshes title and text without overwriting typing during the move', async (t) => {
   const f = await fixture(t);
   const lane = f.client.project().lanes[1];
-  const graph = promptGraph('Flow prompt');
-  graph.nodes[1].config = { assignments: [{ field: 'prompt', value: 'Flow prompt' }, { field: 'title', value: 'Flow title' }, { field: 'intro', value: 'Flow intro' }] };
-  await f.client.saveLaneGraph(lane, graph);
+  await f.playbook(lane, { prompt: 'Flow prompt', title: 'Flow title', intro: 'Flow intro' });
   const created = await f.card(lane);
   assert.equal(created.title, 'Flow title');
   assert.equal(created.fields.intro, 'Flow intro');
@@ -305,30 +309,33 @@ test('a multi-field Set node refreshes title and text without overwriting typing
   assert.equal(f.client.hasUnsavedWork(), false);
 });
 
-test('failed graph saves keep the saved configuration and can retry without blocking other writes', async (t) => {
+test('failed playbook saves keep the saved summary and can retry without blocking other writes', async (t) => {
   const f = await fixture(t);
-  const lane = f.client.project().lanes[0], previous = structuredClone(lane.entryGraph);
+  const p = f.client.project(); const lane = p.lanes[0];
   let failed = false;
   globalThis.fetch = (url, options) => {
-    if (options?.method === 'PATCH' && url.includes('/stages/') && !failed) {
+    if (options?.method === 'PUT' && url.includes('/playbooks') && !failed) {
       failed = true;
       return Promise.resolve(new Response(JSON.stringify({ error: 'Try again' }), { status: 503 }));
     }
     return f.nativeFetch(`${f.base}${url}`, options);
   };
-  const graph = promptGraph('Retry prompt');
-  await assert.rejects(f.client.saveLaneGraph(lane, graph), /Try again/);
-  assert.deepEqual(lane.entryGraph, previous);
+  const text = serializeDocument({ lane: lane.id, set: { prompt: 'Retry prompt' } }, '');
+  await assert.rejects(f.client.savePlaybook(p, 'lanes/ideas.md', text, null), /Try again/);
+  assert.equal(lane.playbook, null);
   assert.equal(f.client.hasUnsavedWork(), false);
-  await f.client.saveLaneGraph(lane, graph);
-  assert.deepEqual(lane.entryGraph, graph);
+  const saved = await f.client.savePlaybook(p, 'lanes/ideas.md', text, null);
+  assert.equal(saved.path, 'lanes/ideas.md');
+  assert.equal(lane.playbook.path, 'lanes/ideas.md');
+  assert.match(lane.playbook.summary, /sets Prompt/);
   assert.equal((await f.card(lane)).fields.prompt, 'Retry prompt');
+  await assert.rejects(f.client.savePlaybook(p, 'lanes/ideas.md', text, null), /changed on disk/);
 });
 
 test('undo saves earlier drafts, restores placement and fields, and keeps typing during the request', async (t) => {
   const f = await fixture(t);
   const [source, destination] = f.client.project().lanes;
-  await f.call('PATCH', `/api/stages/${destination.id}`, { entryPrompt: 'Lane prompt' });
+  await f.playbook(destination, { prompt: 'Lane prompt' });
   const card = await f.card();
   const neighbour = await f.card();
   card.fields.prompt = 'Before prompt';
@@ -372,7 +379,7 @@ test('undo saves earlier drafts, restores placement and fields, and keeps typing
 test('undo refreshes changed fields and a failed undo does not block other card saves', async (t) => {
   const f = await fixture(t);
   const [source, destination] = f.client.project().lanes;
-  await f.call('PATCH', `/api/stages/${destination.id}`, { entryPrompt: 'Lane prompt' });
+  await f.playbook(destination, { prompt: 'Lane prompt' });
   const card = await f.card();
   const other = await f.card();
   f.client.moveCard(card.id, destination.id);

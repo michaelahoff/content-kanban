@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -43,6 +43,18 @@ test('Claude transport streams exact text/image input, resumes its native histor
   await reopened.interrupt({ threadId: resumed.threadId, turnId: second });
   await waitFor(() => after.find((event) => event.type === 'turn-completed' && event.status === 'interrupted'));
 });
+test('a reply streamed after a thinking block completes as one text item, live and from history', async (t) => {
+  const { adapter, directory } = await fixture(t);
+  const opened = await adapter.openThread({ cwd: directory, model: 'sonnet', threadConfig: { developerInstructions: '' } });
+  const events = []; adapter.subscribe(opened.threadId, { onEvent: (event) => events.push(event) });
+  await adapter.startTurn({ threadId: opened.threadId, model: 'sonnet', clientUserMessageId: randomUUID(), input: [{ type: 'text', text: 'think' }] });
+  await waitFor(() => events.find((event) => event.type === 'turn-completed'));
+  const streamed = events.filter((event) => event.type === 'delta').map((event) => event.itemId);
+  const completed = events.filter((event) => event.type === 'item-completed').map((event) => event.item.id);
+  assert.deepEqual([...new Set(streamed)], completed);
+  const history = (await adapter.listTurns({ threadId: opened.threadId })).data[0].items.filter((item) => item.type === 'agentMessage');
+  assert.deepEqual(history.map((item) => item.id), completed);
+});
 test('Claude rejects missing installations and unavailable models before input delivery', async (t) => {
   const missing = createClaudeAdapter({ command: '/nonexistent/frameboard-claude', timeoutMs: 1000 });
   await assert.rejects(missing.discover(), /not installed/); await missing.close();
@@ -72,4 +84,33 @@ test('native Claude transport completes card submissions and keeps follow-up con
   await waitFor(async () => (await f.chat(card.id)).submissions[1].status === 'completed');
   snapshot = await f.chat(card.id); assert.deepEqual(snapshot.conversations[0].binding, binding);
   assert.equal(snapshot.submissions.length, 2); assert.equal(snapshot.attempts.length, 2);
+});
+
+test('a Claude lane run reports through its result block without native tools', async (t) => {
+  const { options } = await fixture(t);
+  const { fixture: appFixture } = await import('./support/chat-fixture.js');
+  const { setPlaybook } = await import('./support/playbooks.js');
+  const f = await appFixture(t, { claudeAdapter: createClaudeAdapter(options) });
+  const settings = await f.ok('GET', '/api/providers/claude');
+  await f.ok('PUT', '/api/providers/claude', { revision: settings.revision, selection: { ...settings.selection, enabled: true } });
+  const workspace = await f.ok('GET', '/api/workspace'); const stages = workspace.flows[0].stages;
+  await setPlaybook(f.ok, workspace.projects[0].flowId, stages[1], { provider: 'claude', may_edit: ['intro'] }, 'Write an intro.');
+  const images = ['Original', 'Portrait', 'Studio', 'Inspiration'].map((name, index) => ({ id: `0000000${index + 1}-0000-4000-8000-000000000000.png`, name: `${name}.png` }));
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScLbtAAAAABJRU5ErkJggg==', 'base64');
+  for (const image of images) await writeFile(path.join(f.dataDir, 'images', image.id), png);
+  const card = await f.card({ images, imageRoles: { original: images[0].id, inspiration: images[3].id, cover: images[0].id } });
+  await f.ok('POST', `/api/cards/${card.id}/transitions`, { action: 'move', toStageId: stages[1].id });
+  const run = await waitFor(async () => (await f.ok('GET', `/api/cards/${card.id}/lane-runs`)).runs.find((entry) => entry.status === 'completed'));
+  assert.deepEqual(run.result.applied, ['intro']);
+  assert.equal((await f.ok('GET', `/api/cards/${card.id}`)).card.fields.intro, 'Fixture intro');
+  const chat = await f.chat(card.id);
+  assert.equal(chat.submissions[0].model, 'sonnet', 'The provider default model is used');
+  assert.equal(chat.submissions[0].provider, 'claude');
+  const binding = chat.conversations[0].binding;
+  const work = path.join(f.dataDir, 'workspaces', card.id);
+  const history = await readFile(path.join(options.env.CLAUDE_CONFIG_DIR, 'projects', work.replace(/[^a-zA-Z0-9]/g, '-'), `${binding.threadId}.jsonl`), 'utf8');
+  const sent = history.trim().split('\n').map((line) => JSON.parse(line)).find((entry) => entry.type === 'user').message.content;
+  assert.deepEqual(sent.map((entry) => entry.type), ['text', 'image', 'image', 'image', 'image']);
+  for (const image of sent.filter((entry) => entry.type === 'image')) assert.deepEqual(Buffer.from(image.source.data, 'base64'), png);
+  assert.match((await f.ok('GET', `/api/cards/${card.id}/notes`)).text, /Fixture notes/);
 });

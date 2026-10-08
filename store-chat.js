@@ -114,6 +114,13 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
       ['completed', 'failed', 'interrupted', 'cancelled'].includes(value) ? now() : null, id);
     const row = get('SELECT card_id FROM chat_submissions WHERE id = ?', id);
     activity(ctx, row.card_id, type, { submissionId: id, reason });
+    // A lane run ends with its submission. A completed reply's result block is
+    // applied (and the run completed) before this; reaching here completed means
+    // it was recovered without being applied.
+    if (['completed', 'failed', 'interrupted', 'cancelled'].includes(value)) {
+      const laneReason = value === 'completed' ? 'The reply was recovered after Frameboard stopped, so its result was not applied. Run the playbook again.' : reason || `The lane run's reply was ${value}.`;
+      run("UPDATE lane_runs SET status = ?, reason = ?, updated_at = ? WHERE submission_id = ? AND status = 'queued'", value === 'cancelled' ? 'cancelled' : 'failed', laneReason, now(), id);
+    }
   }
   function settleAttempt(ctx, a, result, reason, cause = null) {
     const stopped = a.status === 'interrupt-requested' || ['user', 'cancelled'].includes(a.cause);
@@ -177,6 +184,17 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
         authority: JSON.parse(row.composer).authority, context: selectedContext(card, JSON.parse(row.composer).selections, versions,
           all("SELECT image_id AS id, name, id AS outputId FROM chat_outputs WHERE card_id = ? AND import_status = 'imported'", cardId)) };
     },
+    // Saved card values for a lane run's selections, plus every field version
+    // so a result can edit fields the playbook did not send.
+    laneContext(ctx, cardId, selections) {
+      const card = requireCard(ctx, cardId);
+      ensure(ctx, cardId);
+      const versions = Object.fromEntries(all('SELECT field, version FROM card_field_versions WHERE card_id = ?', cardId).map((row) => [row.field, row.version]));
+      return { cardRevision: card.revision, conversationId: current(cardId).id, versions, card,
+        // A lane can need portraits, backgrounds or other gallery photos that
+        // have no role. Text selections must never hide those inputs.
+        context: selectedContext(card, { fields: selections.fields, roles: ['original', 'inspiration', 'cover'], images: card.images.map((image) => image.id) }, versions, []) };
+    },
     findSubmission(ctx, cardId, id) {
       retainedCard(ctx, cardId);
       const row = get('SELECT * FROM chat_submissions WHERE id = ? AND card_id = ?', id, cardId);
@@ -206,6 +224,49 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
         activity(ctx, cardId, 'submission_queued', { submissionId: input.id, conversationId: conversation.id, model: frozen.model });
         return this.findSubmission(ctx, cardId, input.id);
       });
+    },
+    // A lane run's submission. The playbook supplies prompt, selections and
+    // authority, so the composer and its draft are left alone.
+    queueLane(ctx, cardId, input, captured, configuration) {
+      check(object(input) && validId(input.id), 'A lane run submission ID is required.');
+      const existing = this.findSubmission(ctx, cardId, input.id);
+      if (existing) return existing;
+      const card = requireCard(ctx, cardId);
+      ensure(ctx, cardId);
+      if (captured.cardRevision !== card.revision || captured.conversationId !== current(cardId).id) fail(409, 'The card or its conversation changed while preparing the lane run.');
+      check(captured.prompt.trim() && captured.model, 'A lane run needs instructions and a model.');
+      return transaction(() => {
+        const conversation = current(cardId);
+        if (conversation.provider !== captured.provider) {
+          if (conversation.binding || get('SELECT id FROM chat_submissions WHERE conversation_id = ? LIMIT 1', conversation.id)) fail(409, 'Start fresh context before switching providers.');
+          run('UPDATE chat_conversations SET provider = ? WHERE id = ?', captured.provider, conversation.id);
+        }
+        // The run and its submission link in one commit; a run cancelled while
+        // this was being prepared gets no submission.
+        const laneRun = get('SELECT status FROM lane_runs WHERE id = ?', captured.lane.runId);
+        if (laneRun?.status !== 'pending') throw Object.assign(new Error('This lane run was cancelled while it was being prepared.'), { status: 409, code: 'lane-run-closed' });
+        const frozen = { prompt: captured.prompt, context: captured.context, provider: captured.provider, model: captured.model, configuration, authority: captured.authority, lane: captured.lane };
+        run('INSERT INTO chat_submissions (id, card_id, conversation_id, frozen, status, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+          input.id, cardId, conversation.id, JSON.stringify(frozen), 'queued', now());
+        run("UPDATE lane_runs SET status = 'queued', reason = '', submission_id = ?, updated_at = ? WHERE id = ?", input.id, now(), captured.lane.runId);
+        activity(ctx, cardId, 'submission_queued', { submissionId: input.id, conversationId: conversation.id, model: frozen.model, laneRunId: captured.lane.runId });
+        return this.findSubmission(ctx, cardId, input.id);
+      });
+    },
+    // Whether a lane run can start fresh context now: nothing may be running,
+    // queued or awaiting reconciliation in the current conversation.
+    laneConversation(ctx, cardId) {
+      ensure(ctx, cardId);
+      const conversation = current(cardId);
+      const used = Boolean(conversation.binding || get('SELECT id FROM chat_submissions WHERE conversation_id = ? LIMIT 1', conversation.id));
+      const busy = Boolean(activeAttempt(cardId) || get("SELECT id FROM chat_submissions WHERE conversation_id = ? AND status IN ('queued', 'waiting', 'held', 'dispatching', 'running', 'interrupt-requested', 'uncertain') LIMIT 1", conversation.id));
+      return { id: conversation.id, provider: conversation.provider, state: conversation.state, used, busy, composer: JSON.parse(get('SELECT composer FROM card_chats WHERE card_id = ?', cardId).composer) };
+    },
+    cancelQueued(ctx, submissionId, reason) {
+      const row = get('SELECT status FROM chat_submissions WHERE id = ?', submissionId);
+      if (!row || !['queued', 'waiting', 'held'].includes(row.status)) return false;
+      transaction(() => status(ctx, submissionId, 'cancelled', reason));
+      return true;
     },
     ready(ctx) {
       const at = now();
@@ -395,7 +456,10 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
       const row = requireSubmission(ctx, cardId, id);
       if (!['failed', 'interrupted'].includes(row.status) || row.conversation_id !== current(cardId).id
         || current(cardId).state !== 'active' || activeAttempt(cardId)) fail(409, 'Retry requires a terminal attempt in the current, available conversation. Reconcile uncertainty before retrying.');
-      transaction(() => status(ctx, id, 'queued', 'Explicitly retried by the user with the original frozen inputs.'));
+      transaction(() => {
+        status(ctx, id, 'queued', 'Explicitly retried by the user with the original frozen inputs.');
+        run("UPDATE lane_runs SET status = 'queued', reason = '', result = NULL, updated_at = ? WHERE submission_id = ?", now(), id);
+      });
       return submissionFrom(get('SELECT * FROM chat_submissions WHERE id = ?', id));
     },
     cancelCard(ctx, cardId, reason) {

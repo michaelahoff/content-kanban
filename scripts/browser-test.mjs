@@ -438,67 +438,40 @@ try {
   const addedLane = (await state()).projects[0].lanes.at(-1).id;
   assert.equal((await state()).projects[0].lanes.at(-1).color, 'teal');
   assert.ok(await evaluate(`document.querySelector('[data-lane="${addedLane}"] .lane-dot').classList.contains('teal')`));
-  await click(`[data-action="edit-flow"][data-id="${addedLane}"]`);
-  assert.equal(await evaluate(`document.querySelectorAll('.flow-node').length`), 1);
-  await click('[data-flow-action="add"]');
-  await fill('#flow-value', entryPrompt);
-  const promptNodeId = await evaluate(`document.querySelector('.flow-node.selected').dataset.node`);
-  await click('[data-flow-action="add-field"]');
-  await select('#flow-field-1', 'originalVideoTitle');
-  await fill('#flow-value-1', 'An inspiration set in the same node');
-  await click('[data-flow-action="add-field"]');
-  await select('#flow-field-2', 'script');
-  await fill('#flow-value-2', 'A script set in the same node');
-  await click('[data-flow-action="add-field"]');
-  await fill('#flow-value-3', 'Remove this row');
-  await click('[data-flow-action="remove-field"][data-assignment-index="3"]');
-  assert.equal(await evaluate(`document.querySelectorAll('.flow-assignment').length`), 3);
-  assert.equal(await evaluate(`document.querySelector('#flow-value-1').value`), 'An inspiration set in the same node');
-  assert.equal(await evaluate(`document.querySelector('#flow-value-2').value`), 'A script set in the same node');
-  assert.equal(await evaluate(`document.querySelector('.flow-node.selected [data-node-label]').textContent`), '3 fields');
-  await snapshot('multi-field-set-node');
-  await click('[data-flow-action="add"]');
-  await select('#flow-field', 'intro');
-  await fill('#flow-value', 'An introduction from the lane');
-  const introNodeId = await evaluate(`document.querySelector('.flow-node.selected').dataset.node`);
-  await click('[data-flow-action="add"]');
-  await select('#flow-field', 'title');
-  await fill('#flow-value', 'Ready for review');
-  const titleNodeId = await evaluate(`document.querySelector('.flow-node.selected').dataset.node`);
-  assert.equal(await evaluate(`document.querySelectorAll('.flow-wire').length`), 3);
-  // Removing and reconnecting a wire changes the executable graph.
-  await evaluate(`document.querySelector('.flow-wire:last-child').dispatchEvent(new MouseEvent('click', { bubbles: true }))`);
-  await click('[data-flow-action="save"]');
-  assert.equal(await evaluate(`document.querySelector('#flow-dialog').open`), true);
-  assert.ok((await evaluate(`document.querySelector('#flow-error').textContent`)).includes('Connect every'));
-  await click(`[data-flow-action="output"][data-node-id="${introNodeId}"]`);
-  await click(`[data-flow-action="input"][data-node-id="${titleNodeId}"]`);
-  // A reverse edge would create a cycle and must not be accepted.
-  await click(`[data-flow-action="output"][data-node-id="${titleNodeId}"]`);
-  await click(`[data-flow-action="input"][data-node-id="${promptNodeId}"]`);
-  assert.ok((await evaluate(`document.querySelector('#flow-error').textContent`)).includes('loop'));
-  await click(`[data-flow-action="output"][data-node-id="${titleNodeId}"]`);
-  await click('[data-flow-action="arrange"]');
-  // Use real pointer input to drag the title node's header at 70% zoom.
-  for (let i = 0; i < 3; i++) await click('[data-flow-action="zoom-out"]');
-  const nodePoints = await evaluate(`(() => {
-    const handle=document.querySelector('[data-node="${titleNodeId}"] .flow-node-handle');
-    handle.scrollIntoView({block:'nearest',inline:'nearest'});
-    const r=handle.getBoundingClientRect();return {x:r.left+r.width/2,y:r.top+r.height/2};
-  })()`);
-  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: nodePoints.x, y: nodePoints.y });
-  await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: nodePoints.x, y: nodePoints.y, button: 'left', clickCount: 1 });
-  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: nodePoints.x + 14, y: nodePoints.y + 35, button: 'left', buttons: 1 });
-  await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: nodePoints.x + 14, y: nodePoints.y + 35, button: 'left', clickCount: 1 });
-  await snapshot('lane-command-graph');
-  await click('[data-flow-action="save"]');
-  await waitFor(`!document.querySelector('#flow-dialog').open`);
+  // A lane playbook is a Markdown file; its set: values apply on entry.
+  await click(`[data-action="edit-playbook"][data-id="${addedLane}"]`);
+  await waitFor(`document.querySelector('#playbook-dialog').open && document.querySelector('.playbook-empty')`);
+  await click('[data-playbook-action="create-lane"]');
+  await waitFor(`document.querySelector('#playbook-text')?.value.includes('lane: ${addedLane}')`);
+  const playbookText = `---
+lane: ${addedLane}
+run: off
+set:
+  prompt: |-
+    Review this card’s script.
+    Suggest a stronger opening.
+  originalVideoTitle: An inspiration set in the same node
+  script: A script set in the same node
+  intro: An introduction from the lane
+  title: Ready for review
+---
+
+# Published
+
+These values apply when a card enters this lane.
+`;
+  await fill('#playbook-text', playbookText.replace('run: off', 'run: off\nmay_edit: [nope]'));
+  await waitFor(`document.querySelector('.playbook-problems')?.textContent.includes('nope')`);
+  await fill('#playbook-text', playbookText);
+  await waitFor(`!document.querySelector('.playbook-problems') && document.querySelector('.playbook-inspector h3').textContent.includes('sets Prompt')`);
+  assert.equal(await evaluate(`document.querySelector('#playbook-status').textContent`), 'Unsaved changes · Ctrl+S saves');
+  await snapshot('lane-playbook-editor');
+  await click('[data-playbook-action="save"]');
+  await waitFor(`document.querySelector('#playbook-status').textContent.startsWith('Saved')`);
+  await click('[data-playbook-action="close"]');
+  await waitFor(`!document.querySelector('#playbook-dialog').open`);
   await saved();
-  const savedGraph = (await state()).projects[0].lanes.at(-1).entryGraph;
-  assert.deepEqual(savedGraph.nodes.find(node => node.id === promptNodeId).config.assignments.map(assignment => assignment.field), ['prompt', 'originalVideoTitle', 'script']);
-  assert.deepEqual(savedGraph.nodes.filter(node => node.type === 'set').map(node => node.config.assignments[0].field), ['prompt', 'intro', 'title']);
-  const titlePosition = savedGraph.nodes.find(node => node.id === titleNodeId).position;
-  assert.ok(Math.abs(titlePosition.x - 1004) < 1 && Math.abs(titlePosition.y - 150) < 1, 'Dragging at 70% zoom saves the correct canvas coordinates');
+  assert.match((await state()).projects[0].lanes.at(-1).playbook.summary, /sets Prompt, Original video title, Script, Intro, Card title/);
   await click(`[data-action="edit-lane"][data-id="${addedLane}"]`);
   await fill('#name-input', 'Archived');
   await click('input[name="color"][value="purple"]');
@@ -547,7 +520,7 @@ try {
   assert.equal((await state()).projects[0].lanes.find(lane => lane.id === entrySourceLane).cards.find(card => card.id === entryCardId).fields.prompt, 'My prompt after entering');
   await drag(`[data-card="${entryCardId}"] h3`, `[data-lane="${addedLane}"]`, entryCardId);
   await saved();
-  console.log('PASS editor and board undo restore lane command fields, including after reload');
+  console.log('PASS editor and board undo restore lane playbook fields, including after reload');
 
   await click(`[data-action="open-card"][data-id="${entryCardId}"]`);
   await select('#card-lane', entrySourceLane);
@@ -557,33 +530,82 @@ try {
   await saved();
   assert.equal(await openCardPrompt(), entryPrompt, 'Cards created in the lane start with its prompt');
   await click('#card-dialog [data-action="close-card"]');
-  await click(`[data-action="edit-flow"][data-id="${addedLane}"]`);
-  assert.equal(await evaluate(`document.querySelectorAll('.flow-node').length`), 4);
-  assert.equal(await evaluate(`document.querySelector('#flow-value').value`), entryPrompt);
-  assert.equal(await evaluate(`document.querySelectorAll('.flow-assignment').length`), 3);
-  assert.equal(await evaluate(`document.querySelector('#flow-value-2').value`), 'A script set in the same node');
-  // Cancel discards graph edits; deleting a middle node keeps the chain intact.
-  await click('[data-flow-action="add"]');
-  await click('[data-flow-action="close"]');
-  await click(`[data-action="edit-flow"][data-id="${addedLane}"]`);
-  assert.equal(await evaluate(`document.querySelectorAll('.flow-node').length`), 4);
-  await click(`[data-flow-action="select"][data-node-id="${introNodeId}"]`);
-  await click('[data-flow-action="remove-node"]');
-  await click('[data-flow-action="save"]');
-  await waitFor(`!document.querySelector('#flow-dialog').open`);
+  // Closing with a draft asks first; discarding keeps the saved file.
+  await click(`[data-action="edit-playbook"][data-id="${addedLane}"]`);
+  await waitFor(`document.querySelector('#playbook-dialog').open && document.querySelector('#playbook-text')?.value.includes('Ready for review')`);
+  await fill('#playbook-text', 'A draft to discard');
+  await click('[data-playbook-action="close"]');
+  await waitFor(`document.querySelector('#form-dialog').open`);
+  await click('#small-form [type="submit"]');
+  await waitFor(`!document.querySelector('#playbook-dialog').open`);
+  await click(`[data-action="edit-playbook"][data-id="${addedLane}"]`);
+  await waitFor(`document.querySelector('#playbook-dialog').open && document.querySelector('#playbook-text')?.value.includes('Ready for review')`);
+
+  // An agent lane: instructions, a shared skill and may_edit. Entering the
+  // lane sends the map, playbook, skill and notes; the result comes back.
+  await click('[data-playbook-action="new-skill"]');
+  await waitFor(`document.querySelector('#skill-name')`);
+  await fill('#skill-name', 'voice');
+  await click('#small-form [type="submit"]');
+  await waitFor(`document.querySelector('#playbook-heading').textContent === 'Skill · voice'`);
+  await fill('#playbook-text', '# Voice\n\nWarm and direct.');
+  await click('[data-playbook-action="save"]');
+  await waitFor(`document.querySelector('#playbook-status').textContent.startsWith('Saved')`);
+  await click(`[data-playbook-action="select"][data-id="${addedLane}"]`);
+  await fill('#playbook-text', `---\nlane: ${addedLane}\nmodel: test-model\nmay_edit: [intro]\n---\n\nWrite a better intro. Follow skills/voice.md.\n`);
+  await waitFor(`document.querySelector('.playbook-inspector h3').textContent === 'Runs on entry · Card chat provider · may edit Intro'`);
+  await click('[data-playbook-action="save"]');
+  await waitFor(`document.querySelector('#playbook-status').textContent.startsWith('Saved')`);
+  await click('[data-playbook-action="close"]');
+  await waitFor(`!document.querySelector('#playbook-dialog').open`);
+  assert.equal(await evaluate(`document.querySelector('[data-lane="${addedLane}"] .lane-playbook-badge').textContent`), 'Auto');
+  await click(`[data-action="open-card"][data-id="${entryCardId}"]`);
+  await waitFor(`document.querySelector('#card-playbook strong')`);
+  const sendsBefore = codex.sends.length;
+  await select('#card-lane', addedLane);
   await saved();
-  assert.ok((await state()).projects[0].lanes[0].entryGraph.edges.some(edge => edge.from === promptNodeId && edge.to === titleNodeId), 'Deleting a command reconnects its neighbours');
-  await click(`[data-action="edit-flow"][data-id="${addedLane}"]`);
-  while (await evaluate(`document.querySelectorAll('.flow-node').length > 1`)) {
-    await click('.flow-node:not(.flow-trigger) .flow-node-handle');
-    await click('[data-flow-action="remove-node"]');
-  }
-  await click('[data-flow-action="save"]');
-  await waitFor(`!document.querySelector('#flow-dialog').open`);
+  await waitFor(`document.querySelector('#card-playbook strong').textContent === 'Archived playbook'`);
+  for (let attempt = 0; codex.sends.length === sendsBefore && attempt < 100; attempt++) await pause(50);
+  const laneSend = codex.sends.at(-1);
+  assert.ok(laneSend.input[0].text.includes('Warm and direct.'), 'The lane run includes its skill');
+  codex.finish(laneSend, 'completed', 'Here it is.\n\n```frameboard-result\n{"fields": {"intro": "A lane-written intro"}, "notes": "Wrote the intro in the voice guide."}\n```');
+  await waitFor(`document.querySelector('#card-intro').value === 'A lane-written intro'`);
+  await waitFor(`document.querySelector('#lane-notes').value.includes('Wrote the intro in the voice guide.')`);
+  await waitFor(`document.querySelector('.card-playbook-run')?.textContent.includes('Applied Intro')`);
+  await waitFor(`document.querySelector('.chat-lane-run')?.textContent.includes('Archived playbook')`);
+  await snapshot('lane-run-result');
+  // A conflicting notes draft survives switching cards, then can be resolved.
+  await fill('#lane-notes', 'My conflicting hand-off');
+  const storedNotes = await (await fetch(`${base}/api/cards/${entryCardId}/notes`)).json();
+  await fetch(`${base}/api/cards/${entryCardId}/notes`, { method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: 'Notes from another editor', baseHash: storedNotes.hash }) });
+  await waitFor(`!document.querySelector('#lane-notes-conflict').hidden`);
+  const otherNotesCard = (await state()).projects[0].lanes.flatMap((lane) => lane.cards).find((card) => card.id !== entryCardId);
+  await evaluate(`import('/editor.js').then(({ openCard }) => openCard(${JSON.stringify(otherNotesCard.id)}))`);
+  await waitFor(`!document.querySelector('#lane-notes').disabled`);
+  await evaluate(`import('/editor.js').then(({ openCard }) => openCard(${JSON.stringify(entryCardId)}))`);
+  await waitFor(`document.querySelector('#lane-notes').value === 'My conflicting hand-off' && !document.querySelector('#lane-notes-conflict').hidden`);
+  await click('[data-action="notes-keep-mine"]');
+  await waitFor(`document.querySelector('#lane-notes-conflict').hidden && document.querySelector('#lane-notes-state').textContent === ''`);
+  assert.equal((await (await fetch(`${base}/api/cards/${entryCardId}/notes`)).json()).text, 'My conflicting hand-off');
+  console.log('PASS conflicting hand-off notes survive card switches and resolve without losing the draft');
+  // The card chat checks below count native threads and sends from zero.
+  codex.threads.clear(); codex.sends.length = 0;
+  await select('#card-lane', entrySourceLane);
+  await click('#card-dialog [data-action="close-card"]');
+  await waitFor(`!document.querySelector('#card-dialog').open`);
   await saved();
-  assert.equal((await state()).projects[0].lanes[0].entryGraph.nodes.length, 1, 'Removing all commands disables lane actions');
+
+  await click(`[data-action="edit-playbook"][data-id="${addedLane}"]`);
+  await waitFor(`document.querySelector('#playbook-dialog').open && document.querySelector('#playbook-text')`);
+  await click('[data-playbook-action="delete"]');
+  await click('#small-form [type="submit"]');
+  await waitFor(`document.querySelector('.playbook-empty')`);
+  await click('[data-playbook-action="close"]');
+  await waitFor(`!document.querySelector('#playbook-dialog').open`);
+  assert.equal((await state()).projects[0].lanes[0].playbook, null, 'Deleting the playbook leaves the lane without one');
   await click(`[data-action="edit-lane"][data-id="${addedLane}"]`);
-  console.log('PASS command graphs, pointer movement at zoom, links, validation, persistence, multi-field actions, deletion and cancel');
+  console.log('PASS lane playbooks: validation, set on entry, skills, an agent lane run with its result and notes, discard and delete');
   await click('[data-action="delete-lane"]');
   await click('#small-form [type="submit"]');
   await saved();

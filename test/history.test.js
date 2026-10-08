@@ -5,7 +5,13 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { openStore } from '../store.js';
-import { promptGraph } from '../public/flow-graph.js';
+import { serializeDocument } from '../public/playbook-format.js';
+
+// A lane playbook whose only effect is setting Prompt on entry.
+function lanePrompt(f, stage, prompt) {
+  const existing = f.store.playbooks.forStage(stage.flowId, stage.id);
+  f.store.playbooks.write(stage.flowId, existing?.path ?? `lanes/${stage.id}.md`, serializeDocument({ lane: stage.id, set: { prompt } }, ''), existing?.hash ?? null);
+}
 import { dropChatSchema } from './support/drop-chat-schema.js';
 
 async function fixture(t) {
@@ -46,6 +52,7 @@ test('upgrading an already-versioned database repairs legacy move foreign keys a
     INSERT INTO card_moves SELECT * FROM current_card_moves;
     DROP TABLE current_card_moves;
     CREATE INDEX card_moves_by_card ON card_moves(card_id, id);
+    DROP TABLE lane_runs;
     UPDATE meta SET value = '11' WHERE key = 'schema_version';`);
   db.close();
   const store = await openStore({ dataDir: f.dataDir });
@@ -81,7 +88,7 @@ function downgrade(db) {
 
 test('schema migration preserves available facts, feed cursors, deleted cards and existing move undo', async (t) => {
   const f = await fixture(t);
-  f.store.updateStage(f.ctx, f.stages[1].id, { entryGraph: promptGraph('On entry') });
+  lanePrompt(f, f.stages[1], 'On entry');
   let card = f.card({ title: 'Before', images: [image], imageRoles: { original: image.id } });
   card = f.save(card, { fields: { intro: 'Keep intro' } });
   const moved = f.store.transitionCard(f.ctx, card.id, { action: 'move', toStageId: f.stages[1].id, note: 'Review this' });
@@ -208,8 +215,8 @@ test('manual saves group by editor and idle time while activity stays append-onl
 
 test('all card mutation boundaries record complete states; entry Set effects share creation and movement', async (t) => {
   const f = await fixture(t);
-  f.store.updateStage(f.ctx, f.stages[0].id, { entryGraph: promptGraph('Created prompt') });
-  f.store.updateStage(f.ctx, f.stages[1].id, { entryGraph: promptGraph('Moved prompt') });
+  lanePrompt(f, f.stages[0], 'Created prompt');
+  lanePrompt(f, f.stages[1], 'Moved prompt');
   let card = f.card({ title: 'Example', fields: { script: 'Keep' } });
   const neighbour = f.card({ title: 'Neighbour' });
   assert.equal(f.states(card.id).length, 1);

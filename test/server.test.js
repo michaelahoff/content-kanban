@@ -6,7 +6,7 @@ import path from 'node:path';
 import http from 'node:http';
 import { DatabaseSync } from 'node:sqlite';
 import { createApp } from '../server.js';
-import { emptyGraph, promptGraph } from '../public/flow-graph.js';
+import { setPlaybook } from './support/playbooks.js';
 import { dropChatSchema } from './support/drop-chat-schema.js';
 
 async function start(dataDir, options = {}) {
@@ -42,16 +42,6 @@ async function fixture(t, options) {
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jS1kAAAAASUVORK5CYII=', 'base64');
 const imageId = (n) => `${String(n).padStart(8, '0')}-0000-4000-8000-000000000000.png`;
 
-function commandChain(commands) {
-  const graph = emptyGraph();
-  commands.forEach(([field, value], index) => {
-    const nodeId = `set-${index}`;
-    graph.nodes.push({ id: nodeId, type: 'set', position: { x: 360 + index * 312, y: 100 }, config: { field, value } });
-    graph.edges.push({ id: `edge-${index}`, from: index ? `set-${index - 1}` : 'entry', to: nodeId });
-  });
-  return graph;
-}
-
 // Recreate the old recording tables before a fixture is downgraded. Current
 // writes live only in activity_log, whereas these fixtures exercise older apps.
 function removeHistoryMilestone(db) {
@@ -68,199 +58,6 @@ function removeHistoryMilestone(db) {
     DROP TABLE activity_log;
   `);
 }
-
-test('one Set field node saves multiple assignments and applies them together in row order', async (t) => {
-  const f = await fixture(t);
-  const graph = promptGraph('Original');
-  const assignments = [
-    { field: 'prompt', value: 'First prompt' },
-    { field: 'intro', value: 'Set intro' },
-    { field: 'title', value: 'Set title' },
-    { field: 'prompt', value: 'Final prompt' },
-  ];
-  graph.nodes[1].config = { assignments };
-  const saved = await f.ok('PATCH', `/api/stages/${f.stages[1].id}`, { entryGraph: graph });
-  assert.deepEqual(saved.entryGraph.nodes[1].config.assignments, assignments);
-  const card = await f.card({ fields: { script: 'Keep script' } });
-  const moved = await f.ok('POST', `/api/cards/${card.id}/transitions`, { action: 'move', toStageId: f.stages[1].id });
-  assert.equal(moved.card.title, 'Set title');
-  assert.equal(moved.card.fields.prompt, 'Final prompt');
-  assert.equal(moved.card.fields.intro, 'Set intro');
-  assert.equal(moved.card.fields.script, 'Keep script');
-  assert.equal(moved.card.revision, 2);
-  const history = (await f.ok('GET', `/api/cards/${card.id}`)).events;
-  assert.deepEqual(history.at(-1).data.steps.map((step) => step.field), ['prompt', 'intro', 'title', 'prompt']);
-  assert.ok(history.at(-1).data.steps.every((step) => step.nodeId === 'set-prompt'));
-  for (const invalid of [[], null, [{ field: 'prompt', value: 'Valid' }, { field: 'missing', value: 'Invalid' }], [{ field: 'title', value: 'x'.repeat(501) }]]) {
-    const badGraph = structuredClone(graph);
-    badGraph.nodes[1].config.assignments = invalid;
-    assert.equal((await f.call('PATCH', `/api/stages/${f.stages[1].id}`, { entryGraph: badGraph })).status, 400);
-  }
-  assert.deepEqual((await f.ok('GET', '/api/workspace')).flows[0].stages[1].entryGraph, graph);
-  const created = await f.card({ stageId: f.stages[1].id });
-  assert.equal(created.title, 'Set title');
-  assert.equal(created.fields.prompt, 'Final prompt');
-  assert.equal(created.fields.intro, 'Set intro');
-});
-
-test('connected Set field commands run in edge order and preserve unrelated content', async (t) => {
-  const f = await fixture(t);
-  const graph = commandChain([['title', 'First title'], ['title', 'Final title'], ['intro', 'New introduction'], ['prompt', 'Review it']]);
-  // Stored array order and canvas positions deliberately differ from execution.
-  graph.nodes.reverse();
-  graph.nodes[0].position = { x: 40, y: 360 };
-  await f.ok('PATCH', `/api/stages/${f.stages[1].id}`, { entryGraph: graph });
-  const created = await f.card({ title: 'Old title', fields: { script: 'Keep my script', prompt: 'Old prompt' } });
-  const moved = await f.ok('POST', `/api/cards/${created.id}/transitions`, { action: 'move', toStageId: f.stages[1].id });
-  assert.equal(moved.card.title, 'Final title');
-  assert.equal(moved.card.fields.intro, 'New introduction');
-  assert.equal(moved.card.fields.prompt, 'Review it');
-  assert.equal(moved.card.fields.script, 'Keep my script');
-  assert.equal(moved.card.revision, 2, 'The whole graph increments the revision once');
-  assert.deepEqual(moved.fieldUpdate, { beforeRevision: 1, revision: 2, values: { title: 'Final title', intro: 'New introduction', prompt: 'Review it' } });
-  const history = (await f.ok('GET', `/api/cards/${created.id}`)).events;
-  assert.deepEqual(history.at(-1).data.steps.map((step) => step.nodeId), ['set-0', 'set-1', 'set-2', 'set-3']);
-  assert.equal(history.at(-1).actor, `automation:${f.stages[1].id}`);
-  const sameLane = await f.ok('POST', `/api/cards/${created.id}/transitions`, { action: 'move', toStageId: f.stages[1].id });
-  assert.equal(sameLane.fieldUpdate, null);
-  const initial = await f.card({ stageId: f.stages[1].id, fields: { script: 'Creation script' } });
-  assert.equal(initial.title, 'Final title');
-  assert.equal(initial.fields.script, 'Creation script');
-  const reopened = await f.restart();
-  try { assert.deepEqual((await reopened.ok('GET', '/api/workspace')).flows[0].stages[1].entryGraph, graph); }
-  finally { await reopened.close(); }
-});
-
-test('invalid graphs cannot replace the saved graph, and clearing commands disables entry actions', async (t) => {
-  const f = await fixture(t);
-  const graph = commandChain([['prompt', 'Saved prompt'], ['intro', 'Saved intro']]);
-  await f.ok('PATCH', `/api/stages/${f.stages[1].id}`, { entryGraph: graph });
-  const invalid = [
-    { ...graph, version: 2 },
-    { ...graph, edges: [] },
-    { ...graph, edges: [...graph.edges, { id: 'cycle', from: 'set-1', to: 'set-0' }] },
-    { ...graph, edges: [...graph.edges, { id: 'missing', from: 'set-1', to: 'no-node' }] },
-    { ...graph, nodes: [...graph.nodes, graph.nodes[1]] },
-    commandChain([['missingField', 'Value']]),
-    commandChain([['title', 'x'.repeat(501)]]),
-    commandChain([['prompt', 42]]),
-    { ...graph, nodes: graph.nodes.map((node) => node.type === 'set' ? { ...node, type: 'llm' } : node) },
-    { ...graph, nodes: graph.nodes.map((node) => ({ ...node, position: { x: -10, y: 0 } })) },
-  ];
-  for (const entryGraph of invalid) {
-    assert.equal((await f.call('PATCH', `/api/stages/${f.stages[1].id}`, { entryGraph })).status, 400);
-  }
-  assert.deepEqual((await f.ok('GET', '/api/workspace')).flows[0].stages[1].entryGraph, graph);
-  const created = await f.card({ stageId: f.stages[1].id });
-  await f.ok('PATCH', `/api/stages/${f.stages[1].id}`, { entryGraph: emptyGraph() });
-  assert.equal((await f.ok('GET', `/api/cards/${created.id}`)).card.fields.prompt, 'Saved prompt', 'Saving settings does not run them on existing cards');
-  const disabled = await f.card({ stageId: f.stages[1].id, fields: { prompt: 'Manual' } });
-  assert.equal(disabled.fields.prompt, 'Manual');
-  assert.equal(disabled.revision, 1);
-});
-
-test('existing lane prompt settings upgrade to a connected Set field graph without changing card history', async (t) => {
-  const dataDir = await mkdtemp(path.join(tmpdir(), 'frameboard-graph-upgrade-'));
-  t.after(() => rm(dataDir, { recursive: true, force: true }));
-  const first = await start(dataDir);
-  let stageId, projectId, card;
-  try {
-    const workspace = await first.ok('GET', '/api/workspace');
-    stageId = workspace.flows[0].stages[0].id;
-    projectId = workspace.projects[0].id;
-    card = await first.ok('POST', `/api/projects/${projectId}/cards`, { stageId, fields: { prompt: 'Existing card prompt' } });
-  } finally { await first.close(); }
-  const db = new DatabaseSync(path.join(dataDir, 'frameboard.db'));
-  removeHistoryMilestone(db);
-  db.exec("DROP TABLE card_moves; ALTER TABLE stages DROP COLUMN entry_graph; UPDATE meta SET value = '2' WHERE key = 'schema_version';");
-  db.prepare('UPDATE stages SET entry_prompt = ? WHERE id = ?').run('Existing lane prompt', stageId);
-  db.close();
-  const upgraded = await start(dataDir);
-  try {
-    const lane = (await upgraded.ok('GET', '/api/workspace')).flows[0].stages[0];
-    assert.deepEqual(lane.entryGraph, promptGraph('Existing lane prompt'));
-    const original = await upgraded.ok('GET', `/api/cards/${card.id}`);
-    assert.deepEqual(original.card, card);
-    assert.deepEqual(original.events.map((event) => event.type), ['created']);
-    const newCard = await upgraded.ok('POST', `/api/projects/${projectId}/cards`, { stageId });
-    assert.equal(newCard.fields.prompt, 'Existing lane prompt');
-  } finally { await upgraded.close(); }
-});
-
-test('lane entry prompts apply atomically to creation and transitions, with history and revisions', async (t) => {
-  const f = await fixture(t);
-  const prompt = 'Review the script.\nSuggest a better hook.';
-  await f.ok('PATCH', `/api/stages/${f.stages[1].id}`, { entryPrompt: prompt });
-  const card = await f.card({ fields: { prompt: 'Draft prompt', script: 'Keep the script' } });
-  const move = await f.ok('POST', `/api/cards/${card.id}/transitions`, { action: 'approve' });
-  assert.equal(move.card.fields.prompt, prompt);
-  assert.equal(move.card.fields.script, 'Keep the script');
-  assert.equal(move.card.revision, 2);
-  assert.deepEqual(move.promptUpdate, { beforeRevision: 1, revision: 2, prompt });
-  assert.equal((await f.call('PATCH', `/api/cards/${card.id}`, { revision: 1, title: 'Stale' })).status, 409);
-  const { events } = await f.ok('GET', `/api/cards/${card.id}`);
-  assert.deepEqual(events.map((event) => event.type), ['created', 'approved', 'fields_set']);
-  assert.equal(events.at(-1).actor, `automation:${f.stages[1].id}`);
-  const feed = await f.ok('GET', '/api/events?since=0');
-  assert.ok(feed.events.some((event) => event.entityId === card.id && event.type === 'fields_set'));
-
-  const created = await f.card({ stageId: f.stages[1].id, fields: { prompt: 'Replaced', intro: 'Retained' } });
-  assert.equal(created.fields.prompt, prompt);
-  assert.equal(created.fields.intro, 'Retained');
-  await f.ok('PATCH', `/api/cards/${card.id}`, { revision: 2, fields: { prompt: 'My own edit' } });
-  const reorder = await f.ok('POST', `/api/cards/${card.id}/transitions`, { action: 'move', toStageId: f.stages[1].id, beforeCardId: created.id });
-  assert.equal(reorder.card.fields.prompt, 'My own edit');
-  assert.equal(reorder.card.revision, 3);
-  assert.equal(reorder.promptUpdate, null);
-  await f.ok('PATCH', `/api/stages/${f.stages[0].id}`, { entryPrompt: 'Back to drafting' });
-  const back = await f.ok('POST', `/api/cards/${card.id}/transitions`, { action: 'send_back' });
-  assert.equal(back.card.fields.prompt, 'Back to drafting');
-  const reentry = await f.ok('POST', `/api/cards/${card.id}/transitions`, { action: 'move', toStageId: f.stages[1].id });
-  assert.equal(reentry.card.fields.prompt, prompt);
-});
-
-test('lane prompt settings distinguish disabled from empty and leave existing cards alone', async (t) => {
-  const f = await fixture(t);
-  const card = await f.card({ fields: { prompt: 'Keep' } });
-  const lane = await f.ok('POST', `/api/flows/${f.project.flowId}/stages`, { name: 'Clear prompt', color: 'teal', entryPrompt: '' });
-  assert.equal(lane.entryPrompt, '');
-  for (const entryPrompt of [42, {}, false, 'x'.repeat(200001)]) {
-    assert.equal((await f.call('PATCH', `/api/stages/${lane.id}`, { entryPrompt })).status, 400);
-    assert.equal((await f.call('POST', `/api/flows/${f.project.flowId}/stages`, { name: 'Invalid', color: 'blue', entryPrompt })).status, 400);
-  }
-  await f.ok('PATCH', `/api/stages/${f.stages[0].id}`, { entryPrompt: 'Future entries only' });
-  assert.equal((await f.ok('GET', `/api/cards/${card.id}`)).card.fields.prompt, 'Keep');
-  const cleared = await f.ok('POST', `/api/cards/${card.id}/transitions`, { action: 'move', toStageId: lane.id });
-  assert.equal(cleared.card.fields.prompt, '');
-  await f.ok('PATCH', `/api/stages/${lane.id}`, { entryPrompt: null });
-  const disabled = await f.card({ stageId: lane.id, fields: { prompt: 'Manual' } });
-  assert.equal(disabled.fields.prompt, 'Manual');
-  await f.ok('PATCH', `/api/stages/${lane.id}`, { entryPrompt: 'Manual' });
-  await f.ok('POST', `/api/cards/${disabled.id}/transitions`, { action: 'move', toStageId: f.stages[2].id });
-  const unchanged = await f.ok('POST', `/api/cards/${disabled.id}/transitions`, { action: 'move', toStageId: lane.id });
-  assert.equal(unchanged.card.revision, disabled.revision);
-  assert.equal(unchanged.promptUpdate.prompt, 'Manual');
-});
-
-test('upgrading a database adds disabled lane entry prompts without changing its cards', async (t) => {
-  const dataDir = await mkdtemp(path.join(tmpdir(), 'frameboard-upgrade-'));
-  t.after(() => rm(dataDir, { recursive: true, force: true }));
-  const first = await start(dataDir);
-  let card;
-  try {
-    const workspace = await first.ok('GET', '/api/workspace');
-    card = await first.ok('POST', `/api/projects/${workspace.projects[0].id}/cards`, { stageId: workspace.flows[0].stages[0].id, fields: { prompt: 'Saved before upgrade' } });
-  } finally { await first.close(); }
-  const db = new DatabaseSync(path.join(dataDir, 'frameboard.db'));
-  removeHistoryMilestone(db);
-  db.exec("DROP TABLE card_moves; ALTER TABLE stages DROP COLUMN entry_graph; ALTER TABLE stages DROP COLUMN entry_prompt; UPDATE meta SET value = '1' WHERE key = 'schema_version';");
-  db.close();
-  const reopened = await start(dataDir);
-  try {
-    assert.deepEqual((await reopened.ok('GET', `/api/cards/${card.id}`)).card, card);
-    assert.ok((await reopened.ok('GET', '/api/workspace')).flows.every((flow) => flow.stages.every((stage) => stage.entryPrompt === null)));
-  } finally { await reopened.close(); }
-});
 
 test('creates a workspace with a default project and keeps card text across restarts', async (t) => {
   const f = await fixture(t);
@@ -654,11 +451,11 @@ test('undo restores lane, position, and command changes while keeping later unre
   const a = await f.card({ title: 'First' });
   const card = await f.card({ title: 'Before title', fields: { prompt: 'Before prompt', intro: 'Before intro' } });
   const b = await f.card({ title: 'Third' });
-  await f.ok('PATCH', `/api/stages/${f.stages[1].id}`, { entryGraph: commandChain([['prompt', 'Lane prompt'], ['intro', 'Lane intro'], ['title', 'Lane title']]) });
+  await setPlaybook(f.ok, f.project.flowId, f.stages[1], { set: { prompt: 'Lane prompt', intro: 'Lane intro', title: 'Lane title' } });
   const moved = await f.ok('POST', `/api/cards/${card.id}/transitions`, { action: 'move', toStageId: f.stages[1].id });
   assert.ok(moved.card.lastMove.id);
   // Adding commands to the original lane must not cause them to run on undo.
-  await f.ok('PATCH', `/api/stages/${f.stages[0].id}`, { entryPrompt: 'Do not run on undo' });
+  await setPlaybook(f.ok, f.project.flowId, f.stages[0], { set: { prompt: 'Do not run on undo' } });
   const image = { id: imageId(99), name: 'Later inspiration' };
   const edited = await f.ok('PATCH', `/api/cards/${card.id}`, { revision: moved.card.revision, fields: { script: 'Newer script' }, images: [image], imageRoles: { cover: image.id } });
   const reopened = await f.restart();
@@ -689,7 +486,7 @@ test('undo conflicts leave the entire card and event feed unchanged', async (t) 
   const hooks = [];
   const f = await fixture(t, { onCardEvent: (event) => hooks.push(event) });
   const card = await f.card();
-  await f.ok('PATCH', `/api/stages/${f.stages[1].id}`, { entryPrompt: 'Automatic prompt' });
+  await setPlaybook(f.ok, f.project.flowId, f.stages[1], { set: { prompt: 'Automatic prompt' } });
   const moved = await f.ok('POST', `/api/cards/${card.id}/transitions`, { action: 'move', toStageId: f.stages[1].id });
   const edited = await f.ok('PATCH', `/api/cards/${card.id}`, { revision: moved.card.revision, fields: { prompt: 'My newer prompt' } });
   const cursor = (await f.ok('GET', '/api/workspace')).eventCursor;

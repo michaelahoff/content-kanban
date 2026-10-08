@@ -10,6 +10,7 @@ import { createCodexAdapter } from './codex-adapter.js';
 import { configurationDiscovery, compileConfiguration, mandatoryBehavior } from './codex-configuration.js';
 import { createChatService } from './chat-service.js';
 import { createChatWorker } from './chat-worker.js';
+import { createLaneRunner } from './lane-runner.js';
 import { createEventStream } from './event-stream.js';
 import { imageFormat, storeImage, verifiedImage, maxImageBytes } from './image-files.js';
 import { lockDataDirectory } from './data-lock.js';
@@ -72,11 +73,11 @@ async function json(req, limit) {
 export async function createApp({ dataDir = process.env.DATA_DIR || path.join(root, 'data'), fetch: fetchImpl = globalThis.fetch, onCardEvent, codexAdapter, claudeAdapter, providerBackoffMs, streamReplayLimit } = {}) {
   const lock = await lockDataDirectory(dataDir);
   dataDir = lock.dataDir;
-  let store; let worker; let stream;
+  let store; let worker; let stream; let lanes;
   try {
     const imagesDir = path.join(dataDir, 'images');
     await mkdir(imagesDir, { recursive: true });
-    try { store = await openStore({ dataDir, onCardEvent, onCommit: () => { worker?.wake(); stream?.notify(); } }); }
+    try { store = await openStore({ dataDir, onCardEvent, onCommit: () => { worker?.wake(); lanes?.wake(); stream?.notify(); } }); }
     catch (error) { throw new Error(`Could not load the board in ${dataDir}. Your data has not been changed. ${error.message}`); }
     // Only top-level files in public/ are served, so paths cannot escape it.
     const publicFiles = new Map((await readdir(path.join(root, 'public'))).filter((name) => staticTypes[path.extname(name)]).map((name) => [`/${name}`, name]));
@@ -96,6 +97,14 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
     stream = createEventStream({ store, replayLimit: streamReplayLimit });
     worker = createChatWorker({ store, adapter: codex, adapters, service: chat, ctx: currentUser(), providerBackoffMs,
       onDelta: (delta) => stream.delta(currentUser().workspaceId, delta) });
+    lanes = createLaneRunner({ store, service: chat, providers, ctx: currentUser() });
+    lanes.wake();
+    const flowFor = (ctx, flowId) => {
+      const flow = store.workspace(ctx).flows.find((entry) => entry.id === flowId);
+      if (!flow) throw Object.assign(new Error('This project no longer exists. Reload the page.'), { status: 404 });
+      return flow;
+    };
+    const bodyOf = (input) => { assert(input && typeof input === 'object', 'Invalid playbook document.'); return input; };
     const codexAction = async (fn) => {
       try { return await fn(); } catch (error) {
         if (error.kind) Object.assign(error, { status: 503 });
@@ -150,6 +159,29 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
       ['DELETE', /^\/api\/cards\/([^/]+)$/, (ctx, req, id) => (store.deleteCard(ctx, id), { ok: true })],
       ['POST', /^\/api\/cards\/([^/]+)\/undo-move$/, async (ctx, req, id) => store.undoMove(ctx, id, await read(req))],
       ['POST', /^\/api\/cards\/([^/]+)\/transitions$/, async (ctx, req, id) => store.transitionCard(ctx, id, await read(req))],
+      ['GET', /^\/api\/flows\/([^/]+)\/playbooks$/, (ctx, req, id) => ({ ...store.playbooks.list(flowFor(ctx, id).id), stages: flowFor(ctx, id).stages })],
+      ['PUT', /^\/api\/flows\/([^/]+)\/playbooks$/, async (ctx, req, id) => {
+        const flow = flowFor(ctx, id); const input = bodyOf(await read(req));
+        const document = store.playbooks.write(flow.id, input.path, input.text, input.baseHash ?? null, { laneIds: flow.stages.map((stage) => stage.id) });
+        store.recordPlaybookChange(ctx, flow.id, input.path, 'playbook_saved');
+        return { document, stages: flowFor(ctx, id).stages };
+      }],
+      ['DELETE', /^\/api\/flows\/([^/]+)\/playbooks$/, async (ctx, req, id) => {
+        const flow = flowFor(ctx, id); const input = bodyOf(await read(req));
+        store.playbooks.remove(flow.id, input.path, input.baseHash);
+        store.recordPlaybookChange(ctx, flow.id, input.path, 'playbook_deleted');
+        return { stages: flowFor(ctx, id).stages };
+      }],
+      ['GET', /^\/api\/cards\/([^/]+)\/lane-runs$/, (ctx, req, id) => ({ runs: store.laneRuns.forCard(ctx, id) })],
+      ['POST', /^\/api\/cards\/([^/]+)\/lane-runs$/, (ctx, req, id) => store.laneRuns.request(ctx, id), 201],
+      ['GET', /^\/api\/cards\/([^/]+)\/lane-runs\/preview$/, (ctx, req, id) => lanes.preview(id)],
+      ['GET', /^\/api\/cards\/([^/]+)\/notes$/, (ctx, req, id) => (store.getCard(ctx, id), store.playbooks.notes(id))],
+      ['PUT', /^\/api\/cards\/([^/]+)\/notes$/, async (ctx, req, id) => {
+        store.getCard(ctx, id); const input = bodyOf(await read(req));
+        const notes = store.playbooks.writeNotes(id, input.text, input.baseHash);
+        store.recordNotesChange(ctx, id);
+        return notes;
+      }],
       ['GET', /^\/api\/events$/, (ctx, req, id, url) => ({ events: store.events(ctx, { since: Math.max(0, Number.parseInt(url.searchParams.get('since'), 10) || 0) }) })],
     ];
     const server = http.createServer(async (req, res) => {
@@ -220,7 +252,7 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
     let closing;
     server.close = (callback) => {
       if (!closing) {
-        worker.close(); stream.close();
+        worker.close(); lanes.close(); stream.close();
         const stopped = Promise.all([codex.close(), claude.close()]).catch((error) => console.error(error));
         closing = new Promise((resolve) => close(resolve)).then(async (error) => {
           await stopped;
@@ -237,7 +269,7 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
     };
     return server;
   } catch (error) {
-    worker?.close(); stream?.close(); store?.close(); lock.release();
+    worker?.close(); lanes?.close(); stream?.close(); store?.close(); lock.release();
     throw error;
   }
 }

@@ -8,6 +8,15 @@ import path from 'node:path';
 import { imageFormat } from './image-files.js';
 
 const error = (kind, message) => Object.assign(new Error(message), { kind });
+// Claude Code reports thinking and text as separate blocks, and its final
+// assistant messages number blocks differently from the stream. Text items
+// are therefore identified by their order among a message's text blocks.
+function textOrdinal(counters, messageId, key) {
+  const entry = counters.get(messageId) ?? { next: 0, keys: new Map() };
+  counters.set(messageId, entry);
+  if (!entry.keys.has(key)) entry.keys.set(key, entry.next++);
+  return `${messageId}:${entry.keys.get(key)}`;
+}
 const uuid = (value) => /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(value);
 export function createClaudeAdapter({ command = 'claude', args = [], env = process.env, cwd = process.cwd(), timeoutMs = 15000 } = {}) {
   const sessions = new Map(); const processes = new Set(); const listeners = new Map();
@@ -19,7 +28,7 @@ export function createClaudeAdapter({ command = 'claude', args = [], env = proce
       '--safe-mode', '--tools', '', '--strict-mcp-config', ...(id ? [resume ? '--resume' : '--session-id', id] : []),
       ...(model ? ['--model', model] : []), ...(instructions ? ['--append-system-prompt', instructions] : [])],
     { cwd: work, env, stdio: ['pipe', 'pipe', 'pipe'] });
-    const session = { id, work, child, turnId: null, ended: false, buffer: '', items: new Map(), controls: new Map() };
+    const session = { id, work, child, turnId: null, ended: false, buffer: '', items: new Map(), controls: new Map(), streamed: new Map(), completed: new Map() };
     processes.add(session);
     let resolveInit; let rejectInit;
     const ready = new Promise((resolve, reject) => { resolveInit = resolve; rejectInit = reject; });
@@ -61,14 +70,15 @@ export function createClaudeAdapter({ command = 'claude', args = [], env = proce
       } else if (session.turnId && message.type === 'stream_event') {
         const event = message.event;
         if (event.type === 'message_start') session.messageId = event.message.id;
+        if (event.type === 'content_block_start' && event.content_block?.type === 'text') textOrdinal(session.streamed, session.messageId, event.index);
         if (event.type === 'content_block_delta' && event.delta?.type === 'text_delta') {
-          const itemId = `${session.messageId}:${event.index}`;
+          const itemId = textOrdinal(session.streamed, session.messageId, event.index);
           session.items.set(itemId, (session.items.get(itemId) ?? '') + event.delta.text);
           emit(session, { type: 'delta', itemId, delta: event.delta.text });
         }
       } else if (session.turnId && message.type === 'assistant') {
         for (const [index, block] of (message.message?.content ?? []).entries()) if (block.type === 'text') {
-          const itemId = `${message.message.id}:${index}`;
+          const itemId = textOrdinal(session.completed, message.message.id, `${message.uuid ?? ''}:${index}`);
           emit(session, { type: 'item-completed', item: { id: itemId, type: 'agentMessage', text: block.text } });
         }
       } else if (session.turnId && message.type === 'result') {
@@ -146,7 +156,7 @@ export function createClaudeAdapter({ command = 'claude', args = [], env = proce
           content.push({ type: 'image', source: { type: 'base64', media_type: `image/${format === 'jpg' ? 'jpeg' : format}`, data: bytes.toString('base64') } });
         }
       }
-      session.turnId = clientUserMessageId; session.items.clear();
+      session.turnId = clientUserMessageId; session.items.clear(); session.streamed = new Map(); session.completed = new Map();
       session.write({ type: 'user', uuid: clientUserMessageId, session_id: threadId, message: { role: 'user', content }, parent_tool_use_id: null });
       emit(session, { type: 'turn-started' });
       return { turnId: session.turnId };
@@ -163,13 +173,13 @@ export function createClaudeAdapter({ command = 'claude', args = [], env = proce
       if (!session) throw error('native-unavailable', 'Claude native history needs its exact workspace binding.');
       let text;
       try { text = await readFile(historyPath(session.work, threadId), 'utf8'); } catch (cause) { if (cause.code === 'ENOENT') throw error('native-unavailable', 'Claude session history is unavailable.'); throw cause; }
-      const turns = []; let turn;
+      const turns = []; let turn; const counters = new Map();
       for (const line of text.split('\n').filter(Boolean)) {
         const entry = JSON.parse(line);
         if (entry.type === 'user' && !entry.isMeta && !entry.message?.content?.some?.((block) => block.type === 'tool_result')) {
           turn = { id: entry.uuid, status: 'inProgress', items: [{ id: entry.uuid, type: 'userMessage', clientId: entry.uuid }] }; turns.push(turn);
         } else if (entry.type === 'assistant' && turn) {
-          for (const [index, block] of (entry.message?.content ?? []).entries()) if (block.type === 'text') turn.items.push({ id: `${entry.message.id}:${index}`, type: 'agentMessage', text: block.text });
+          for (const [index, block] of (entry.message?.content ?? []).entries()) if (block.type === 'text') turn.items.push({ id: textOrdinal(counters, entry.message.id, `${entry.uuid ?? ''}:${index}`), type: 'agentMessage', text: block.text });
           if (entry.message?.stop_reason === 'end_turn') turn.status = 'completed';
         }
       }

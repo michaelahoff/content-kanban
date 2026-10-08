@@ -43,6 +43,11 @@ export function createChatService({ store, adapter, adapters = { codex: adapter 
       for (const image of captured.context.images) image.hash = hash(await imageBytes(image));
       return captured;
     },
+    async previewLane(ctx, cardId, selections) {
+      const captured = store.chats.laneContext(ctx, cardId, selections);
+      for (const image of captured.context.images) image.hash = hash(await imageBytes(image));
+      return captured;
+    },
     async discover(ctx, cardId) {
       store.getCard(ctx, cardId);
       const cwd = workspace(cardId);
@@ -63,6 +68,22 @@ export function createChatService({ store, adapter, adapters = { codex: adapter 
       if (!discovery.models.some((model) => model.id === captured.model)) fail(400, 'Choose an available model in Settings.');
       if (settings.revision !== store.providerConfiguration(ctx, captured.provider).revision) fail(409, 'Provider settings changed while preparing Send. Review and send again.');
       return store.chats.queue(ctx, cardId, input, captured, compileConfiguration(settings.selection, discovery, cardTools, captured.provider));
+    },
+    // A lane run's frozen submission: the playbook's prompt, selections and
+    // field authority with the provider configuration current at queue time.
+    async queueLane(ctx, cardId, { id, prompt, provider, model, selections, authority, lane }) {
+      const existing = store.chats.findSubmission(ctx, cardId, id);
+      if (existing) return existing;
+      const captured = await this.previewLane(ctx, cardId, selections);
+      providers?.assertEnabled(ctx, provider);
+      const settings = store.providerConfiguration(ctx, provider);
+      const cwd = workspace(cardId);
+      await mkdir(cwd, { recursive: true });
+      const discovery = await configurationDiscovery(adapters[provider], { cwd }, provider);
+      if (!discovery.models.some((entry) => entry.id === model)) fail(409, `The model ${model} is not available for ${provider === 'claude' ? 'Claude' : 'Codex'}. Choose another model in the playbook or card chat.`);
+      if (settings.revision !== store.providerConfiguration(ctx, provider).revision) fail(409, 'Provider settings changed while preparing the lane run.');
+      return store.chats.queueLane(ctx, cardId, { id }, { ...captured, prompt, provider, model, authority,
+        lane: { ...lane, fieldVersions: captured.versions } }, compileConfiguration(settings.selection, discovery, cardTools, provider));
     },
     async references(submission) {
       const directory = path.join(workspace(submission.cardId), 'references');
@@ -93,7 +114,7 @@ export function createChatService({ store, adapter, adapters = { codex: adapter 
   // Finish filesystem operations before the app releases its backup/restore
   // lock. Native events can already have started an import when shutdown begins.
   const pending = new Set();
-  for (const name of ['importNative', 'renderedImage', 'preview', 'discover', 'queue', 'references']) {
+  for (const name of ['importNative', 'renderedImage', 'preview', 'previewLane', 'discover', 'queue', 'queueLane', 'references']) {
     const operation = service[name];
     service[name] = function (...args) {
       const task = operation.apply(this, args);

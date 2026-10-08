@@ -3,7 +3,6 @@
 import { request, send, enqueue, onSyncChange, syncState } from './api.js';
 import { defaultTemplate, emptyFields, emptyImageRoles, templates } from './card-template.js';
 import { id, showEdited } from './ui.js';
-import { emptyGraph } from './flow-graph.js';
 
 export const state = { projects: [], projectId: null, cardId: null, uploads: 0, undoingCardId: null };
 const dirty = new Set();
@@ -338,7 +337,7 @@ export function deleteCard(cardId) {
 }
 
 export function addLane(p, { name, color }) {
-  const lane = toLane({ id: id(), flowId: p.flowId, name, color, entryGraph: emptyGraph(), position: p.lanes.length, instructions: '', exitCriteria: [], approveTo: null, sendBackTo: null, automations: [] });
+  const lane = toLane({ id: id(), flowId: p.flowId, name, color, playbook: null, position: p.lanes.length, instructions: '', exitCriteria: [], approveTo: null, sendBackTo: null, automations: [] });
   p.lanes.push(lane);
   enqueue(() => send('POST', `${url('flows', p.flowId)}/stages`, { id: lane.id, name, color }));
 }
@@ -349,10 +348,30 @@ export function updateLane(p, lane, { name, color, position }) {
   p.lanes.forEach((item, index) => { item.position = index; });
   enqueue(() => send('PATCH', url('stages', lane.id), { name, color, position }));
 }
-export async function saveLaneGraph(lane, entryGraph) {
-  const saved = await enqueue(() => send('PATCH', url('stages', lane.id), { entryGraph }), undefined, { rejectOnError: true });
-  Object.assign(lane, { entryGraph: saved.entryGraph, entryPrompt: saved.entryPrompt });
+// Lane playbooks, the project map and skills are files on the server. Saves
+// queue behind earlier writes (a new lane exists before its playbook) and
+// carry the hash they were based on, so newer edits on disk are not lost.
+export function applyStages(p, stages) {
+  for (const stage of stages) {
+    const lane = p.lanes.find((item) => item.id === stage.id);
+    if (lane) lane.playbook = stage.playbook;
+  }
 }
+export const loadPlaybooks = (p) => request(`${url('flows', p.flowId)}/playbooks`);
+export async function savePlaybook(p, path, text, baseHash) {
+  const saved = await enqueue(() => send('PUT', `${url('flows', p.flowId)}/playbooks`, { path, text, baseHash }), undefined, { rejectOnError: true });
+  applyStages(p, saved.stages);
+  return saved.document;
+}
+export async function deletePlaybook(p, path, baseHash) {
+  const saved = await enqueue(() => send('DELETE', `${url('flows', p.flowId)}/playbooks`, { path, baseHash }), undefined, { rejectOnError: true });
+  applyStages(p, saved.stages);
+}
+export const laneRuns = (cardId) => request(`${url('cards', cardId)}/lane-runs`);
+export const runPlaybook = (cardId) => enqueue(() => send('POST', `${url('cards', cardId)}/lane-runs`, {}), undefined, { rejectOnError: true });
+export const previewLaneRun = (cardId) => request(`${url('cards', cardId)}/lane-runs/preview`);
+export const loadNotes = (cardId) => request(`${url('cards', cardId)}/notes`);
+export const saveNotes = (cardId, text, baseHash) => enqueue(() => send('PUT', `${url('cards', cardId)}/notes`, { text, baseHash }), undefined, { rejectOnError: true });
 export function deleteLane(p, laneId) {
   const lane = p.lanes.find((item) => item.id === laneId);
   lane.cards.forEach((card) => { dirty.delete(card.id); conflicts.delete(card.id); });
