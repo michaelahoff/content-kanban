@@ -3,10 +3,13 @@
 Question: where should the project library live, and how should creators organize,
 edit and select its files while composing a card prompt? This is the primary-source
 prototype for issue #38, using the settled #35 lifecycle and #37 selection contracts.
-It is not production implementation. No design has been accepted yet.
+It is not production implementation. Through live review, the user chose C — the
+persistent library dock — as the preferred placement. C is now the default; A and B
+remain available for comparison. This response settles placement, not every detail
+of selection, editing, version inspection or delivery-error presentation.
 
 Run `npm run prototype:assets`, then open
-`http://localhost:3038/asset-library-prototype.html?variant=A`.
+`http://localhost:3038/asset-library-prototype.html?variant=C`.
 Alternatively, download `public/asset-library-prototype.html` and open it directly;
 it is completely self-contained. All mutations and submissions stay in memory.
 
