@@ -5,6 +5,7 @@ import { contextFields } from './chat-context.js';
 import { attemptMarkup, progressState, runningStatuses } from './chat-transcript.js';
 
 const chats = new Map();
+let modelCatalog = []; let catalogLoading = null;
 let selected = null; let navigation; let activity = []; let events = null; let activityTimer = null; let refreshTimer = null; let clockTimer;
 let hidden = preference('frameboard-chat-hidden') === 'true';
 function preference(key, value) {
@@ -35,7 +36,7 @@ function newItem(id) {
   let view; let pending;
   try { view = JSON.parse(preference(`frameboard-chat-view:${id}`)); pending = JSON.parse(preference(`frameboard-chat-send:${id}`)); } catch { /* Optional browser view state. */ }
   return { id, snapshot: null, composer: null, dirty: false, version: 0, view: { tab: 'editor', scroll: 0, editorScroll: 0, preview: false, ...view },
-    pending, sending: false, models: [], error: '', timer: null, saving: null };
+    pending, sending: false, error: '', timer: null, saving: null };
 }
 function active(item) { return item.snapshot?.attempts.some((attempt) => runningStatuses.has(attempt.status)); }
 function updateComposerControls(item) {
@@ -43,7 +44,10 @@ function updateComposerControls(item) {
   const locked = item.sending || Boolean(item.pending);
   document.querySelectorAll('#chat-composer input, #chat-composer textarea').forEach((input) => { input.disabled = locked; });
   $('#chat-model').disabled = locked || active(item);
-  $('[data-action="chat-send"]').disabled = item.sending;
+  $('#chat-provider').disabled = locked || active(item);
+  const provider = modelCatalog.find((entry) => entry.provider === item.composer.provider);
+  const available = provider?.enabled && provider.discovery?.models.some((model) => model.id === item.composer.model);
+  $('[data-action="chat-send"]').disabled = item.sending || (!item.pending && !available);
   $('[data-action="chat-stop"]').disabled = !active(item);
   $('[data-action="chat-fresh"]').disabled = active(item);
 }
@@ -80,7 +84,7 @@ export function mountChat(cardId) {
   while (dialog.firstChild) editor.append(dialog.firstChild);
   dialog.append(editor);
   dialog.insertAdjacentHTML('afterbegin', `<div class="workbench-tabs" role="tablist" aria-label="Card workbench"><button role="tab" data-action="workbench-tab" data-tab="editor">Editor</button><button role="tab" data-action="workbench-tab" data-tab="chat">Chat</button></div>`);
-  dialog.insertAdjacentHTML('beforeend', `<div id="chat-resizer" role="separator" tabindex="0" aria-label="Resize chat" aria-orientation="vertical"></div><aside id="card-chat" aria-label="Card chat"><div class="chat-header"><div><h2>Card chat</h2><span>Codex</span></div><button class="button small secondary" data-action="chat-fresh">Start fresh context</button></div><div id="chat-error" role="alert" hidden></div><div id="chat-transcript" class="chat-transcript" aria-label="Conversation history"></div><div id="chat-progress" role="status" hidden></div><div id="chat-selection-actions" role="group" aria-label="Selected reply actions" hidden><button type="button" data-action="chat-reply">Reply</button><button type="button" data-action="chat-use-text">Use text…</button></div><div id="chat-requests"></div><div id="chat-proposals"></div><div id="chat-grants"></div><div id="chat-composer" class="chat-composer"></div></aside>`);
+  dialog.insertAdjacentHTML('beforeend', `<div id="chat-resizer" role="separator" tabindex="0" aria-label="Resize chat" aria-orientation="vertical"></div><aside id="card-chat" aria-label="Card chat"><div class="chat-header"><div><h2>Card chat</h2><span id="chat-provider-name">Provider</span></div><button class="button small secondary" data-action="chat-fresh">Start fresh context</button></div><div id="chat-error" role="alert" hidden></div><div id="chat-transcript" class="chat-transcript" aria-label="Conversation history"></div><div id="chat-progress" role="status" hidden></div><div id="chat-selection-actions" role="group" aria-label="Selected reply actions" hidden><button type="button" data-action="chat-reply">Reply</button><button type="button" data-action="chat-use-text">Use text…</button></div><div id="chat-requests"></div><div id="chat-proposals"></div><div id="chat-grants"></div><div id="chat-composer" class="chat-composer"></div></aside>`);
   $('.editor-header-right').insertAdjacentHTML('afterbegin', '<button class="button small secondary" data-action="toggle-chat" aria-expanded="true">Hide chat</button>');
   setDialogMode();
   if (item.snapshot) { renderComposer(item); renderTranscript(item); }
@@ -159,10 +163,16 @@ function renderComposer(item) {
   const known = [...card.images, ...versions];
   const images = [...known, ...composer.selections.images.filter((id) => !known.some((image) => image.id === id))
     .map((id) => ({ id, name: 'Unavailable reference (removed from gallery and chat)' }))];
-  const choices = item.models.length ? item.models : composer.model ? [{ id: composer.model, displayName: composer.model }] : [];
-  $('#chat-composer').innerHTML = `<div class="chat-model-row"><label for="chat-model">Model</label><select id="chat-model" ${active(item) ? 'disabled' : ''}><option value="">Choose a model…</option>${choices.map((model) => `<option value="${escape(model.id)}" ${composer.model === model.id ? 'selected' : ''}>${escape(model.displayName)}</option>`).join('')}</select><button class="button small secondary" data-action="chat-discover">Discover</button></div>
-    <details id="chat-context-preview" ${item.view.preview ? 'open' : ''}><summary>What will be sent</summary><p class="chat-hint">Saved card values at Send. Images are attached once with all selected labels.</p><fieldset class="chat-selections"><legend>Card fields</legend>${contextFields(card.template).map((field) => `<label><input type="checkbox" data-chat-field="${field.key}" ${composer.selections.fields.includes(field.key) ? 'checked' : ''}>${escape(field.label)}</label>`).join('')}</fieldset><fieldset class="chat-selections"><legend>Image references</legend>${[['original', 'Original'], ['inspiration', 'Inspiration'], ['cover', 'Display']].map(([role, label]) => `<label><input type="checkbox" data-chat-role="${role}" ${composer.selections.roles.includes(role) ? 'checked' : ''}>${label}</label>`).join('')}${images.map((image) => `<label><input type="checkbox" data-chat-image="${image.id}" ${composer.selections.images.includes(image.id) ? 'checked' : ''}>${escape(image.name)}</label>`).join('')}</fieldset><fieldset class="chat-selections"><legend>Allow requested text edits</legend><p>Only check fields you explicitly ask Codex to edit. Suggestions remain proposals.</p>${contextFields(card.template).map((field) => `<label><input type="checkbox" data-chat-authority="${field.key}" ${composer.authority.fields.includes(field.key) ? 'checked' : ''}>${escape(field.label)}</label>`).join('')}</fieldset><div id="chat-exact-preview"></div></details>
-    <label class="sr-only" for="chat-prompt">Prompt for this card</label><textarea id="chat-prompt" maxlength="200000" placeholder="Ask about this card…" ${item.pending ? 'disabled' : ''}>${escape(composer.prompt)}</textarea><div class="chat-send-row"><span id="chat-save-state">${item.dirty ? 'Saving draft…' : ''}</span><button class="button small secondary" data-action="chat-stop" ${active(item) ? '' : 'disabled'}>Stop</button><button class="button primary" data-action="chat-send">${item.pending ? 'Retry Send' : 'Send'}</button></div><p class="chat-hint">Codex native image generation and exact-reference edits stay in this chat. Add to gallery never sets Display, Original or Inspiration.</p><p class="chat-hint">Codex can write in its workspace and run sandboxed commands without network access automatically. Escape requests need approval. Outside reads are possible. Full native access keeps card acceptance rules. <a href="/codex.html" target="_blank" rel="noopener">Configuration and permission limits</a></p>`;
+  const provider = modelCatalog.find((entry) => entry.provider === composer.provider);
+  const choices = provider?.enabled ? provider.discovery?.models ?? [] : [];
+  const missing = composer.model && !choices.some((model) => model.id === composer.model);
+  const enabledProviders = modelCatalog.filter((entry) => entry.enabled);
+  $('#chat-provider-name').textContent = composer.provider === 'claude' ? 'Claude' : 'Codex';
+  $('#chat-composer').innerHTML = `<div class="chat-model-row"><label for="chat-provider">Provider</label><select id="chat-provider"><option value="" disabled ${!provider ? 'selected' : ''}>Choose a provider…</option>${enabledProviders.map((entry) => `<option value="${entry.provider}" ${composer.provider === entry.provider ? 'selected' : ''}>${entry.provider === 'claude' ? 'Claude' : 'Codex'}</option>`).join('')}${provider && !provider.enabled ? `<option value="${composer.provider}" selected disabled>${composer.provider === 'claude' ? 'Claude' : 'Codex'} (disabled)</option>` : ''}</select></div>
+    <div class="chat-model-row"><label for="chat-model">Model</label><select id="chat-model"><option value="">Choose a model…</option>${choices.map((model) => `<option value="${escape(model.id)}" ${composer.model === model.id ? 'selected' : ''}>${escape(model.displayName ?? model.id)}</option>`).join('')}${missing ? `<option value="${escape(composer.model)}" selected disabled>${escape(composer.model)} (unavailable)</option>` : ''}</select><a class="button small secondary" href="/settings.html" target="_blank" rel="noopener">Settings</a></div>
+    ${!enabledProviders.length ? '<p class="chat-hint">Enable Claude or Codex in Settings to send prompts.</p>' : provider?.error ? `<p class="chat-hint">${escape(provider.error)} Refresh models in Settings.</p>` : !choices.length ? '<p class="chat-hint">Models are loading or unavailable. Check Settings for the shared model list.</p>' : ''}
+    <details id="chat-context-preview" ${item.view.preview ? 'open' : ''}><summary>What will be sent</summary><p class="chat-hint">Saved card values at Send. Images are attached once with all selected labels.</p><fieldset class="chat-selections"><legend>Card fields</legend>${contextFields(card.template).map((field) => `<label><input type="checkbox" data-chat-field="${field.key}" ${composer.selections.fields.includes(field.key) ? 'checked' : ''}>${escape(field.label)}</label>`).join('')}</fieldset><fieldset class="chat-selections"><legend>Image references</legend>${[['original', 'Original'], ['inspiration', 'Inspiration'], ['cover', 'Display']].map(([role, label]) => `<label><input type="checkbox" data-chat-role="${role}" ${composer.selections.roles.includes(role) ? 'checked' : ''}>${label}</label>`).join('')}${images.map((image) => `<label><input type="checkbox" data-chat-image="${image.id}" ${composer.selections.images.includes(image.id) ? 'checked' : ''}>${escape(image.name)}</label>`).join('')}</fieldset>${composer.provider === 'claude' ? '' : `<fieldset class="chat-selections"><legend>Allow requested text edits</legend><p>Only check fields you explicitly ask the provider to edit. Suggestions remain proposals.</p>${contextFields(card.template).map((field) => `<label><input type="checkbox" data-chat-authority="${field.key}" ${composer.authority.fields.includes(field.key) ? 'checked' : ''}>${escape(field.label)}</label>`).join('')}</fieldset>`}<div id="chat-exact-preview"></div></details>
+    <label class="sr-only" for="chat-prompt">Prompt for this card</label><textarea id="chat-prompt" maxlength="200000" placeholder="Ask about this card…" ${item.pending ? 'disabled' : ''}>${escape(composer.prompt)}</textarea><div class="chat-send-row"><span id="chat-save-state">${item.dirty ? 'Saving draft…' : ''}</span><button class="button small secondary" data-action="chat-stop" ${active(item) ? '' : 'disabled'}>Stop</button><button class="button primary" data-action="chat-send">${item.pending ? 'Retry Send' : 'Send'}</button></div>${composer.provider === 'claude' ? '<p class="chat-hint">Claude supports text and image references. Native tools are disabled; apply suggestions with Use text.</p>' : '<p class="chat-hint">Codex native image generation and exact-reference edits stay in this chat. Add to gallery never sets Display, Original or Inspiration.</p><p class="chat-hint">Codex can write in its workspace and run sandboxed commands without network access automatically. Escape requests need approval. Outside reads are possible. Full native access keeps card acceptance rules. <a href="/codex.html" target="_blank" rel="noopener">Configuration and permission limits</a></p>'}`;
   $('#chat-context-preview').addEventListener('toggle', () => { rememberView(); if ($('#chat-context-preview').open) void refreshPreview(item); });
   if (item.view.preview) void refreshPreview(item);
   updateComposerControls(item);
@@ -421,6 +431,7 @@ function connect(cursor) {
   events = new EventSource(`/api/stream?since=${cursor}`);
   events.addEventListener('activity', (event) => {
     const entry = JSON.parse(event.data);
+    if (entry.entity === 'provider') void loadModelCatalog().catch((error) => toast(error.message));
     if (entry.entity === 'chat' || entry.entity === 'card' || entry.entity === 'project') scheduleActivity();
     if ((entry.entity === 'chat' || entry.entity === 'card') && entry.entityId === selected) scheduleRefresh();
   });
@@ -452,7 +463,18 @@ function renderActivityList() {
   const list = $('#chat-activity-list'); if (!list) return;
   list.innerHTML = activity.length ? activity.map((entry) => `<button class="chat-activity-entry" data-action="chat-activity-card" data-id="${escape(entry.cardId)}" data-project="${escape(entry.projectId)}" ${entry.requestId ? 'data-reveal="requests"' : ''} ${entry.deleted ? 'disabled' : ''}><strong>${escape(entry.title || 'Untitled card')}${entry.deleted ? ' (deleted)' : ''}</strong><span data-activity-card="${escape(entry.cardId)}">${escape(activityLabel(entry))}</span>${entry.reason ? `<span>${escape(entry.reason)}</span>` : ''}</button>`).join('') : '<p>No active card chats.</p>';
 }
+async function loadModelCatalog() {
+  if (catalogLoading) return catalogLoading;
+  catalogLoading = (async () => {
+    modelCatalog = (await request('/api/models')).providers;
+    const item = chats.get(selected);
+    if (item?.composer && $('#chat-composer')) renderComposer(item);
+  })();
+  try { await catalogLoading; } finally { catalogLoading = null; }
+}
 export function initializeChats(callbacks) {
+  void loadModelCatalog().catch((error) => toast(error.message));
+  window.addEventListener('focus', () => { void loadModelCatalog().catch((error) => toast(error.message)); });
   navigation = callbacks;
   document.addEventListener('selectionchange', updateSelectionActions);
   window.addEventListener('resize', updateSelectionActions);
@@ -477,7 +499,8 @@ export function initializeChats(callbacks) {
       if (target.checked) fields.add(target.dataset.chatAuthority); else fields.delete(target.dataset.chatAuthority);
       item.composer.authority.fields = [...fields]; composerChanged(item); return;
     }
-    if (target.id === 'chat-model') { item.composer.model = target.value || null; composerChanged(item); return; }
+    if (target.id === 'chat-provider') { item.composer.provider = target.value; item.composer.model = null; composerChanged(item); renderComposer(item); return; }
+    if (target.id === 'chat-model') { item.composer.model = target.value || null; composerChanged(item); updateComposerControls(item); return; }
     for (const [attribute, key] of [['chatField', 'fields'], ['chatRole', 'roles'], ['chatImage', 'images']]) if (target.dataset[attribute]) {
       const set = new Set(item.composer.selections[key]);
       if (target.checked) set.add(target.dataset[attribute]); else set.delete(target.dataset[attribute]);
@@ -505,13 +528,6 @@ export function initializeChats(callbacks) {
         item.composer = (await request(url(item.id))).composer;
         item.error = ''; if (selected === item.id) { $('#chat-error').hidden = true; renderComposer(item); }
       } });
-      if (action === 'chat-discover') {
-        target.disabled = true;
-        const result = await send('POST', url(item.id, 'discover'), {});
-        item.models = result.discovery.models;
-        if (selected === item.id) renderComposer(item);
-        if (!result.effective.supported) showError(item, new Error(result.effective.reasons.join(' ')));
-      }
       if (action === 'chat-reconcile') { await send('POST', url(item.id, 'reconcile'), {}); await refresh(item); }
       if (action === 'chat-continue') { await send('POST', url(item.id, 'continue'), { submissionId: target.dataset.id }); await refresh(item); }
       if (action === 'chat-resolve') smallForm({ title: 'Mark this delivery interrupted?', description: 'Codex may already have received this prompt. Marking it interrupted unblocks this card’s queue and lets you retry deliberately, which may send it twice. Nothing is resent automatically.', submit: 'Mark interrupted', onSubmit: async () => { await send('POST', url(item.id, 'resolve'), { attemptId: target.dataset.id }); await refresh(item); } });
@@ -535,7 +551,7 @@ export function initializeChats(callbacks) {
       if (action === 'chat-full-access') smallForm({ title: 'Allow full native access?', description: 'Approve remaining native requests individually. From the next response Codex runs without its sandbox or approval prompts for this conversation. It can reach app storage and anything your account can reach. Card acceptance keeps its own rules. Stop active work before revoking; fresh context resets the allowance.', submit: 'Allow full native access', onSubmit: async () => { await send('POST', url(item.id, 'answer'), { requestId: target.dataset.id, response: { decision: 'accept', scope: 'full' } }); await refresh(item); } });
       if (action === 'chat-fresh') smallForm({ title: 'Start empty fresh context?', description: 'Retain this conversation as previous history and reset its permissions. Cancel any queued or held submissions for the old conversation. No native conversation or turn starts until Send.', submit: 'Start fresh and cancel queued work', onSubmit: async () => { await saveComposer(item); item.snapshot = await send('POST', url(item.id, 'fresh'), { cancelQueued: true }); renderTranscript(item); } });
     } catch (error) { if (item) showError(item, error); else toast(error.message); }
-    finally { if (action === 'chat-discover' && target.isConnected) target.disabled = false; }
+
   });
   document.addEventListener('visibilitychange', () => { if (document.hidden) { rememberView(); flushComposers(); } else scheduleRefresh(); });
   matchMedia('(min-width: 1180px)').addEventListener('change', scheduleRefresh);

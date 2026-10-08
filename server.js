@@ -4,6 +4,8 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openStore, imageIdPattern } from './store.js';
+import { createClaudeAdapter } from './claude-adapter.js';
+import { createProviderService } from './provider-service.js';
 import { createCodexAdapter } from './codex-adapter.js';
 import { configurationDiscovery, compileConfiguration, mandatoryBehavior } from './codex-configuration.js';
 import { createChatService } from './chat-service.js';
@@ -67,7 +69,7 @@ async function json(req, limit) {
   catch (error) { if (error.status) throw error; throw Object.assign(new Error('Invalid JSON.'), { status: 400 }); }
 }
 
-export async function createApp({ dataDir = process.env.DATA_DIR || path.join(root, 'data'), fetch: fetchImpl = globalThis.fetch, onCardEvent, codexAdapter, providerBackoffMs, streamReplayLimit } = {}) {
+export async function createApp({ dataDir = process.env.DATA_DIR || path.join(root, 'data'), fetch: fetchImpl = globalThis.fetch, onCardEvent, codexAdapter, claudeAdapter, providerBackoffMs, streamReplayLimit } = {}) {
   const lock = await lockDataDirectory(dataDir);
   dataDir = lock.dataDir;
   let store; let worker; let stream;
@@ -87,9 +89,12 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
     };
     const read = (req) => json(req, 12 * 1024 * 1024);
     const codex = codexAdapter ?? createCodexAdapter();
-    const chat = createChatService({ store, adapter: codex, dataDir });
+    const claude = claudeAdapter ?? createClaudeAdapter();
+    const adapters = { codex, claude };
+    const providers = createProviderService({ store, adapters });
+    const chat = createChatService({ store, adapter: codex, adapters, providers, dataDir });
     stream = createEventStream({ store, replayLimit: streamReplayLimit });
-    worker = createChatWorker({ store, adapter: codex, service: chat, ctx: currentUser(), providerBackoffMs,
+    worker = createChatWorker({ store, adapter: codex, adapters, service: chat, ctx: currentUser(), providerBackoffMs,
       onDelta: (delta) => stream.delta(currentUser().workspaceId, delta) });
     const codexAction = async (fn) => {
       try { return await fn(); } catch (error) {
@@ -121,12 +126,13 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
       ['POST', /^\/api\/cards\/([^/]+)\/chat\/cancel$/, async (ctx, req, id) => (store.chats.cancelSubmission(ctx, id, (await read(req)).submissionId), { ok: true })],
       ['POST', /^\/api\/cards\/([^/]+)\/chat\/retry$/, async (ctx, req, id) => store.chats.retry(ctx, id, (await read(req)).submissionId)],
       ['POST', /^\/api\/cards\/([^/]+)\/chat\/answer$/, async (ctx, req, id) => { const input = await read(req); return worker.answer(id, input.requestId, input.response); }],
-      ['GET', /^\/api\/providers\/codex$/, (ctx) => ({ ...store.providerConfiguration(ctx), running: codex.running, mandatoryBehavior, discoveryRequired: true })],
-      ['PUT', /^\/api\/providers\/codex$/, async (ctx, req) => store.saveProviderConfiguration(ctx, await read(req))],
-      ['POST', /^\/api\/providers\/codex\/discover$/, (ctx) => codexAction(async () => {
-        const discovery = await configurationDiscovery(codex);
-        return { discovery, effective: compileConfiguration(store.providerConfiguration(ctx).selection, discovery) };
-      })],
+      ['GET', /^\/api\/settings$/, (ctx) => providers.snapshot(ctx)],
+      ['GET', /^\/api\/models$/, (ctx) => providers.catalog(ctx)],
+      ['POST', /^\/api\/models\/refresh$/, (ctx) => providers.catalog(ctx, { refresh: true })],
+      ['GET', /^\/api\/providers\/(codex|claude)$/, (ctx, req, provider) => ({ ...store.providerConfiguration(ctx, provider), running: adapters[provider].running,
+        ...store.providerCatalog(ctx, provider), mandatoryBehavior: provider === 'codex' ? mandatoryBehavior : ['Claude uses your installed Claude Code authentication and native conversation history. Card chats support text and image references; native tools are disabled.'], discoveryRequired: false })],
+      ['PUT', /^\/api\/providers\/(codex|claude)$/, async (ctx, req, provider) => store.saveProviderConfiguration(ctx, await read(req), provider)],
+      ['POST', /^\/api\/providers\/(codex|claude)\/discover$/, (ctx, req, provider) => codexAction(() => providers.refresh(ctx, provider))],
       ['GET', /^\/api\/workspace$/, (ctx) => store.workspace(ctx)],
       ['POST', /^\/api\/projects$/, async (ctx, req) => store.createProject(ctx, await read(req)), 201],
       ['PATCH', /^\/api\/projects\/([^/]+)$/, async (ctx, req, id) => store.updateProject(ctx, id, await read(req))],
@@ -215,13 +221,14 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
     server.close = (callback) => {
       if (!closing) {
         worker.close(); stream.close();
-        const stopped = codex.close().catch((error) => console.error(error));
+        const stopped = Promise.all([codex.close(), claude.close()]).catch((error) => console.error(error));
         closing = new Promise((resolve) => close(resolve)).then(async (error) => {
           await stopped;
           await chat.drain();
           // An HTTP request already in progress may have rediscovered Codex
           // during shutdown. Finish its filesystem work and stop that process.
-          await codex.close();
+          await providers.drain();
+          await Promise.all([codex.close(), claude.close()]);
           return error;
         }).finally(() => { try { store.close(); } finally { lock.release(); } });
       }

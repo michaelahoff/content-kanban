@@ -14,7 +14,7 @@ function showAvailability(effective) {
   heading.textContent = !effective.supported ? 'This configuration is unavailable.' : effective.inherited ? 'Your full Codex setup will be used. It is not isolated.' : 'This configuration passes the installed configuration checks.';
   target.append(heading);
   for (const reason of effective.reasons) { const p = document.createElement('p'); p.textContent = reason; target.append(p); }
-  if (effective.supported) { const p = document.createElement('p'); p.textContent = 'Model access is checked when you submit. Card chat controls arrive in the next milestone.'; target.append(p); }
+  if (effective.supported) { const p = document.createElement('p'); p.textContent = 'Models are saved globally for all card chats. Account access is checked when you submit.'; target.append(p); }
 }
 function showItems() {
   const target = $('#items'); target.replaceChildren();
@@ -38,7 +38,7 @@ $('#instructions').addEventListener('input', () => { $('#availability').textCont
 $('#configuration').addEventListener('submit', async (event) => {
   event.preventDefault(); $('#save').disabled = true;
   try {
-    settings = await request('PUT', '/api/providers/codex', { revision: settings.revision, selection: { instructions: $('#instructions').value, selected: [...selected], inherited: $('#inherited').checked } });
+    settings = await request('PUT', '/api/providers/codex', { revision: settings.revision, selection: { enabled: settings.selection.enabled, instructions: $('#instructions').value, selected: [...selected], inherited: $('#inherited').checked } });
     $('#status').textContent = 'Selection saved. Discover again to validate it before use.';
     $('#availability').textContent = '';
   } catch (error) { $('#status').textContent = error.message; }
@@ -60,8 +60,10 @@ $('#discover').addEventListener('click', async () => {
 });
 try {
   settings = await request('GET', '/api/providers/codex');
+  if (settings.discovery) { discovery = settings.discovery; }
   selected = new Set(settings.selection.selected); $('#instructions').value = settings.selection.instructions;
   $('#inherited').checked = settings.selection.inherited === true; showMode();
+  if (discovery) showItems();
   for (const behavior of settings.mandatoryBehavior) { const li = document.createElement('li'); li.textContent = behavior; $('#mandatory').append(li); }
   $('#status').textContent = 'Saved settings loaded. Discover when you are ready to review installed capabilities.'; $('#save').disabled = false;
 } catch (error) { $('#status').textContent = error.message; $('#discover').disabled = true; }

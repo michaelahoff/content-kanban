@@ -1,12 +1,12 @@
 import { mkdir, readFile, writeFile, chmod, lstat, realpath, unlink } from 'node:fs/promises';
 import path from 'node:path';
-import { configurationDiscovery, compileConfiguration } from './codex-configuration.js';
+import { configurationDiscovery, compileConfiguration } from './provider-configuration.js';
 import { cardTools } from './card-tools.js';
 import { nativeImageBytes, storeImage, readRegularFile, within, sha256 as hash, maxImageBytes } from './image-files.js';
 import { referencePath } from './public/chat-context.js';
 
 const fail = (status, message) => { throw Object.assign(new Error(message), { status }); };
-export function createChatService({ store, adapter, dataDir }) {
+export function createChatService({ store, adapter, adapters = { codex: adapter }, providers, dataDir }) {
   const workspace = (cardId) => path.resolve(dataDir, 'workspaces', cardId);
   async function imageBytes(image) {
     let bytes;
@@ -47,19 +47,22 @@ export function createChatService({ store, adapter, dataDir }) {
       store.getCard(ctx, cardId);
       const cwd = workspace(cardId);
       await mkdir(cwd, { recursive: true });
-      const discovery = await configurationDiscovery(adapter, { cwd });
-      return { discovery, effective: compileConfiguration(store.providerConfiguration(ctx).selection, discovery) };
+      const provider = store.chats.context(ctx, cardId).provider;
+      providers?.assertEnabled(ctx, provider);
+      const discovery = await configurationDiscovery(adapters[provider], { cwd }, provider);
+      return { discovery, effective: compileConfiguration(store.providerConfiguration(ctx, provider).selection, discovery, [], provider) };
     },
     async queue(ctx, cardId, input) {
       if (!input || typeof input.id !== 'string' || !/^[\w-]{1,100}$/.test(input.id)) fail(400, 'A browser submission ID is required.');
       const existing = store.chats.findSubmission(ctx, cardId, input.id);
       if (existing) return existing;
       const captured = await this.preview(ctx, cardId);
-      const settings = store.providerConfiguration(ctx);
+      providers?.assertEnabled(ctx, captured.provider);
+      const settings = store.providerConfiguration(ctx, captured.provider);
       const { discovery } = await this.discover(ctx, cardId);
-      if (!discovery.models.some((model) => model.id === captured.model)) fail(400, 'Choose an available Codex model explicitly.');
-      if (settings.revision !== store.providerConfiguration(ctx).revision) fail(409, 'Codex settings changed while preparing Send. Review and send again.');
-      return store.chats.queue(ctx, cardId, input, captured, compileConfiguration(settings.selection, discovery, cardTools));
+      if (!discovery.models.some((model) => model.id === captured.model)) fail(400, 'Choose an available model in Settings.');
+      if (settings.revision !== store.providerConfiguration(ctx, captured.provider).revision) fail(409, 'Provider settings changed while preparing Send. Review and send again.');
+      return store.chats.queue(ctx, cardId, input, captured, compileConfiguration(settings.selection, discovery, cardTools, captured.provider));
     },
     async references(submission) {
       const directory = path.join(workspace(submission.cardId), 'references');

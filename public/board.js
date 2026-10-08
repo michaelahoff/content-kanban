@@ -57,7 +57,7 @@ export function renderApp() {
       <a class="brand" href="/" aria-label="Frameboard home"><span class="brand-mark">${icon('board')}</span>Frameboard<span class="brand-period">.</span></a>
       <div class="sidebar-section"><span>Projects</span>${iconButton('add-project', 'Add project', 'plus')}</div>
       <nav class="project-list">${state.projects.map((item) => `<button class="project-link ${item.id === state.projectId ? 'active' : ''}" data-action="switch-project" data-id="${item.id}" ${item.id === state.projectId ? 'aria-current="page"' : ''}>${icon('board')}<span>${escape(item.name)}</span><span class="project-count">${cardCount(item)}</span></button>`).join('')}</nav>
-      <div class="sidebar-bottom"><a class="button secondary" href="/codex.html">Codex settings</a><div class="local-label"><span class="online-dot"></span>Saved on this computer</div></div>
+      <div class="sidebar-bottom"><a class="button secondary" href="/settings.html" aria-label="General settings">Settings</a><div class="local-label"><span class="online-dot"></span>Saved on this computer</div></div>
     </aside>
     <main class="main">
       <div class="topbar"><div class="breadcrumbs">${iconButton('toggle-sidebar', 'Toggle projects', 'menu')}</div><div class="workspace-chat-activity"><button class="button small secondary" data-action="workspace-chat-activity">Chat activity</button><div id="chat-activity-list" hidden></div></div><div class="save-status" data-save-status></div></div>
