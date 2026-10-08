@@ -37,7 +37,7 @@ One execution of a lane playbook's instructions for one card, triggered by movin
 _Avoid_: Lane graph run
 
 **Lane result**:
-The block at the end of a lane run's reply that lists field changes, hand-off notes and an optional proposed move. Fields the playbook may edit apply; everything else becomes a card proposal.
+The block at the end of a lane run's reply that lists field changes, hand-off notes, an optional proposed move and explicitly declared outputs to retain as saved snapshots. Field changes outside the playbook's authority and moves require user review; retaining an output does not adopt it into the card or promote it to the project library.
 
 **Hand-off notes**:
 A card's `notes.md`, read by every lane run and added to by each one, so work carries across lanes and providers.

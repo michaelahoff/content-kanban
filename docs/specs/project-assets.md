@@ -1,6 +1,6 @@
 # Project assets for card prompts
 
-Status: review draft for [Set project asset acceptance criteria and implementation specification](https://github.com/michaelahoff/content-kanban/issues/42). Planning only. The established decisions below are approved; the two synthesis refinements in section 12 await live review. This ticket stays open until the user confirms the complete specification and delivery sequence.
+Status: consolidated specification awaiting final confirmation for [Set project asset acceptance criteria and implementation specification](https://github.com/michaelahoff/content-kanban/issues/42). Planning only. The established decisions and both synthesis refinements in section 12 are approved. This ticket stays open until the user confirms the complete specification, delivery sequence and that no in-scope decisions remain.
 
 Baseline: `main` at `221b580e73ec21d92306c47262e7df03e125108a`, checked 2026-10-08. Changes after that baseline require an integration check before implementation. The [project asset map](https://github.com/michaelahoff/content-kanban/issues/34) ends at an implementation-ready specification, with production work following separately.
 
@@ -47,7 +47,7 @@ Manual choices remember ordered asset/folder IDs in the same card chat across or
 
 Selected folders expand recursively, each in relative-path order. Preserve mixed source order; deduplicate overlaps by asset identity, with first occurrence fixing position and every selection source retained as provenance. Independently owned assets remain separate even when hashes or names match.
 
-The final input union also includes existing submitted card text/images and explicitly reused saved outputs. Section 12 proposes its cross-category ordering and exact-identity deduplication. Empty library selection adds no library assets; it never suppresses existing manual card context or lane operational documents/gallery images.
+The final input union also includes existing submitted card text/images and explicitly reused saved outputs. Section 12 defines its approved cross-category ordering and exact-identity deduplication. Empty library selection adds no library assets; it never suppresses existing manual card context or lane operational documents/gallery images.
 
 Queueing captures one coherent immutable record:
 
@@ -109,7 +109,7 @@ Lane departure cancels pending/undelivered queued work; running work may finish 
 
 A saved output is an explicit retained snapshot owned by the originating card chat, conversation, submission and delivery attempt. Ordinary workspace files remain mutable. Retain finished files through explicit agent registration or user Save output, and selected transcript text through **Save as document**. Preserve existing native image capture; rendered images use explicit registration and retain their actual creation method.
 
-Section 12 proposes the lane-compatible registration extension. Merely mentioning a path, finding a new file, or returning a filename is never registration. Do not scan/discover/adopt every changed workspace file. Tool-disabled Claude can produce/save explicit text, but cannot claim it wrote a local binary or created a general filesystem result.
+Section 12 defines the approved lane-compatible registration extension. Merely mentioning a path, finding a new file, or returning a filename is never registration. Do not scan/discover/adopt every changed workspace file. Tool-disabled Claude can produce/save explicit text, but cannot claim it wrote a local binary or created a general filesystem result.
 
 Copy verified exact bytes/text into retained storage at save time. Later workspace edits do not modify the snapshot. A revision is a new saved output with a predecessor link. Record actual producing provider/attempt, creation method and known turn/tool/native identifiers. Link exact supplied versions and labels separately from specifically declared derivation sources; unknown metadata remains unknown. Do not infer derivation from similar names/bytes or assume every supplied asset was used.
 
@@ -210,9 +210,9 @@ Required acceptance cases (feature tests to implement; none are claimed passing 
 
 The audit's 47 passing baseline checks establish existing main behavior only. New protection, asset, output, archive, streaming and restore evidence is required separately, including live native gates where local deterministic peers cannot prove usability.
 
-## 12. Synthesis refinements for live confirmation
+## 12. Approved synthesis refinements
 
-The earlier resolutions require the following concrete integration behavior but do not settle its complete cross-category/protocol form. These recommendations remain proposals until the user answers; they must not be silently treated as approved.
+The user approved both refinements in the live review on 2026-10-08: “Use this order (recommended)” for input ordering and “Use this contract (recommended)” for lane output registration. These extend the earlier resolutions with the concrete integration contracts below. Final confirmation of the complete specification and delivery sequence remains outstanding.
 
 ### A. Order and identity across the full input union
 
@@ -228,7 +228,7 @@ File descriptors are usable only when that provider actually has filesystem capa
 
 Apply live attempt/revocation checks before registration and byte publication. A lane departure may preserve an otherwise live running attempt's registration; Stop/card restoration/archive/recovery cannot regain it. Validate registration entries without weakening existing field/notes/move checks. A file-save failure is separate from agent completion and any separately valid card effect. Surface missing/unusable paths honestly and retain reply text rather than claim the output was saved.
 
-This is an additive explicit result-protocol extension, preserving ADR 0003's single reporting path. Its implemented form requires updating the protocol guidance and glossary only after confirmation. No new filesystem tools for Claude or agent-managed library permissions are implied.
+This is an additive explicit result-protocol extension, preserving ADR 0003's single reporting path. The planning glossary now records output registration as part of the lane result; implementation must update the result protocol and guidance. No new filesystem tools for Claude or agent-managed library permissions are implied.
 
 ## 13. Smallest coherent delivery sequence
 
@@ -241,4 +241,4 @@ These are implementation stages for the subsequent effort, not child decision ti
 5. **Explicit saved results and reuse.** Implement the confirmed lane registration extension, user text/file saves, retained output browsing/download/retry, same-card selection and user-only promotion with provenance. Include every store in backup before exposing saves. Evidence: 17–19, 23–26; retain native image adoption semantics.
 6. **Native gates and integrated release evidence.** Run installed-harness and required subscribed-account format checks, bounded-memory large-file/failure trials, archive/restart/restore races and full workflow checks. Enable Claude PDF only on passing evidence; unsupported routes remain explicit. Update user-facing capability descriptions and current-main integration evidence. All applicable acceptance cases must pass; baseline/fake-provider tests alone cannot certify this feature.
 
-Completion of this planning ticket requires a durable specification pointer and the user's confirmation of both synthesis refinements, the delivery sequence and that no in-scope decisions remain. Production implementation has not started.
+Both synthesis refinements are approved and the specification has a durable planning-branch pointer. Completion of this planning ticket still requires the user's final confirmation of the complete specification, delivery sequence and that no in-scope decisions remain. Production implementation has not started.
