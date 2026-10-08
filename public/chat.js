@@ -2,6 +2,7 @@ import { $, escape, toast, smallForm } from './ui.js';
 import { request, send, enqueue } from './api.js';
 import { state, locateCard, flushCards, saveStatus, refreshSavedCard } from './state.js';
 import { contextFields } from './chat-context.js';
+import { attemptMarkup, progressState, runningStatuses } from './chat-transcript.js';
 
 const chats = new Map();
 let selected = null; let navigation; let activity = []; let events = null; let activityTimer = null; let refreshTimer = null; let clockTimer;
@@ -36,7 +37,7 @@ function newItem(id) {
   return { id, snapshot: null, composer: null, dirty: false, version: 0, view: { tab: 'editor', scroll: 0, editorScroll: 0, preview: false, ...view },
     pending, sending: false, models: [], error: '', timer: null, saving: null };
 }
-function active(item) { return item.snapshot?.attempts.some((attempt) => ['dispatching', 'accepted', 'running', 'interrupt-requested'].includes(attempt.status)); }
+function active(item) { return item.snapshot?.attempts.some((attempt) => runningStatuses.has(attempt.status)); }
 function updateComposerControls(item) {
   if (selected !== item.id || !$('#chat-prompt')) return;
   const locked = item.sending || Boolean(item.pending);
@@ -59,6 +60,7 @@ function applyLayout() {
   if (width) dialog.style.setProperty('--chat-width', `${Math.max(300, Math.min(width, dialog.clientWidth - 520))}px`);
   const tabs = $('.workbench-tabs'); if (tabs) tabs.hidden = hidden;
   document.querySelectorAll('[data-action="workbench-tab"]').forEach((button) => button.setAttribute('aria-selected', String(button.dataset.tab === chats.get(selected)?.view.tab)));
+  updateSelectionActions();
 }
 function setDialogMode() {
   const dialog = $('#card-dialog');
@@ -78,17 +80,17 @@ export function mountChat(cardId) {
   while (dialog.firstChild) editor.append(dialog.firstChild);
   dialog.append(editor);
   dialog.insertAdjacentHTML('afterbegin', `<div class="workbench-tabs" role="tablist" aria-label="Card workbench"><button role="tab" data-action="workbench-tab" data-tab="editor">Editor</button><button role="tab" data-action="workbench-tab" data-tab="chat">Chat</button></div>`);
-  dialog.insertAdjacentHTML('beforeend', `<div id="chat-resizer" role="separator" tabindex="0" aria-label="Resize chat" aria-orientation="vertical"></div><aside id="card-chat" aria-label="Card chat"><div class="chat-header"><div><h2>Card chat</h2><span>Codex</span></div><button class="button small secondary" data-action="chat-fresh">Start fresh context</button></div><div id="chat-error" role="alert" hidden></div><div id="chat-transcript" class="chat-transcript" aria-label="Conversation history"></div><div id="chat-requests"></div><div id="chat-proposals"></div><div id="chat-grants"></div><div id="chat-composer" class="chat-composer"></div></aside>`);
+  dialog.insertAdjacentHTML('beforeend', `<div id="chat-resizer" role="separator" tabindex="0" aria-label="Resize chat" aria-orientation="vertical"></div><aside id="card-chat" aria-label="Card chat"><div class="chat-header"><div><h2>Card chat</h2><span>Codex</span></div><button class="button small secondary" data-action="chat-fresh">Start fresh context</button></div><div id="chat-error" role="alert" hidden></div><div id="chat-transcript" class="chat-transcript" aria-label="Conversation history"></div><div id="chat-progress" role="status" hidden></div><div id="chat-selection-actions" role="group" aria-label="Selected reply actions" hidden><button type="button" data-action="chat-reply">Reply</button><button type="button" data-action="chat-use-text">Use text…</button></div><div id="chat-requests"></div><div id="chat-proposals"></div><div id="chat-grants"></div><div id="chat-composer" class="chat-composer"></div></aside>`);
   $('.editor-header-right').insertAdjacentHTML('afterbegin', '<button class="button small secondary" data-action="toggle-chat" aria-expanded="true">Hide chat</button>');
   setDialogMode();
   if (item.snapshot) { renderComposer(item); renderTranscript(item); }
   else $('#chat-transcript').textContent = 'Loading saved conversation…';
   void refresh(item).catch((error) => showError(item, error));
   wireResize();
-  $('#chat-transcript').addEventListener('scroll', rememberView, { passive: true });
+  $('#chat-transcript').addEventListener('scroll', () => { rememberView(); updateSelectionActions(); }, { passive: true });
   $('.editor-content').scrollTop = item.view.editorScroll;
 }
-export function unmountChat() { rememberView(); selected = null; document.body.classList.remove('workbench-open'); }
+export function unmountChat() { rememberView(); clearReplySelection(chats.get(selected)); selected = null; document.body.classList.remove('workbench-open'); }
 export function hasUnsentChatChanges() { return [...chats.values()].some((item) => item.dirty || item.saving || item.sending || item.pending); }
 export function flushComposers() { for (const item of chats.values()) if (item.dirty) void saveComposer(item).catch((error) => showError(item, error)); }
 function showError(item, error) {
@@ -183,7 +185,7 @@ function contextMarkup(context) {
   return `${context.fields.map((field) => `<p><strong>${escape(field.label)} <small>v${field.version}</small></strong><br>${escape(field.value)}</p>`).join('')}${context.images.map((image) => `<figure><img src="/images/${encodeURIComponent(image.id)}" alt="${escape(image.name)}"><figcaption>${escape(image.labels.join(', '))}: ${escape(image.name)}<br><small>Version ${escape(image.id)} · SHA-256 ${escape(image.hash)}</small></figcaption></figure>`).join('')}`;
 }
 function frozenMarkup(submission) {
-  return `<details class="chat-frozen"><summary>Submitted context · ${escape(submission.model)}</summary><p>${escape(submission.prompt)}</p>${contextMarkup(submission.context)}<small>Configuration ${escape(submission.configuration.id)}</small></details>`;
+  return `<details class="chat-frozen" data-detail-key="context:${escape(submission.id)}"><summary>Submitted context · ${escape(submission.model)}</summary><p>${escape(submission.prompt)}</p>${contextMarkup(submission.context)}<small>Configuration ${escape(submission.configuration.id)}</small></details>`;
 }
 async function refreshPreview(item) {
   if (selected !== item.id || !$('#chat-context-preview')?.open || item.dirty || item.saving) return;
@@ -206,23 +208,30 @@ function recoveryMarkup(submission, attempts) {
 function renderTranscript(item) {
   const timeline = $('#chat-transcript'); if (!timeline || !item.snapshot) return;
   const nearEnd = timeline.scrollHeight - timeline.clientHeight - timeline.scrollTop < 32;
-  const scroll = timeline.scrollTop || item.view.scroll;
+  const rendered = timeline.dataset.rendered !== undefined;
+  const scroll = rendered ? timeline.scrollTop : item.view.scroll;
   const snapshot = item.snapshot;
   const html = snapshot.conversations.map((conversation) => {
     const submissions = snapshot.submissions.filter((submission) => submission.conversationId === conversation.id);
     const divider = conversation.state === 'previous' ? 'Previous conversation' : conversation.state === 'native-unavailable' ? 'Native context unavailable · history retained' : snapshot.conversations.length > 1 ? 'Current conversation' : '';
     return `${divider ? `<div class="chat-divider">${divider}</div>` : ''}${submissions.map((submission) => {
       const attempts = snapshot.attempts.filter((attempt) => attempt.submissionId === submission.id);
-      return `<article class="chat-submission"><div class="chat-prompt-sent">${escape(submission.prompt)}</div>${frozenMarkup(submission)}<p class="chat-status">${escape(submission.status)}${submission.reason ? ` · ${escape(submission.reason)}` : ''}</p>${attempts.map((attempt) => `${attempt.previousAttemptId ? `<div class="chat-divider">${snapshot.attempts.find((a) => a.id === attempt.previousAttemptId)?.status === 'not-delivered' ? 'Not sent before Codex stopped · sent again with original inputs' : 'Retry · original inputs retained'}</div>` : ''}${snapshot.items.filter((entry) => entry.attemptId === attempt.id).map((entry) => `<div data-item-sequence="${entry.sequence}" class="chat-item ${entry.kind === 'notice' ? 'chat-notice' : ''}">${['imageGeneration', 'registeredImage'].includes(entry.kind) ? outputMarkup(item, (snapshot.outputs ?? []).find((o) => o.attemptId === entry.attemptId && (o.nativeId === entry.nativeId || o.id === entry.data.outputId))) : escape(entry.text || ({ dynamicToolCall: 'Tool result', commandExecution: 'Command execution' }[entry.kind] ?? entry.kind))}${!entry.completed && entry.kind === 'agentMessage' ? '<small>Partial response</small>' : ''}${entry.kind === 'agentMessage' ? `<button class="button small secondary" data-action="chat-use-text" data-sequence="${entry.sequence}">Use selected reply text</button>` : ''}</div>`).join('')}`).join('')}${recoveryMarkup(submission, attempts)}${['queued', 'waiting', 'held'].includes(submission.status) ? `<button class="button small secondary" data-action="chat-cancel" data-id="${escape(submission.id)}">Cancel submission</button>` : ''}${['failed', 'interrupted'].includes(submission.status) && conversation.state === 'active' ? `<button class="button small secondary" data-action="chat-retry" data-id="${escape(submission.id)}">Retry original submission</button>` : ''}</article>`;
+      return `<article class="chat-submission"><div class="chat-prompt-sent"><span class="chat-speaker">You</span>${escape(submission.prompt)}</div>${frozenMarkup(submission)}<p class="chat-status">${escape(({ running: 'In progress', completed: 'Completed', queued: 'Queued', waiting: 'Waiting for provider', held: 'Needs attention', failed: 'Failed', interrupted: 'Stopped', uncertain: 'Check delivery', cancelled: 'Cancelled' })[submission.status] ?? submission.status)}${submission.reason ? ` · ${escape(submission.reason)}` : ''}</p>${attempts.map((attempt) => `${attempt.previousAttemptId ? `<div class="chat-divider">${snapshot.attempts.find((a) => a.id === attempt.previousAttemptId)?.status === 'not-delivered' ? 'Not sent before Codex stopped · sent again with original inputs' : 'Retry · original inputs retained'}</div>` : ''}${attemptMarkup(snapshot.items.filter((entry) => entry.attemptId === attempt.id), attempt.id,
+        (entry) => outputMarkup(item, (snapshot.outputs ?? []).find((output) => output.attemptId === entry.attemptId
+          && (output.nativeId === entry.nativeId || output.id === entry.data?.outputId))), runningStatuses.has(attempt.status))}`).join('')}${recoveryMarkup(submission, attempts)}${['queued', 'waiting', 'held'].includes(submission.status) ? `<button class="button small secondary" data-action="chat-cancel" data-id="${escape(submission.id)}">Cancel submission</button>` : ''}${['failed', 'interrupted'].includes(submission.status) && conversation.state === 'active' ? `<button class="button small secondary" data-action="chat-retry" data-id="${escape(submission.id)}">Retry original submission</button>` : ''}</article>`;
     }).join('')}`;
   }).join('');
   if (timeline.dataset.rendered !== html) {
-    const openDetails = [...timeline.querySelectorAll('details[open]')].map((node) => [...timeline.querySelectorAll('details')].indexOf(node));
+    const selection = selectedReply();
+    const openDetails = new Set([...timeline.querySelectorAll('details[open]')].map((node) => node.dataset.detailKey));
     timeline.innerHTML = html || '<p class="chat-empty">Send a prompt to start this card’s conversation.</p>';
     timeline.dataset.rendered = html;
-    openDetails.forEach((index) => { const node = timeline.querySelectorAll('details')[index]; if (node) node.open = true; });
-    timeline.scrollTop = nearEnd && !item.view.scroll ? timeline.scrollHeight : scroll;
+    timeline.querySelectorAll('details').forEach((node) => { node.open = openDetails.has(node.dataset.detailKey); });
+    restoreReplySelection(selection);
+    timeline.scrollTop = nearEnd && !selection && (rendered || !item.view.scroll) ? timeline.scrollHeight : scroll;
+    updateSelectionActions();
   }
+  renderProgress(item);
   renderRequests(item);
   renderProposals(item);
   const current = snapshot.conversations.find((c) => c.state !== 'previous');
@@ -267,13 +276,67 @@ async function reviewProposal(item, id) {
       await refresh(item);
     }, extra: `<button class="button secondary" type="button" data-action="chat-reject-proposal" data-id="${escape(id)}">Reject proposal</button>` });
 }
-function useSelectedText(item, sequence) {
-  const selection = window.getSelection(); const text = selection?.toString() ?? '';
-  const entry = item.snapshot.items.find((i) => i.sequence === sequence);
-  const source = selection?.anchorNode?.parentElement?.closest('[data-item-sequence]');
-  if (!text || !entry?.text.includes(text) || Number(source?.dataset.itemSequence) !== sequence) throw new Error('Select text within this reply first.');
+function selectedReply() {
+  const selection = window.getSelection();
+  if (!selection?.rangeCount || selection.isCollapsed) return null;
+  const range = selection.getRangeAt(0);
+  const parent = (node) => node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+  const source = parent(range.startContainer)?.closest('.chat-reply-text');
+  if (!source || !$('#chat-transcript')?.contains(source) || parent(range.endContainer)?.closest('.chat-reply-text') !== source) return null;
+  const text = selection.toString();
+  if (!text.trim()) return null;
+  const prefix = range.cloneRange(); prefix.selectNodeContents(source); prefix.setEnd(range.startContainer, range.startOffset);
+  return { sequence: Number(source.closest('[data-item-sequence]').dataset.itemSequence), text, start: prefix.toString().length, end: prefix.toString().length + text.length, range };
+}
+function restoreReplySelection(selection) {
+  if (!selection) return;
+  const source = $(`[data-item-sequence="${selection.sequence}"] .chat-reply-text`);
+  if (!source?.firstChild || source.textContent.slice(selection.start, selection.end) !== selection.text) return;
+  const range = document.createRange();
+  range.setStart(source.firstChild, selection.start); range.setEnd(source.firstChild, selection.end);
+  window.getSelection().removeAllRanges(); window.getSelection().addRange(range);
+}
+function updateSelectionActions() {
+  const toolbar = $('#chat-selection-actions'); if (!toolbar) return;
+  const item = chats.get(selected); const selection = selectedReply();
+  const visible = !hidden && $('#card-chat').getClientRects().length && !$('#form-dialog').open;
+  if (!selection || !item || !visible) { toolbar.hidden = true; if (item) item.replySelection = null; return; }
+  const bounds = selection.range.getBoundingClientRect();
+  const transcript = $('#chat-transcript').getBoundingClientRect();
+  if (bounds.bottom < transcript.top || bounds.top > transcript.bottom) { toolbar.hidden = true; item.replySelection = null; return; }
+  item.replySelection = { sequence: selection.sequence, text: selection.text };
+  toolbar.hidden = false;
+  const width = toolbar.offsetWidth; const height = toolbar.offsetHeight;
+  toolbar.style.left = `${Math.max(transcript.left, Math.min(bounds.left, transcript.right - width))}px`;
+  const above = bounds.top - height - 8;
+  const top = above >= transcript.top ? above : bounds.bottom + 8;
+  toolbar.style.top = `${Math.max(transcript.top, Math.min(top, transcript.bottom - height))}px`;
+  $('[data-action="chat-reply"]', toolbar).disabled = !item.composer || item.sending || Boolean(item.pending);
+}
+function checkedReply(item) {
+  const selection = item.replySelection;
+  const entry = item.snapshot.items.find((entry) => entry.sequence === selection?.sequence && entry.kind === 'agentMessage');
+  if (!selection?.text || !entry?.text.includes(selection.text)) throw new Error('Highlight part of a reply first.');
+  return selection;
+}
+function clearReplySelection(item) {
+  if (item) item.replySelection = null;
+  if (selectedReply()) window.getSelection()?.removeAllRanges();
+  const toolbar = $('#chat-selection-actions'); if (toolbar) toolbar.hidden = true;
+}
+function replyToSelection(item) {
+  if (!item.composer || item.sending || item.pending) return;
+  const { text } = checkedReply(item);
+  const quote = text.split('\n').map((line) => `> ${line}`).join('\n');
+  item.composer.prompt = `${item.composer.prompt}${item.composer.prompt ? '\n\n' : ''}${quote}\n\n`;
+  composerChanged(item); clearReplySelection(item); renderComposer(item);
+  const prompt = $('#chat-prompt'); prompt.focus(); prompt.setSelectionRange(prompt.value.length, prompt.value.length);
+}
+function useSelectedText(item) {
+  const { sequence, text } = checkedReply(item);
+  clearReplySelection(item);
   const card = locateCard(item.id).card;
-  smallForm({ title: 'Use selected reply text', fields: `<label class="form-label" for="chat-text-field">Destination</label><select class="form-input" id="chat-text-field" name="field">${contextFields(card.template).map((f) => `<option value="${f.key}">${escape(f.label)}</option>`).join('')}</select><label class="form-label" for="chat-text-mode">Action</label><select class="form-input" id="chat-text-mode" name="mode"><option value="replace">Replace</option><option value="append">Append</option></select><pre class="chat-review-text">${escape(text)}</pre>`, submit: 'Preview result', onSubmit: async (data) => {
+  smallForm({ title: 'Use highlighted text', fields: `<label class="form-label" for="chat-text-field">Destination</label><select class="form-input" id="chat-text-field" name="field">${contextFields(card.template).map((f) => `<option value="${f.key}">${escape(f.label)}</option>`).join('')}</select><label class="form-label" for="chat-text-mode">Action</label><select class="form-input" id="chat-text-mode" name="mode"><option value="replace">Replace</option><option value="append">Append</option></select><pre class="chat-review-text">${escape(text)}</pre>`, submit: 'Preview result', onSubmit: async (data) => {
     const input = { itemSequence: sequence, text, field: String(data.get('field')), mode: String(data.get('mode')) };
     const preview = await send('POST', url(item.id, 'text-preview'), input);
     setTimeout(() => smallForm({ title: 'Apply reviewed text?', fields: `<p>Destination: ${escape(input.field)} · ${escape(input.mode)}</p><pre class="chat-review-text">${escape(preview.value)}</pre>`, submit: 'Apply text', onSubmit: async () => { await send('POST', url(item.id, 'accept-text'), { ...input, ...preview }); await refresh(item); } }), 0);
@@ -371,6 +434,19 @@ function tickTimers() {
     const entry = activity.find((candidate) => candidate.cardId === node.dataset.activityCard);
     if (entry?.state === 'working') node.textContent = activityLabel(entry);
   });
+  const timer = $('#chat-progress [data-started-at]');
+  if (timer) timer.textContent = `${Math.max(0, Math.floor((Date.now() - Date.parse(timer.dataset.startedAt)) / 1000))}s`;
+}
+function renderProgress(item) {
+  const panel = $('#chat-progress'); if (!panel) return;
+  const progress = progressState(item.snapshot);
+  const signature = JSON.stringify(progress);
+  if (panel.dataset.rendered !== signature) {
+    panel.hidden = !progress;
+    panel.innerHTML = progress ? `<span class="chat-thinking ${progress.moving ? '' : 'paused'}" aria-hidden="true"><i></i><i></i><i></i></span><span>${escape(progress.label)}</span>${progress.startedAt ? `<span class="chat-elapsed" data-started-at="${escape(progress.startedAt)}" aria-hidden="true"></span>` : ''}` : '';
+    panel.dataset.rendered = signature;
+  }
+  tickTimers();
 }
 function renderActivityList() {
   const list = $('#chat-activity-list'); if (!list) return;
@@ -378,6 +454,14 @@ function renderActivityList() {
 }
 export function initializeChats(callbacks) {
   navigation = callbacks;
+  document.addEventListener('selectionchange', updateSelectionActions);
+  window.addEventListener('resize', updateSelectionActions);
+  // Preserve the highlight until a toolbar action captures it, including on touch.
+  document.addEventListener('pointerdown', (event) => { if (event.target.closest('#chat-selection-actions')) event.preventDefault(); });
+  document.addEventListener('keydown', (event) => {
+    const toolbar = $('#chat-selection-actions');
+    if (event.key === 'Escape' && toolbar && !toolbar.hidden) { clearReplySelection(chats.get(selected)); event.preventDefault(); event.stopPropagation(); }
+  });
   clearInterval(clockTimer); clockTimer = setInterval(tickTimers, 1000);
   void loadActivity().then(connect, () => connect(0));
   document.addEventListener('input', (event) => {
@@ -437,7 +521,8 @@ export function initializeChats(callbacks) {
       if (action === 'chat-input') await answerInput(item, target.dataset.id);
       if (action === 'chat-proposal') await reviewProposal(item, target.dataset.id);
       if (action === 'chat-reject-proposal') { await send('POST', url(item.id, `proposals/${target.dataset.id}/accept`), { reject: true }); $('#form-dialog').close(); await refresh(item); }
-      if (action === 'chat-use-text') useSelectedText(item, Number(target.dataset.sequence));
+      if (action === 'chat-use-text') useSelectedText(item);
+      if (action === 'chat-reply') replyToSelection(item);
       if (action === 'chat-adopt') { const result = await send('POST', url(item.id, `outputs/${target.dataset.id}/adopt`), {}); refreshSavedCard(result.card); await refresh(item); toast(result.adopted ? 'Added to gallery. Choose roles in the editor.' : 'Already in the gallery.'); }
       if (action === 'chat-retry-save') { await send('POST', url(item.id, `outputs/${target.dataset.id}/retry-save`), {}); await refresh(item); }
       if (action === 'chat-edit-image') {
