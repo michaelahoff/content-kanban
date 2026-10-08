@@ -32,6 +32,7 @@ function remember(listing) {
 }
 
 export async function openPlaybooks({ laneId = null } = {}) {
+  if (busy) return toast('Wait for the playbook save to finish.');
   const p = project();
   if (!p) return;
   try { remember(await loadPlaybooks(p)); } catch (error) { return toast(error.message); }
@@ -148,24 +149,29 @@ function renderFooter() {
   const path = currentPath();
   const status = $('#playbook-status');
   const unsaved = [...drafts.keys()].filter(dirty);
-  status.textContent = previewing ? 'Previews use saved files.' : !path ? ''
+  status.textContent = busy ? 'Saving…' : previewing ? 'Previews use saved files.' : !path ? ''
     : conflicts.has(path) && dirty(path) ? 'This file changed on disk. Your draft is kept: Revert shows the newer file, Save replaces it.'
       : dirty(path) ? 'Unsaved changes · Ctrl+S saves' : saved.has(path) ? `Saved · ${path}` : 'Not saved yet';
   status.classList.toggle('playbook-dirty', Boolean(path && dirty(path)));
   const deletable = path && saved.has(path) && path !== 'MAP.md';
-  $('.playbook-footer-actions', dialog).innerHTML = `${deletable ? control('delete', 'Delete', 'trash', 'text-button danger') : ''}${path && dirty(path) && saved.has(path) ? control('revert', 'Revert') : ''}${control('close', unsaved.length ? 'Close…' : 'Close')}${path && !previewing ? control('save', 'Save', 'check', 'button primary', dirty(path) || !saved.has(path) ? '' : 'disabled') : ''}`;
+  const disabled = busy ? 'disabled' : '';
+  $('.playbook-footer-actions', dialog).innerHTML = `${deletable ? control('delete', 'Delete', 'trash', 'text-button danger', disabled) : ''}${path && dirty(path) && saved.has(path) ? control('revert', 'Revert', null, 'button secondary', disabled) : ''}${control('close', unsaved.length ? 'Close…' : 'Close', null, 'button secondary', disabled)}${path && !previewing ? control('save', 'Save', 'check', 'button primary', !busy && (dirty(path) || !saved.has(path)) ? '' : 'disabled') : ''}`;
 }
 
 async function save() {
   const path = currentPath();
   if (!path || busy) return;
+  const submittedText = textOf(path);
+  const name = heading();
   busy = true;
+  renderFooter();
   try {
-    const document = await savePlaybook(project(), path, textOf(path), saved.get(path)?.hash ?? null);
+    const document = await savePlaybook(project(), path, submittedText, saved.get(path)?.hash ?? null);
     saved.set(path, { ...document, laneId: path.startsWith('lanes/') ? parseDocument(document.text).data.lane ?? null : undefined });
-    drafts.delete(path); conflicts.delete(path);
+    if (drafts.get(path) === submittedText) drafts.delete(path);
+    conflicts.delete(path);
     renderBoard();
-    toast(`${heading()} saved.`);
+    toast(`${name} saved.`);
   } catch (error) {
     toast(error.message);
     if (error.status === 409) { conflicts.add(path); await reloadFromDisk().catch(() => {}); }
@@ -189,6 +195,7 @@ function select(next) {
 }
 
 function close() {
+  if (busy) return toast('Wait for the playbook save to finish.');
   const unsaved = [...drafts.keys()].filter(dirty);
   if (!unsaved.length) return dialog.close();
   smallForm({ title: 'Discard unsaved playbook changes?', description: `${unsaved.length} ${unsaved.length === 1 ? 'document has' : 'documents have'} unsaved changes: ${unsaved.join(', ')}.`, submit: 'Discard changes', danger: true,
@@ -210,6 +217,7 @@ dialog.addEventListener('click', async (event) => {
   const target = event.target.closest('[data-playbook-action]');
   if (!target) return;
   const action = target.dataset.playbookAction;
+  if (busy && !['select', 'copy-folder', 'close'].includes(action)) return;
   try {
     if (action === 'close') close();
     if (action === 'select') {

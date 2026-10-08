@@ -533,6 +533,36 @@ These values apply when a card enters this lane.
   // Closing with a draft asks first; discarding keeps the saved file.
   await click(`[data-action="edit-playbook"][data-id="${addedLane}"]`);
   await waitFor(`document.querySelector('#playbook-dialog').open && document.querySelector('#playbook-text')?.value.includes('Ready for review')`);
+  const beforeSlowSave = await evaluate(`document.querySelector('#playbook-text').value`);
+  const submittedPlaybook = `${beforeSlowSave}\nSaved during the slow request.`;
+  const newerPlaybook = `${submittedPlaybook}\nTyped while saving.`;
+  await evaluate(`(() => {
+    const originalFetch = window.fetch;
+    window.restorePlaybookFetch = () => { window.fetch = originalFetch; };
+    window.fetch = async (url, options) => {
+      if (options?.method === 'PUT' && String(url).includes('/playbooks')) {
+        window.fetch = originalFetch;
+        const response = await originalFetch(url, options);
+        await new Promise(resolve => { window.releasePlaybookSave = resolve; });
+        return response;
+      }
+      return originalFetch(url, options);
+    };
+  })()`);
+  await fill('#playbook-text', submittedPlaybook);
+  await click('[data-playbook-action="save"]');
+  await waitFor(`typeof window.releasePlaybookSave === 'function'`);
+  await fill('#playbook-text', newerPlaybook);
+  await evaluate(`document.querySelector('#playbook-dialog').dispatchEvent(new Event('cancel', { cancelable: true }))`);
+  assert.ok(await evaluate(`document.querySelector('#playbook-dialog').open && !document.querySelector('#form-dialog').open`), 'A pending save keeps the editor session open');
+  await evaluate(`window.releasePlaybookSave()`);
+  await pause(250);
+  assert.equal(await evaluate(`document.querySelector('#playbook-text').value`), newerPlaybook, 'Typing while saving preserves the newer Markdown draft');
+  assert.ok(await evaluate(`document.querySelector('#playbook-status').textContent.includes('Unsaved')`));
+  await click('[data-playbook-action="save"]');
+  await waitFor(`document.querySelector('#playbook-status').textContent.startsWith('Saved')`);
+  await evaluate(`window.restorePlaybookFetch(); delete window.restorePlaybookFetch; delete window.releasePlaybookSave;`);
+  console.log('PASS Markdown edits typed during a slow playbook save remain unsaved and can be saved next');
   await fill('#playbook-text', 'A draft to discard');
   await click('[data-playbook-action="close"]');
   await waitFor(`document.querySelector('#form-dialog').open`);
