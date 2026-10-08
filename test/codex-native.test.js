@@ -2,7 +2,7 @@
 // Responses peer. This is real registration/dispatch, not account/model proof.
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, rm, readFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm, readFile, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createCodexAdapter } from '../codex-adapter.js';
@@ -14,6 +14,37 @@ import { randomUUID } from 'node:crypto';
 
 const enabled = process.env.FRAMEBOARD_NATIVE_TEST === '1';
 const schema = enabled ? installedCodexSchema() : null;
+
+test('installed native: protected ordinary, approved escalation and Full turns retain authoritative bytes and can edit notes', { skip: !enabled, timeout: 60000 }, async (t) => {
+  const f = await nativeFixture(t, { protected: true });
+  const original = path.join(f.dataDir, 'original.bin');
+  const frozen = path.join(f.dataDir, 'frozen-history.json');
+  const database = path.join(f.dataDir, 'frameboard.db');
+  const output = path.join(f.dataDir, 'output.bin');
+  for (const filename of [original, frozen, database, output]) await writeFile(filename, 'RETAINED_BYTES');
+  await symlink(original, path.join(f.cwd, 'linked-original'));
+  const opened = await f.open();
+  // The process boundary is already installed before any native turn opens.
+  // Approval and Full may relax Codex's inner sandbox, never that boundary.
+  const cmd = [original, frozen, database, output].map((filename) => `printf corrupted > '${filename}'; rm '${filename}'`).join('; ') + `; printf corrupted > linked-original; ln '${original}' hard-original; printf NOTES_OK > notes.md`;
+  for (const mode of ['ordinary', 'escalation', 'full']) {
+    const argumentsValue = { cmd, yield_time_ms: 1000, ...(mode === 'escalation' ? { sandbox_permissions: 'require_escalated', justification: 'Adversarial protection gate' } : {}) };
+    f.peer.respond({ customToolCall: { name: 'exec', input: `text(await tools.exec_command(${JSON.stringify(argumentsValue)}));` } });
+    const result = await f.turn(opened.threadId, { tool: false, fullAccess: mode === 'full', approve: mode === 'escalation' });
+    assert.ok(result.events.some((event) => event.type === 'item-completed' && event.item.type === 'commandExecution'), JSON.stringify({ mode, events: result.events, outputs: f.peer.requests.map((r) => r.toolOutputs) }));
+    if (mode === 'escalation') assert.ok(result.events.some((event) => event.type === 'request' && /requestApproval$/.test(event.method)), 'The adversarial escalation was actually approved.');
+    for (const filename of [original, frozen, database, output]) assert.equal(await readFile(filename, 'utf8'), 'RETAINED_BYTES', `${mode}: ${filename}`);
+    assert.equal(await readFile(path.join(f.cwd, 'notes.md'), 'utf8'), 'NOTES_OK', mode);
+  }
+  assert.ok(f.peer.requests.length >= 6, 'Each usable native turn reached the model peer and returned its tool result.');
+  const inherited = compileConfiguration({ ...f.selection, inherited: true }, f.discovery, f.frozen.nativeOptions.dynamicTools);
+  assert.equal(inherited.supported, true, inherited.reasons.join(' '));
+  assert.deepEqual(inherited.nativeOptions.config, {}, 'Inherited setup remains a distinct opt-in choice.');
+  const inheritedThread = await f.open(undefined, 'gpt-6-luna', inherited);
+  f.peer.respond({ customToolCall: { name: 'exec', input: `text(await tools.exec_command(${JSON.stringify({ cmd, yield_time_ms: 1000 })}));` } });
+  await f.turn(inheritedThread.threadId, { tool: false, inherited: true });
+  for (const filename of [original, frozen, database, output]) assert.equal(await readFile(filename, 'utf8'), 'RETAINED_BYTES');
+});
 
 test('installed native: full access executes outside-workspace commands and ordinary follow-up restores the sandbox', { skip: !enabled, timeout: 45000 }, async (t) => {
   const f = await nativeFixture(t); const opened = await f.open();
@@ -70,7 +101,7 @@ test('installed native: durable HTTP worker follows up after process/app restart
     const serialized = f.peer.requests.map((request) => request.serialized).join('\n');
     assert.match(serialized, /HTTP_NATIVE_FROZEN_INTRO/); assert.doesNotMatch(serialized, /HTTP_NATIVE_LEGACY_PROMPT/);
     await adapter.close({ signal: 'SIGKILL' }); await close();
-    adapter = createCodexAdapter({ cwd: f.cwd, env: { ...process.env, CODEX_HOME: f.home }, requestTimeoutMs: 15000 });
+    adapter = createCodexAdapter({ cwd: f.cwd, env: { ...process.env, CODEX_HOME: f.home }, requestTimeoutMs: 15000, retainedTestPorts: [Number(new URL(f.peer.baseUrl).port)] });
     await start();
     const second = await submit(card.id, 'HTTP_NATIVE_FOLLOW_UP', 'gpt-5.6-luna');
     assert.deepEqual(second.conversations[0].binding, binding);
@@ -116,7 +147,7 @@ test('installed native: a crash mid-stream is reconciled read-only after restart
     const binding = before.conversations[0].binding;
     const sentBefore = f.peer.requests.length;
     await adapter.close({ signal: 'SIGKILL' }); await close();
-    adapter = createCodexAdapter({ cwd: f.cwd, env: { ...process.env, CODEX_HOME: f.home }, requestTimeoutMs: 15000 });
+    adapter = createCodexAdapter({ cwd: f.cwd, env: { ...process.env, CODEX_HOME: f.home }, requestTimeoutMs: 15000, retainedTestPorts: [Number(new URL(f.peer.baseUrl).port)] });
     await start();
     const recovered = await until(card.id, (chat) => chat.submissions[0].status === 'interrupted');
     assert.equal(recovered.attempts.length, 1);
@@ -132,18 +163,20 @@ test('installed native: a crash mid-stream is reconciled read-only after restart
   } finally { if (app.listening) await close(); await adapter.close(); }
 });
 
-async function nativeFixture(t) {
+async function nativeFixture(t, { protected: protect = false } = {}) {
   assert.ok(schema, 'Install Codex before running the native gates.');
   const root = await mkdtemp(path.join(tmpdir(), 'frameboard-native-'));
-  const home = path.join(root, 'home'); const cwd = path.join(root, 'card');
-  await mkdir(home); await mkdir(cwd);
+  const home = path.join(root, 'home'); const dataDir = path.join(root, 'data');
+  const cwd = protect ? path.join(dataDir, 'workspaces', 'card') : path.join(root, 'card');
+  await mkdir(home); await mkdir(cwd, { recursive: true });
   const peer = await createResponsesFixture();
   await writeFile(path.join(home, 'config.toml'), `model_provider = "fb_fixture"\n[model_providers.fb_fixture]\nname = "Frameboard loopback test"\nbase_url = "${peer.baseUrl}"\nrequires_openai_auth = false\nwire_api = "responses"\nsupports_websockets = false\nrequest_max_retries = 0\nstream_max_retries = 0\n`);
   await writeFile(path.join(cwd, 'AGENTS.md'), 'FB_UNSELECTED_PROJECT_SENTINEL');
   await mkdir(path.join(home, 'skills', 'unselected'), { recursive: true });
   await writeFile(path.join(home, 'skills', 'unselected', 'SKILL.md'), '---\nname: unselected\ndescription: FB_UNSELECTED_SKILL_SENTINEL\n---\nFB_SKILL_BODY\n');
-  const adapter = createCodexAdapter({ cwd, env: { ...process.env, CODEX_HOME: home }, requestTimeoutMs: 15000 });
-  t.after(async () => { await adapter.close(); await peer.close(); await rm(root, { recursive: true, force: true }); });
+  const adapter = createCodexAdapter({ cwd, env: { ...process.env, CODEX_HOME: home }, requestTimeoutMs: 15000, retainedTestPorts: [Number(new URL(peer.baseUrl).port)] });
+  if (protect) await adapter.protectRetainedData(dataDir);
+  t.after(async () => { await adapter.close(); await adapter.disposeProtection(); await peer.close(); await rm(root, { recursive: true, force: true }); });
   const selection = { selected: [], instructions: 'FB_SELECTED_INSTRUCTION_SENTINEL' };
   const discovery = await configurationDiscovery(adapter);
   const tools = [{ type: 'function', name: 'fb_card_tool', description: 'FB_CARD_TOOL_SENTINEL', inputSchema: { type: 'object', properties: {}, additionalProperties: false } }];
@@ -151,15 +184,16 @@ async function nativeFixture(t) {
   assert.equal(frozen.supported, true, frozen.reasons.join(' '));
   const bindings = new Map();
   async function open(threadId, model = 'gpt-6-luna', snapshot = frozen, current = discovery) {
-    const opened = await openConfiguredThread(adapter, { binding: threadId ? bindings.get(threadId) : null, frozen: snapshot, currentSelection: { selected: snapshot.selected, instructions: snapshot.instructions }, discovery: current, threadId, cwd, model, modelProvider: 'fb_fixture' });
+    const opened = await openConfiguredThread(adapter, { binding: threadId ? bindings.get(threadId) : null, frozen: snapshot, currentSelection: { selected: snapshot.selected, instructions: snapshot.instructions, inherited: snapshot.inherited }, discovery: current, threadId, cwd, model, modelProvider: 'fb_fixture' });
     bindings.set(opened.threadId, structuredClone(opened.binding));
     return opened;
   }
-  async function turn(threadId, { tool = true, model, text = 'native gate', clientUserMessageId = 'native-attempt', fullAccess = false } = {}) {
+  async function turn(threadId, { tool = true, model, text = 'native gate', clientUserMessageId = 'native-attempt', fullAccess = false, approve = false, inherited = false } = {}) {
     const before = peer.requests.length; const events = [];
     let complete;
     const done = new Promise((resolve) => { complete = resolve; });
     const remove = adapter.subscribe(threadId, {
+      onRequest: () => ({ decision: approve ? 'accept' : 'decline' }),
       onToolCall: (request) => {
         assert.equal(request.tool, 'fb_card_tool');
         return { success: true, contentItems: [{ type: 'inputText', text: 'FB_TOOL_RESULT_SENTINEL' }] };
@@ -176,12 +210,12 @@ async function nativeFixture(t) {
       assert.ok(requests.every((r) => !r.authorization), 'The loopback peer must never receive credentials.');
       const serialized = requests.map((r) => r.serialized).join('\n');
       assert.match(serialized, /FB_SELECTED_INSTRUCTION_SENTINEL/);
-      assert.doesNotMatch(serialized, /FB_UNSELECTED_PROJECT_SENTINEL|FB_UNSELECTED_SKILL_SENTINEL/);
+      if (!inherited) assert.doesNotMatch(serialized, /FB_UNSELECTED_PROJECT_SENTINEL|FB_UNSELECTED_SKILL_SENTINEL/);
       if (tool) assert.ok(events.some((e) => e.type === 'item-completed' && e.item.type === 'dynamicToolCall' && e.item.success));
       return { ...start, events, serialized };
     } finally { remove(); }
   }
-  return { adapter, home, cwd, peer, selection, discovery, frozen, open, turn };
+  return { adapter, home, cwd, dataDir, peer, selection, discovery, frozen, open, turn };
 }
 
 test('installed native: three HTTP cards with text, approval and image work progress independently', { skip: !enabled, timeout: 45000 }, async (t) => {

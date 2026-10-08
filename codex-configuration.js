@@ -8,7 +8,7 @@ import { CodexError } from './codex-adapter.js';
 export const cardInstructions = 'You are working in a Frameboard card workspace. Use Frameboard card tools for card changes. Tool availability does not grant authority to edit card fields, adopt images, change image roles, or move cards. Follow the authority frozen in each submission and request approval when required.';
 export const mandatoryBehavior = [
   'Your installed Codex manages sign-in and conversation history. A listed model is not proof of account access.',
-  'Codex uses workspace-write / on-request: workspace writes and sandboxed commands without network access can run automatically. Sandbox escapes require approval. Reads outside the workspace are possible. Frameboard grants answer individual requests without writing native global rules. Full native access retains card acceptance and cannot promise OS isolation.',
+  'Codex uses workspace-write / on-request: workspace writes and sandboxed commands without network access can run automatically. Sandbox escapes require approval. Frameboard grants answer individual requests without writing native global rules. Retained originals, outputs, frozen history and authority metadata stay outside agent write authority, including under Full native access. Only verified public OpenAI HTTPS endpoints are reachable; unproven configurations are held. Card acceptance stays separate.',
   'Generated images remain in the conversation until you accept them into the card gallery. Choosing image roles requires separate acceptance.',
   'Codex 0.160.1 cannot enforce the required restrictions for an automatic transfer summary. You can write a summary or start without one.',
 ];
@@ -51,6 +51,10 @@ export function compileConfiguration(selection, discovery, dynamicTools = []) {
   const inherited = selection.inherited === true;
   const selected = inherited ? [] : [...new Set(selection.selected ?? [])].sort();
   const reasons = [];
+  if (discovery.protection?.supported === false) reasons.push(discovery.protection.reason);
+  if (discovery.protection && inherited) for (const item of discovery.items) {
+    if (['mcp', 'plugin', 'hook'].includes(item.kind)) reasons.push(`Retained-data protection for inherited ${item.kind} ${item.name} is unproven. Disable that native integration outside Frameboard or use a configuration without it, then refresh and resubmit.`);
+  }
   const items = discovery.items;
   for (const id of selected) {
     const item = items.find((entry) => entry.id === id);
@@ -79,6 +83,7 @@ export function compileConfiguration(selection, discovery, dynamicTools = []) {
   const value = {
     provider: 'codex', workspace: discovery.cwd, harness: discovery.harness.userAgent, selected,
     instructions: selection.instructions ?? '', ...(inherited ? { inherited } : { inventory }),
+    ...(discovery.protection ? { protection: discovery.protection } : {}),
     nativeOptions, supported: reasons.length === 0, reasons: [...new Set(reasons)],
   };
   // An inherited snapshot records what Codex reported at queue time, but newly

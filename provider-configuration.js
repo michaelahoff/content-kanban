@@ -7,13 +7,15 @@ export async function configurationDiscovery(adapter, options, provider = 'codex
 export function compileConfiguration(selection, discovery, dynamicTools = [], provider = 'codex') {
   if (provider === 'codex') return codexCompile(selection, discovery, dynamicTools);
   const value = { provider, workspace: discovery.cwd, harness: discovery.harness.userAgent, selected: [], inventory: [],
-    instructions: selection.instructions ?? '', nativeOptions: { developerInstructions: [cardInstructions, selection.instructions, 'Tools are disabled. Offer text suggestions; the user can apply them with Use text.'].filter(Boolean).join('\n\n') }, supported: true, reasons: [] };
+    instructions: selection.instructions ?? '', nativeOptions: { developerInstructions: [cardInstructions, selection.instructions, 'Tools are disabled. Offer text suggestions; the user can apply them with Use text.'].filter(Boolean).join('\n\n') },
+    ...(discovery.protection ? { protection: discovery.protection } : {}), supported: discovery.protection?.supported !== false, reasons: discovery.protection?.supported === false ? [discovery.protection.reason] : [] };
   return { ...value, id: createHash('sha256').update(JSON.stringify(value)).digest('hex') };
 }
 export function queuedConfigurationDecision(frozen, selection, discovery) {
   if (selection.enabled === false) return { status: 'held', reason: 'This provider is disabled in Settings. Enable it before sending more prompts.' };
   if (frozen.provider === 'codex') return codexDecision(frozen, selection, discovery);
   const current = compileConfiguration(selection, discovery, [], frozen.provider);
+  if (!current.supported) return { status: 'held', reason: current.reasons.join(' ') };
   return current.id === frozen.id ? { status: 'ready' } : { status: 'held', reason: 'Claude guidance changed. Cancel or resubmit this prompt with the current settings.' };
 }
 export async function openConfiguredThread(adapter, options) {

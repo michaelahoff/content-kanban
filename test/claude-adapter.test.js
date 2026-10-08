@@ -69,7 +69,7 @@ test('native Claude transport completes card submissions and keeps follow-up con
   const { options } = await fixture(t);
   // Use a separate adapter owned by the app, exercising the full queue/worker boundary.
   const { fixture: appFixture } = await import('./support/chat-fixture.js');
-  const f = await appFixture(t, { claudeAdapter: createClaudeAdapter(options) });
+  const f = await appFixture(t, { claudeAdapter: { ...createClaudeAdapter(options), protectRetainedData: undefined } });
   const settings = await f.ok('GET', '/api/providers/claude');
   await f.ok('PUT', '/api/providers/claude', { revision: settings.revision, selection: { ...settings.selection, enabled: true } });
   const card = await f.card();
@@ -90,7 +90,7 @@ test('a Claude lane run reports through its result block without native tools', 
   const { options } = await fixture(t);
   const { fixture: appFixture } = await import('./support/chat-fixture.js');
   const { setPlaybook } = await import('./support/playbooks.js');
-  const f = await appFixture(t, { claudeAdapter: createClaudeAdapter(options) });
+  const f = await appFixture(t, { claudeAdapter: { ...createClaudeAdapter(options), protectRetainedData: undefined } });
   const settings = await f.ok('GET', '/api/providers/claude');
   await f.ok('PUT', '/api/providers/claude', { revision: settings.revision, selection: { ...settings.selection, enabled: true } });
   const workspace = await f.ok('GET', '/api/workspace'); const stages = workspace.flows[0].stages;

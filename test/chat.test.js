@@ -8,6 +8,39 @@ import { DatabaseSync } from 'node:sqlite';
 
 import { fixture, waitFor } from './support/chat-fixture.js';
 
+test('an unproven retained-data boundary holds a prompt with no images before opening a native thread', async (t) => {
+  const f = await fixture(t); const card = await f.card();
+  const discover = f.codex.discover.bind(f.codex);
+  f.codex.discover = async (input) => ({ ...await discover(input), protection: { supported: false, reason: 'Install the enforced native boundary.' } });
+  const submission = await f.queue(card.id, await f.compose(card.id));
+  const outcome = await waitFor(async () => {
+    const row = (await f.chat(card.id)).submissions.find((row) => row.id === submission.id);
+    return ['held', 'running'].includes(row.status) && row;
+  });
+  assert.equal(outcome.status, 'held');
+  assert.match(outcome.reason, /Install the enforced native boundary/);
+  assert.equal(f.codex.threads.size, 0);
+});
+
+test('inherited native actions hold even when the opt-in mode and an old frozen inventory remain unchanged', async (t) => {
+  const f = await fixture(t); const card = await f.card();
+  await f.ok('PUT', '/api/providers/codex', { revision: 0, selection: { inherited: true, selected: [], instructions: '' } });
+  const discover = f.codex.discover.bind(f.codex); let hooks = [];
+  f.codex.discover = async (input) => ({ ...await discover(input), protection: { policy: 'linux-retained-v1', supported: true, fullAccess: true }, hooks });
+  let open;
+  f.codex.openGate = new Promise((resolve) => { open = resolve; });
+  const submission = await f.queue(card.id, await f.compose(card.id));
+  hooks = [{ key: 'local-writer' }]; open();
+  const outcome = await waitFor(async () => {
+    const row = (await f.chat(card.id)).submissions.find((row) => row.id === submission.id);
+    return ['held', 'running'].includes(row.status) && row;
+  });
+  assert.equal(outcome.status, 'held');
+  assert.match(outcome.reason, /inherited hook local-writer is unproven/);
+  assert.equal(f.codex.sends.length, 0);
+  assert.equal((await f.ok('GET', '/api/providers/codex')).selection.inherited, true);
+});
+
 test('a terminal-only Codex user agent change resumes the saved conversation without holding a follow-up', async (t) => {
   const f = await fixture(t); const card = await f.card();
   const discover = f.codex.discover.bind(f.codex);
