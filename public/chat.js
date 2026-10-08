@@ -174,10 +174,8 @@ function renderComposer(item) {
   updateComposerControls(item);
   if (focusId) { const input = document.getElementById(focusId); input?.focus(); if (selection) input?.setSelectionRange(...selection); }
 }
-const methods = { 'native-image-generation': 'Codex native image generation', 'code-rendered': 'Rendered by Codex code and registered' };
-function outputMarkup(item, output) {
+function outputMarkup(output) {
   if (!output) return '';
-  const sources = output.references.filter((reference) => reference.source === 'chat-output');
   const status = output.generationStatus !== 'completed'
     ? `<p class="chat-output-error">Generation ${escape(output.generationStatus)}${output.native.failure ? ` · ${escape(output.native.failure.type)}${output.native.failure.resetsAt ? ` · resets ${escape(new Date(output.native.failure.resetsAt * 1000).toLocaleString())}` : ''}` : ''}. Send a deliberate new request to try again.</p>`
     : output.importStatus === 'imported' ? output.available ? `<img class="chat-output-image" src="/images/${encodeURIComponent(output.imageId)}" alt="${escape(output.name)}">`
@@ -185,7 +183,7 @@ function outputMarkup(item, output) {
       : output.importStatus === 'failed' ? `<p class="chat-output-error">Generated, but not saved: ${escape(output.error)}</p><button class="button small secondary" data-action="chat-retry-save" data-id="${escape(output.id)}">Retry saving</button>`
         : '<p class="chat-hint">Saving generated image…</p>';
   const actions = output.importStatus === 'imported' && output.available ? `<div class="chat-output-actions"><button class="button small secondary" data-action="chat-edit-image" data-id="${escape(output.imageId)}">Edit</button>${output.inGallery ? '<span class="chat-hint">In gallery</span>' : `<button class="button small secondary" data-action="chat-adopt" data-id="${escape(output.id)}">Add to gallery</button>`}</div>` : '';
-  return `<figure class="chat-output">${status}<figcaption>${escape(output.name)}<small>${escape(methods[output.creationMethod] ?? output.creationMethod)} · conversation model ${escape(output.conversationModel)} · image model not reported by Codex${output.toolPrompt ? ` · tool prompt: ${escape(output.toolPrompt)}` : ''}${sources.length ? ` · edited from ${sources.map((reference) => escape(reference.name)).join(', ')}` : ''}${output.references.length ? ` · ${output.references.length} exact reference(s)` : ''}${output.hash ? ` · SHA-256 ${escape(output.hash.slice(0, 12))}…` : ''}</small></figcaption>${actions}</figure>`;
+  return `<figure class="chat-output">${status}${actions}</figure>`;
 }
 function contextMarkup(context) {
   return `${context.fields.map((field) => `<p><strong>${escape(field.label)} <small>v${field.version}</small></strong><br>${escape(field.value)}</p>`).join('')}${context.images.map((image) => `<figure><img src="/images/${encodeURIComponent(image.id)}" alt="${escape(image.name)}"><figcaption>${escape(image.labels.join(', '))}: ${escape(image.name)}<br><small>Version ${escape(image.id)} · SHA-256 ${escape(image.hash)}</small></figcaption></figure>`).join('')}`;
@@ -223,7 +221,7 @@ function renderTranscript(item) {
     return `${divider ? `<div class="chat-divider">${divider}</div>` : ''}${submissions.map((submission) => {
       const attempts = snapshot.attempts.filter((attempt) => attempt.submissionId === submission.id);
       return `<article class="chat-submission"><div class="chat-prompt-sent"><span class="chat-speaker">You</span>${escape(submission.prompt)}</div>${frozenMarkup(submission)}<p class="chat-status">${escape(({ running: 'In progress', completed: 'Completed', queued: 'Queued', waiting: 'Waiting for provider', held: 'Needs attention', failed: 'Failed', interrupted: 'Stopped', uncertain: 'Check delivery', cancelled: 'Cancelled' })[submission.status] ?? submission.status)}${submission.reason ? ` · ${escape(submission.reason)}` : ''}</p>${attempts.map((attempt) => `${attempt.previousAttemptId ? `<div class="chat-divider">${snapshot.attempts.find((a) => a.id === attempt.previousAttemptId)?.status === 'not-delivered' ? 'Not sent before Codex stopped · sent again with original inputs' : 'Retry · original inputs retained'}</div>` : ''}${attemptMarkup(snapshot.items.filter((entry) => entry.attemptId === attempt.id), attempt.id,
-        (entry) => outputMarkup(item, (snapshot.outputs ?? []).find((output) => output.attemptId === entry.attemptId
+        (entry) => outputMarkup((snapshot.outputs ?? []).find((output) => output.attemptId === entry.attemptId
           && (output.nativeId === entry.nativeId || output.id === entry.data?.outputId))), runningStatuses.has(attempt.status))}`).join('')}${recoveryMarkup(submission, attempts)}${['queued', 'waiting', 'held'].includes(submission.status) ? `<button class="button small secondary" data-action="chat-cancel" data-id="${escape(submission.id)}">Cancel submission</button>` : ''}${['failed', 'interrupted'].includes(submission.status) && conversation.state === 'active' ? `<button class="button small secondary" data-action="chat-retry" data-id="${escape(submission.id)}">Retry original submission</button>` : ''}</article>`;
     }).join('')}`;
   }).join('');
