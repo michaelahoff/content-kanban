@@ -173,7 +173,7 @@ export function createChatWorker({ store, adapter, adapters = { codex: adapter }
       if (decision.status !== 'ready') { store.chats.hold(ctx, attempt.id, decision.reason); release(work); return; }
       const opened = await openConfiguredThread(adapter, { frozen: submission.configuration, discovery,
         currentSelection: store.providerConfiguration(ctx, submission.provider).selection, threadId: work.conversation.binding?.threadId,
-        binding: work.conversation.binding, cwd, model: submission.model });
+        binding: work.conversation.binding, bindingConfiguration: store.chats.bindingConfiguration(work.conversation.id), cwd, model: submission.model });
       if (closed) return;
       work.threadId = opened.threadId;
       if (!store.chats.bind(ctx, attempt.id, opened.binding)) { end(work, 'interrupted'); return; }

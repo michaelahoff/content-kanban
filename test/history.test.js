@@ -31,6 +31,38 @@ async function fixture(t) {
 }
 const image = { id: '00000001-0000-4000-8000-000000000000.png', name: 'Reference' };
 
+test('upgrading an already-versioned database repairs legacy move foreign keys and preserves undo', async (t) => {
+  const f = await fixture(t);
+  const card = f.card();
+  const moved = f.store.transitionCard(f.ctx, card.id, { action: 'move', toStageId: f.stages[1].id });
+  f.close();
+  const db = new DatabaseSync(path.join(f.dataDir, 'frameboard.db'));
+  db.exec(`PRAGMA foreign_keys = OFF;
+    ALTER TABLE card_moves RENAME TO current_card_moves;
+    CREATE TABLE card_moves (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, card_id TEXT NOT NULL REFERENCES cards(id),
+      event_id INTEGER REFERENCES card_events(id), before_card TEXT NOT NULL, after_card TEXT NOT NULL,
+      placement TEXT NOT NULL, created_at TEXT NOT NULL, undone_at TEXT, undo_event_id INTEGER REFERENCES card_events(id));
+    INSERT INTO card_moves SELECT * FROM current_card_moves;
+    DROP TABLE current_card_moves;
+    CREATE INDEX card_moves_by_card ON card_moves(card_id, id);
+    UPDATE meta SET value = '11' WHERE key = 'schema_version';`);
+  db.close();
+  const store = await openStore({ dataDir: f.dataDir });
+  try {
+    const undone = store.undoMove(f.ctx, card.id, { moveId: moved.card.lastMove.id, revision: moved.card.revision });
+    assert.equal(undone.card.stageId, f.stages[0].id);
+    const next = store.transitionCard(f.ctx, card.id, { action: 'move', toStageId: f.stages[1].id });
+    assert.ok(next.card.lastMove.id > moved.card.lastMove.id);
+    assert.equal(store.getCard(f.ctx, card.id).events.at(-1).id, next.event.id);
+  } finally { store.close(); }
+  const checked = new DatabaseSync(path.join(f.dataDir, 'frameboard.db'));
+  try {
+    assert.deepEqual(checked.prepare('PRAGMA foreign_key_check').all(), []);
+    assert.ok(checked.prepare('PRAGMA foreign_key_list(card_moves)').all().filter((key) => key.from !== 'card_id').every((key) => key.table === 'activity_log'));
+  } finally { checked.close(); }
+});
+
 // Materialize the v4 tables exactly as the former write paths did. The move
 // records remain intact so migration tests also exercise real preexisting undo.
 function downgrade(db) {

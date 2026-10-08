@@ -14,6 +14,13 @@ export const mandatoryBehavior = [
 ];
 const hash = (text) => createHash('sha256').update(text).digest('hex');
 const canonical = (value) => JSON.stringify(value, (_, v) => v && typeof v === 'object' && !Array.isArray(v) ? Object.fromEntries(Object.keys(v).sort().map((key) => [key, v[key]])) : v);
+// Native user agents include the launching terminal after version/platform.
+// Keep that diagnostic text in snapshots, but it is not a configuration option.
+function configurationIdentity(snapshot) {
+  const { id, inventory, ...value } = snapshot;
+  const harness = value.harness.match(/^[^\s]+(?: \([^)]*\))?/)?.[0] ?? value.harness;
+  return canonical({ ...value, harness, ...(!value.inherited ? { inventory } : {}) });
+}
 const freeze = (value) => { if (value && typeof value === 'object') { Object.values(value).forEach(freeze); Object.freeze(value); } return value; };
 const fail = (kind, message) => { throw new CodexError(kind, message); };
 
@@ -76,7 +83,8 @@ export function compileConfiguration(selection, discovery, dynamicTools = []) {
   };
   // An inherited snapshot records what Codex reported at queue time, but newly
   // discovered native items do not change it: Codex owns that inventory.
-  return freeze({ ...value, ...(inherited ? { inventory } : {}), id: hash(canonical(value)) });
+  const snapshot = { ...value, ...(inherited ? { inventory } : {}) };
+  return freeze({ ...snapshot, id: hash(configurationIdentity(snapshot)) });
 }
 
 // Call immediately before dispatch. Never mutate the queued snapshot. Newly
@@ -87,14 +95,16 @@ export function queuedConfigurationDecision(frozen, currentSelection, discovery)
   const removed = frozen.selected.filter((id) => !currentSelection.selected.includes(id));
   if (removed.length || frozen.instructions !== currentSelection.instructions) return { status: 'held', reason: 'The queued configuration includes removed or changed guidance. Explicitly cancel or resubmit under the new configuration.' };
   const checked = compileConfiguration({ selected: frozen.selected, instructions: frozen.instructions, inherited: frozen.inherited }, discovery, frozen.nativeOptions.dynamicTools);
-  if (!checked.supported || checked.id !== frozen.id) return { status: 'held', reason: checked.reasons.join(' ') || 'The installed configuration inventory changed. Explicitly cancel or resubmit after reviewing the new discovery.' };
+  if (!checked.supported || configurationIdentity(checked) !== configurationIdentity(frozen)) return { status: 'held', reason: checked.reasons.join(' ') || 'The installed configuration inventory changed. Explicitly cancel or resubmit after reviewing the new discovery.' };
   return { status: 'ready' };
 }
 
-export async function openConfiguredThread(adapter, { frozen, discovery, currentSelection, threadId, binding = null, cwd, model, modelProvider = 'openai' }) {
+export async function openConfiguredThread(adapter, { frozen, discovery, currentSelection, threadId, binding = null, bindingConfiguration = null, cwd, model, modelProvider = 'openai' }) {
   if (frozen.workspace !== cwd || discovery.cwd !== cwd) fail('configuration-unavailable', 'Refresh discovery and freeze configuration for the exact card workspace before submitting.');
   if (threadId && (!binding || binding.threadId !== threadId || binding.cwd !== cwd || binding.provider !== 'codex')) fail('binding-mismatch', 'Resume requires the exact durable native binding.');
-  if (threadId && binding.configurationId !== frozen.id) fail('fresh-context-required', 'The persisted conversation uses another effective configuration. Explicitly choose empty fresh context for this change.');
+  if (threadId && binding.configurationId !== frozen.id
+    && (!bindingConfiguration || bindingConfiguration.id !== binding.configurationId
+      || configurationIdentity(bindingConfiguration) !== configurationIdentity(frozen))) fail('fresh-context-required', 'The persisted conversation uses another effective configuration. Explicitly choose empty fresh context for this change.');
   const decision = queuedConfigurationDecision(frozen, currentSelection, discovery);
   if (decision.status !== 'ready') fail('configuration-unavailable', decision.reason);
   const opened = await adapter.openThread({ threadId, cwd, model, modelProvider, threadConfig: frozen.nativeOptions });
@@ -102,5 +112,8 @@ export async function openConfiguredThread(adapter, { frozen, discovery, current
   const actual = opened.native.instructionSources ?? [];
   if (!frozen.inherited && canonical([...expectedSources].sort()) !== canonical([...actual].sort())) fail('configuration-unavailable', 'Codex loaded instruction sources outside the frozen selection. Nothing will be submitted.');
   if (opened.native.sandbox.type !== 'workspaceWrite' || opened.native.sandbox.networkAccess || opened.native.approvalPolicy !== 'on-request' || opened.native.approvalsReviewer !== 'user') fail('configuration-unavailable', 'Codex did not apply the ordinary sandbox and approval baseline. Nothing will be submitted.');
-  return { ...opened, configurationId: frozen.id, binding: { threadId: opened.threadId, provider: 'codex', cwd, configurationId: frozen.id } };
+  // Equivalent legacy snapshots resume the same durable binding; changing its
+  // historical ID would trip the store's exact-binding protection.
+  const configurationId = threadId ? binding.configurationId : frozen.id;
+  return { ...opened, configurationId, binding: { threadId: opened.threadId, provider: 'codex', cwd, configurationId } };
 }

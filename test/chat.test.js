@@ -3,10 +3,50 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { DatabaseSync } from 'node:sqlite';
 
 import { fixture, waitFor } from './support/chat-fixture.js';
+
+test('a terminal-only Codex user agent change resumes the saved conversation without holding a follow-up', async (t) => {
+  const f = await fixture(t); const card = await f.card();
+  const discover = f.codex.discover.bind(f.codex);
+  let terminal = 'dumb';
+  f.codex.discover = async (input) => {
+    const found = await discover(input);
+    found.harness.userAgent = `frameboard/0.160.1 (Arch Linux Rolling Release; x86_64) ${terminal} (frameboard; 0)`;
+    return found;
+  };
+  await f.queue(card.id, await f.compose(card.id));
+  const first = await waitFor(() => f.codex.sends[0]);
+  f.codex.finish(first);
+  await waitFor(async () => (await f.chat(card.id)).submissions[0].status === 'completed');
+  // Emulate the pre-fix durable hash, which included terminal metadata.
+  const db = new DatabaseSync(path.join(f.dataDir, 'frameboard.db'));
+  try {
+    const row = db.prepare('SELECT id, conversation_id, frozen FROM chat_submissions WHERE card_id = ?').get(card.id);
+    const frozen = JSON.parse(row.frozen);
+    const { id, ...value } = frozen.configuration;
+    const canonical = JSON.stringify(value, (_, v) => v && typeof v === 'object' && !Array.isArray(v) ? Object.fromEntries(Object.keys(v).sort().map((key) => [key, v[key]])) : v);
+    const legacyId = createHash('sha256').update(canonical).digest('hex');
+    frozen.configuration.id = legacyId;
+    const binding = JSON.parse(db.prepare('SELECT binding FROM chat_conversations WHERE id = ?').get(row.conversation_id).binding);
+    binding.configurationId = legacyId;
+    db.prepare('UPDATE chat_submissions SET frozen = ? WHERE id = ?').run(JSON.stringify(frozen), row.id);
+    db.prepare('UPDATE chat_conversations SET binding = ? WHERE id = ?').run(JSON.stringify(binding), row.conversation_id);
+  } finally { db.close(); }
+  terminal = 'Alacritty';
+  await f.restart();
+  const follow = await f.queue(card.id, await f.compose(card.id, 'Keep editing this image'));
+  const outcome = await waitFor(async () => {
+    const submission = (await f.chat(card.id)).submissions.find((s) => s.id === follow.id);
+    return ['running', 'held', 'failed'].includes(submission.status) && submission;
+  });
+  assert.equal(outcome.status, 'running', outcome.reason);
+  assert.equal(f.codex.sends.length, 2, 'Restart never replays the first prompt.');
+  assert.equal(f.codex.sends[1].threadId, first.threadId);
+  assert.ok(!(await f.ok('GET', '/api/chat-activity')).entries.some((entry) => entry.cardId === card.id && entry.state === 'needs-attention'));
+});
 
 test('opening is idle; Send freezes saved context, clears composer atomically and deduplicates one browser ID', async (t) => {
   const f = await fixture(t); const card = await f.card({ title: 'Frozen title', fields: { intro: 'Saved intro', prompt: 'Legacy prompt must stay out' } });

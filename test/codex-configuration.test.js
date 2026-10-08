@@ -3,10 +3,38 @@ import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { openStore } from '../store.js';
 import { compileConfiguration, queuedConfigurationDecision, openConfiguredThread } from '../codex-configuration.js';
 const discovery = { cwd: '/card', harness: { userAgent: 'codex/0.160.1' }, skills: [{ id: '/skills/writer/SKILL.md' }], configuredMcpServers: [], errors: [], items: [{ id: 'skill:/skills/writer/SKILL.md', kind: 'skill', name: 'writer', selectable: false, reason: 'Skill dispatch is unverified.' }] };
 const selection = { instructions: '', selected: [] };
+
+test('legacy configuration IDs tolerate terminal metadata but still reject native option and harness changes', async () => {
+  const oldDiscovery = { ...discovery, harness: { userAgent: 'frameboard/0.160.1 (Linux; x86_64) dumb (frameboard; 0)' } };
+  const currentDiscovery = { ...oldDiscovery, harness: { userAgent: 'frameboard/0.160.1 (Linux; x86_64) Alacritty (frameboard; 0)' } };
+  for (const inherited of [false, true]) {
+    const chosen = { ...selection, inherited };
+    const compiled = compileConfiguration(chosen, oldDiscovery);
+    const { id, ...value } = compiled;
+    if (inherited) delete value.inventory;
+    const canonical = JSON.stringify(value, (_, v) => v && typeof v === 'object' && !Array.isArray(v) ? Object.fromEntries(Object.keys(v).sort().map((key) => [key, v[key]])) : v);
+    const legacy = { ...compiled, id: createHash('sha256').update(canonical).digest('hex') };
+    const frozen = compileConfiguration(chosen, currentDiscovery);
+    assert.equal(compiled.id, frozen.id);
+    assert.deepEqual(queuedConfigurationDecision(legacy, chosen, currentDiscovery), { status: 'ready' });
+    const args = { frozen, discovery: currentDiscovery, currentSelection: chosen, cwd: '/card', model: 'test-model',
+      threadId: 'one', binding: { threadId: 'one', provider: 'codex', cwd: '/card', configurationId: legacy.id }, bindingConfiguration: legacy };
+    const native = { instructionSources: [], sandbox: { type: 'workspaceWrite', networkAccess: false }, approvalPolicy: 'on-request', approvalsReviewer: 'user' };
+    const adapter = { openThread: async () => ({ threadId: 'one', native }) };
+    const resumed = await openConfiguredThread(adapter, args);
+    assert.equal(resumed.threadId, 'one');
+    assert.deepEqual(resumed.binding, args.binding);
+    await assert.rejects(openConfiguredThread(adapter, { ...args, bindingConfiguration: { ...legacy, id: 'unrelated' } }), { kind: 'fresh-context-required' });
+    for (const change of [{ instructions: 'Changed guidance' }, { nativeOptions: { ...frozen.nativeOptions, sandbox: 'danger-full-access' } }, { harness: 'frameboard/0.160.2 (Linux; x86_64)' }]) {
+      await assert.rejects(openConfiguredThread(adapter, { ...args, frozen: { ...frozen, ...change, id: 'changed' } }), { kind: 'fresh-context-required' });
+    }
+  }
+});
 
 test('effective snapshots disable optional skills and are immutable; new discovery holds old queued work', () => {
   const frozen = compileConfiguration(selection, discovery);
