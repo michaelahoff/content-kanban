@@ -364,3 +364,16 @@ test('a card image missing at delivery records every input as not sent with the 
   assert.match(attempt.delivery[0].reason, /portrait\.png/);
   assert.equal(f.codex.sends.length, 0);
 });
+
+test('a saved written document is sent as its saved version; an unsaved draft edit is never sent', async (t) => {
+  const f = await libraryFixture(t); const card = await f.card();
+  const drafts = `/api/projects/${f.projectId}/library/drafts`;
+  const draft = await f.ok('POST', drafts, { filename: 'voice-guide.md', text: 'Saved guidance' });
+  const saved = await f.ok('POST', `${drafts}/${draft.id}/save`, { revision: draft.revision, operation: randomUUID() });
+  const edit = await f.ok('POST', drafts, { assetId: saved.asset.id });
+  await f.ok('PUT', `${drafts}/${edit.id}`, { text: 'Unsaved draft guidance', revision: edit.revision });
+  const submission = await f.queue(card.id, await f.select(card.id, 'Follow the voice guide', [{ kind: 'asset', id: saved.asset.id }]));
+  assert.deepEqual(submission.context.library.map(({ versionId, method }) => [versionId, method]), [[saved.version.id, 'text']]);
+  const text = (await waitFor(() => f.codex.sends[0])).input[0].text;
+  assert.ok(text.includes('Saved guidance') && !text.includes('Unsaved draft guidance'));
+});

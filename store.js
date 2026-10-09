@@ -16,6 +16,7 @@ import { imagesMigration, createImageStore } from './store-images.js';
 import { retainedMigration, createRetainedMetadata } from './store-retained.js';
 import { createRetainedStorage } from './retained-storage.js';
 import { createLibrary } from './library.js';
+import { libraryDraftsMigration, createDraftStore } from './store-drafts.js';
 
 export const imageIdPattern = /^[a-f0-9-]{36}\.(png|jpg|webp|gif|avif)$/;
 
@@ -227,8 +228,8 @@ const migrations = [`
   ALTER TABLE chat_attempts ADD COLUMN revoked TEXT;
   ALTER TABLE chat_submissions ADD COLUMN revoked TEXT;
   UPDATE chat_attempts SET revoked = 'stopped' WHERE cause = 'user';
-`, `
-  -- What each delivery attempt actually did with a submission's Library files.
+`, libraryDraftsMigration, `
+  -- What each delivery attempt actually did with a submission's inputs.
   ALTER TABLE chat_attempts ADD COLUMN delivery TEXT;
 `];
 
@@ -1160,8 +1161,8 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
     });
     const metadata = createRetainedMetadata({ all, get, run, transaction, now });
     api.retained = await createRetainedStorage({ dataDir, checkpoint: retainedCheckpoint, metadata });
-    api.library = createLibrary({ retained: api.retained, metadata, project: requireProject,
-      record: (ctx, type, assetId, projectId, data) => transaction(() => recordChange(ctx, 'asset', assetId, type, { projectId, data })) });
+    api.library = createLibrary({ retained: api.retained, metadata, drafts: createDraftStore({ all, get, run, transaction, now }), project: requireProject,
+      record: (ctx, type, id, projectId, data, entity = 'asset') => transaction(() => recordChange(ctx, entity, id, type, { projectId, data })) });
   } catch (error) { db.close(); throw error; }
   return api;
 }

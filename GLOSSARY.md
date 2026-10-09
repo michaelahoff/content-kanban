@@ -85,6 +85,10 @@ _Avoid_: Attachment, upload
 **Asset version**:
 One immutable retained content of a project asset. Replace adds a new current version and keeps the older ones. A version whose bytes are missing or damaged is unavailable until repaired with its exact original bytes; it is never silently replaced by other content.
 
+**Document draft**:
+The text a user is writing or pasting in the Library's document editor, kept as app data while they type. Only an explicit Save publishes it as an asset version; until then it is never selected, delivered or downloaded as the asset's content. Drafts are included in workspace exports.
+_Avoid_: Autosave version, unsaved version
+
 **Card workspace**:
 The working files associated with a particular card's agent work.
 

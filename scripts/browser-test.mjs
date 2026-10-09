@@ -730,6 +730,62 @@ These values apply when a card enters this lane.
   await snapshot('library-inspector');
   await click('[data-action="library-close"]');
   await snapshot('library');
+
+  // Write/paste a document: its draft survives reload but is not a Library file until Save.
+  const draftState = () => evaluate(`document.querySelector('.library-draft-state')?.textContent ?? ''`);
+  await click('[data-action="library-write"]');
+  await waitFor(`document.querySelector('#library-draft-name')?.value === 'Untitled.md'`);
+  await fill('#library-draft-name', 'Hook guide.md');
+  await fill('#library-draft-text', '# Hooks\nOpen on the payoff.');
+  await waitFor(`!document.querySelector('.library-draft-state').textContent.includes('Keeping draft')`);
+  assert.match(await draftState(), /not in the Library until you save/);
+  await snapshot('library-editor');
+  await click('[data-action="library-close"]');
+  await waitFor(`!!document.querySelector('.library-asset.draft[aria-label="Edit draft Hook guide.md"]')`);
+  await evaluate('window.beforeReload = true');
+  await send('Page.reload');
+  await waitFor(`!window.beforeReload && !!document.querySelector('[data-action="show-library"]')`);
+  await click('[data-action="show-library"]');
+  await waitFor(`!!document.querySelector('.library-asset.draft[aria-label="Edit draft Hook guide.md"]')`);
+  assert.deepEqual(await libraryNames(), ['Hook guide.md', 'logo (1).png', 'logo.png', 'opaque.bin', 'script.md']);
+  await click('.library-asset.draft[aria-label="Edit draft Hook guide.md"]');
+  await waitFor(`document.querySelector('#library-draft-text')?.value === '# Hooks\\nOpen on the payoff.'`);
+  await click('[data-action="library-save-draft"]');
+  await waitFor(`document.querySelector('#library-heading')?.textContent === 'Hook guide.md' && document.querySelector('#library-preview pre')?.textContent.includes('Open on the payoff.')`);
+  assert.match(await evaluate(`document.querySelector('.library-preview-label').textContent`), /^Saved v1$/);
+  assert.equal(await evaluate(`document.querySelectorAll('.library-asset.draft').length`), 0);
+
+  // Editing keeps a draft; preview and download stay on the saved version until Save.
+  await click('[data-action="library-edit"]');
+  await waitFor(`!!document.querySelector('#library-draft-text') && !document.querySelector('#library-draft-name')`);
+  await fill('#library-draft-text', '# Hooks\nOpen on the payoff. Then cut.');
+  await waitFor(`!document.querySelector('.library-draft-state').textContent.includes('Keeping draft')`);
+  assert.match(await draftState(), /use saved v1/);
+  await click('[data-action="library-close"]');
+  await waitFor(`[...document.querySelectorAll('.library-asset')].some(node => node.textContent.includes('Hook guide.md') && node.textContent.includes('Draft'))`);
+  await click('.library-asset[aria-label="Inspect Hook guide.md"]');
+  await waitFor(`document.querySelector('#library-preview pre')?.textContent === '# Hooks\\nOpen on the payoff.'`);
+  assert.match(await evaluate(`document.querySelector('.library-preview-label').textContent`), /Saved v1 · Unsaved draft/);
+  assert.equal(await evaluate(`fetch(document.querySelector('#library-dialog .library-actions a[download]').href).then(response => response.text())`), '# Hooks\nOpen on the payoff.');
+  await click('[data-action="library-edit-draft"]');
+  await waitFor(`document.querySelector('#library-draft-text')?.value.endsWith('Then cut.')`);
+  await click('[data-action="library-save-draft"]');
+  await waitFor(`document.querySelector('.library-preview-label')?.textContent === 'Saved v2' && document.querySelectorAll('#library-dialog .library-version').length === 2`);
+  await click('[data-action="library-close"]');
+
+  // A first save over a taken name asks Create new / Replace / Cancel.
+  await click('[data-action="library-write"]');
+  await waitFor(`!!document.querySelector('#library-draft-name')`);
+  await fill('#library-draft-name', 'script.md');
+  await fill('#library-draft-text', 'pasted notes');
+  await click('[data-action="library-save-draft"]');
+  await waitFor(`document.querySelector('#form-dialog').open && document.querySelector('#form-heading')?.textContent === 'A file named script.md already exists'`);
+  assert.equal(await evaluate(`document.querySelector('input[name="collision"]:checked').value`), 'create');
+  await click('#small-form [type="submit"]');
+  await waitFor(`document.querySelector('#library-heading')?.textContent === 'script (1).md'`);
+  await click('[data-action="library-close"]');
+  await waitFor(`document.querySelectorAll('.library-asset').length === 6`);
+  console.log('PASS Library documents keep drafts across reload, save explicit versions and keep saved content apart from drafts');
   await click('[data-action="show-board"]');
   await waitFor(`!!document.querySelector('#board .lane')`);
   console.log('PASS Library tab uploads files, shows thumbnails, resolves collisions explicitly and downloads exact versions');
