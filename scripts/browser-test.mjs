@@ -787,6 +787,43 @@ These values apply when a card enters this lane.
   await waitFor(`document.querySelectorAll('.library-asset').length === 6`);
   console.log('PASS Library documents keep drafts across reload, save explicit versions and keep saved content apart from drafts');
 
+  // Restore an older version as a new current one, then copy the file into another project.
+  const json = async (method, url, body) => (await fetch(base + url, { method, headers: { 'Content-Type': 'application/json' }, body: body && JSON.stringify(body) })).json();
+  const { project: copies } = await json('POST', '/api/projects', { name: 'Copies' });
+  const guides = await json('POST', `/api/projects/${copies.id}/library/folders`, { name: 'Guides' });
+  await evaluate('window.beforeReload = true');
+  await send('Page.reload');
+  await waitFor(`!window.beforeReload && !!document.querySelector('[data-action="show-library"]')`);
+  await click('[data-action="show-library"]');
+  await waitFor(`!!document.querySelector('.library-asset[aria-label="Inspect Hook guide.md"]')`);
+  await click('.library-asset[aria-label="Inspect Hook guide.md"]');
+  await waitFor(`document.querySelectorAll('#library-dialog [data-action="library-restore"]').length === 1`);
+  await click('#library-dialog [data-action="library-restore"]');
+  await waitFor(`document.querySelector('#form-heading')?.textContent === 'Restore v1 of Hook guide.md?'`);
+  await click('#small-form [type="submit"]');
+  await waitFor(`document.querySelector('.library-preview-label')?.textContent === 'Saved v3' && document.querySelectorAll('#library-dialog .library-version').length === 3`);
+  await waitFor(`document.querySelector('#library-preview pre')?.textContent === '# Hooks\\nOpen on the payoff.'`);
+  assert.match(await evaluate(`document.querySelector('#library-dialog .library-version').textContent`), /v3\s*Current[\s\S]*restored from v1/);
+  await click('[data-action="library-copy"]');
+  await waitFor(`document.querySelector('#form-heading')?.textContent === 'Copy Hook guide.md to another project' && [...document.querySelectorAll('#library-copy-folder option')].some(option => option.textContent === 'Guides/')`);
+  await evaluate(`document.querySelector('#library-copy-folder').value = ${JSON.stringify(guides.id)}`);
+  await click('#small-form [type="submit"]');
+  const copiedFiles = () => json('GET', `/api/projects/${copies.id}/library`).then(({ assets }) => assets.map((asset) => [asset.filename, asset.folderId, asset.versionCount]));
+  await waitFor(`!document.querySelector('#form-dialog').open`);
+  assert.deepEqual(await copiedFiles(), [['Hook guide.md', guides.id, 1]]);
+  // A second copy with the same name offers Create new, never Replace.
+  await click('[data-action="library-copy"]');
+  await waitFor(`[...document.querySelectorAll('#library-copy-folder option')].some(option => option.textContent === 'Guides/')`);
+  await evaluate(`document.querySelector('#library-copy-folder').value = ${JSON.stringify(guides.id)}`);
+  await click('#small-form [type="submit"]');
+  await waitFor(`document.querySelector('#form-heading')?.textContent === 'A file named Hook guide.md already exists'`);
+  assert.deepEqual(await evaluate(`[...document.querySelectorAll('input[name="collision"]')].map(input => input.value)`), ['create', 'cancel']);
+  await click('#small-form [type="submit"]');
+  for (let tries = 0; (await copiedFiles()).length < 2 && tries < 100; tries++) await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.deepEqual(await copiedFiles(), [['Hook guide (1).md', guides.id, 1], ['Hook guide.md', guides.id, 1]]);
+  await click('[data-action="library-close"]');
+  console.log('PASS Library restores an older version as a new current version and copies the current version into another project');
+
   // Folders: create one, drop a nested folder with per-file collisions, search
   // whole paths, rename and move without merging, and remove recursively.
   await evaluate(`document.querySelector('[data-action="library-clear-uploads"]')?.click()`);

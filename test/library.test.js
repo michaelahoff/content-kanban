@@ -966,3 +966,285 @@ test('a new document saves at the Library root, where a subfolder also holds its
   const v2 = await f.library.saveDraft(f.ctx, f.projectId, edit.id, { revision: (await f.library.writeDraft(f.ctx, f.projectId, edit.id, { text: '# Guide v2', revision: edit.revision })).revision, operationId: 'doc-3' });
   assert.deepEqual([v2.asset.id, v2.asset.folderId, v2.version.number], [saved.asset.id, scripts.id, 2], 'a later save keeps the moved file in place');
 });
+
+test('restoring an older version publishes its bytes as a new current version and keeps every intervening version', async (t) => {
+  const f = await fixture(t);
+  const v1 = await f.upload('script.md', Buffer.from('# Take one'));
+  const v2 = await f.upload('script.md', Buffer.from('# Take two'), { collision: 'replace', assetId: v1.asset.id });
+  const v3 = await f.upload('script.md', Buffer.from('# Take three'), { collision: 'replace', assetId: v1.asset.id });
+
+  const restored = await f.library.restoreVersion(f.ctx, f.projectId, v1.asset.id, { versionId: v1.version.id, baseVersionId: v3.version.id, operationId: 'restore-1' });
+  assert.equal(restored.outcome, 'restored');
+  assert.deepEqual([restored.asset.id, restored.version.number, restored.version.restoredFrom], [v1.asset.id, 4, v1.version.id]);
+  assert.notEqual(restored.version.id, v1.version.id, 'a new version, not a revived one');
+  const asset = f.library.asset(f.ctx, f.projectId, v1.asset.id);
+  assert.equal(asset.current.id, restored.version.id);
+  assert.deepEqual(asset.versions.map((version) => version.id), [restored.version.id, v3.version.id, v2.version.id, v1.version.id]);
+  assert.deepEqual(await collect((await f.library.read(f.ctx, f.projectId, restored.version.id)).stream), Buffer.from('# Take one'));
+  // Historical references keep their own bytes.
+  assert.deepEqual(await collect((await f.library.read(f.ctx, f.projectId, v3.version.id)).stream), Buffer.from('# Take three'));
+  assert.deepEqual(f.library.resolve(f.ctx, f.projectId, [{ kind: 'asset', id: v1.asset.id }]).files.map((file) => file.versionId), [restored.version.id]);
+
+  // A retry reports the same restoration without another version.
+  const again = await f.library.restoreVersion(f.ctx, f.projectId, v1.asset.id, { versionId: v1.version.id, baseVersionId: v3.version.id, operationId: 'restore-1' });
+  assert.deepEqual([again.outcome, again.version.id], ['restored', restored.version.id]);
+  assert.equal(f.library.asset(f.ctx, f.projectId, v1.asset.id).versionCount, 4);
+});
+
+test('restoration is explicit about the version it replaces and refuses foreign, removed or archived sources', async (t) => {
+  const f = await fixture(t);
+  const { project: other } = f.store.createProject(f.ctx, { name: 'Other' });
+  const v1 = await f.upload('script.md', Buffer.from('# Take one'));
+  const v2 = await f.upload('script.md', Buffer.from('# Take two'), { collision: 'replace', assetId: v1.asset.id });
+  const elsewhere = await f.upload('notes.md', Buffer.from('# Notes'));
+  const restore = (input, projectId = f.projectId, assetId = v1.asset.id) => f.library.restoreVersion(f.ctx, projectId, assetId, { operationId: randomUUID(), ...input });
+
+  // A version saved after the user looked is never silently replaced.
+  await assert.rejects(restore({ versionId: v1.version.id, baseVersionId: v1.version.id }),
+    (error) => error.status === 409 && error.conflict.currentVersion.id === v2.version.id && /v2/.test(error.message));
+  await assert.rejects(restore({ versionId: v2.version.id, baseVersionId: v2.version.id }), (error) => error.status === 409 && /already current/.test(error.message));
+  await assert.rejects(restore({ versionId: elsewhere.version.id, baseVersionId: v2.version.id }), (error) => error.status === 404);
+  await assert.rejects(restore({ versionId: v1.version.id, baseVersionId: v2.version.id }, other.id), (error) => error.status === 404);
+  // Restoring content the current version already has publishes nothing.
+  const v3 = await f.upload('script.md', Buffer.from('# Take one'), { collision: 'replace', assetId: v1.asset.id });
+  const unchanged = await restore({ versionId: v1.version.id, baseVersionId: v3.version.id });
+  assert.deepEqual([unchanged.outcome, unchanged.version.id], ['unchanged', v3.version.id]);
+  assert.equal(f.library.asset(f.ctx, f.projectId, v1.asset.id).versionCount, 3);
+
+  // A retry names the asset and version it began with.
+  const done = await restore({ versionId: v2.version.id, baseVersionId: v3.version.id, operationId: 'restore-1' });
+  await assert.rejects(restore({ versionId: elsewhere.version.id, baseVersionId: elsewhere.version.id, operationId: 'restore-1' }, f.projectId, elsewhere.asset.id), (error) => error.status === 409);
+
+  f.store.archiveProject(f.ctx, f.projectId);
+  await assert.rejects(restore({ versionId: v1.version.id, baseVersionId: done.version.id }), (error) => error.status === 409 && /archived/i.test(error.message));
+  f.store.unarchiveProject(f.ctx, f.projectId);
+  f.library.removeAsset(f.ctx, f.projectId, v1.asset.id);
+  await assert.rejects(restore({ versionId: v1.version.id, baseVersionId: done.version.id }), (error) => error.status === 404);
+  assert.equal(f.library.asset(f.ctx, f.projectId, v1.asset.id).versionCount, 4);
+});
+
+test('a failed restoration keeps the current version, and its retry publishes the same older bytes once', async (t) => {
+  const f = await fixture(t);
+  const v1 = await f.upload('script.md', Buffer.from('# Take one'));
+  const v2 = await f.upload('script.md', Buffer.from('# Take two'), { collision: 'replace', assetId: v1.asset.id });
+  const input = { versionId: v1.version.id, baseVersionId: v2.version.id, operationId: 'restore-1' };
+
+  // Interrupted after the bytes were published but before the commit.
+  f.faults.checkpoint = async (stage) => { if (stage === 'bytes-published') throw new Error('crashed before commit'); };
+  await assert.rejects(f.library.restoreVersion(f.ctx, f.projectId, v1.asset.id, input), /crashed/);
+  f.faults.checkpoint = async () => {};
+  assert.deepEqual([f.library.asset(f.ctx, f.projectId, v1.asset.id).current.id, f.library.asset(f.ctx, f.projectId, v1.asset.id).versionCount], [v2.version.id, 2]);
+
+  // Damaged older bytes are never restored; exact repair makes the retry possible.
+  const payload = path.join(f.dataDir, 'retained', 'versions', v1.version.id);
+  await chmod(payload, 0o600); await writeFile(payload, 'tampered!!');
+  await f.restart();
+  await assert.rejects(f.library.restoreVersion(f.ctx, f.projectId, v1.asset.id, input), (error) => error.status === 409 && /unavailable/.test(error.message));
+  assert.equal(f.library.asset(f.ctx, f.projectId, v1.asset.id).current.id, v2.version.id);
+  await f.library.repair(f.ctx, f.projectId, v1.version.id, Buffer.from('# Take one'));
+  const restored = await f.library.restoreVersion(f.ctx, f.projectId, v1.asset.id, input);
+  assert.deepEqual([restored.version.number, restored.version.hash], [3, sha(Buffer.from('# Take one'))]);
+  assert.equal(f.library.asset(f.ctx, f.projectId, v1.asset.id).versionCount, 3);
+});
+
+test('a restored written version previews and edits as written text', async (t) => {
+  const f = await fixture(t);
+  const draft = await f.library.createDraft(f.ctx, f.projectId, { filename: 'cover.png', text: 'written first' });
+  const saved = await f.library.saveDraft(f.ctx, f.projectId, draft.id, { revision: draft.revision, operationId: 'doc-1' });
+  const uploaded = await f.upload('cover.png', Buffer.from([137, 80, 78, 71]), { collision: 'replace', assetId: saved.asset.id });
+  assert.equal(uploaded.version.written, false);
+  const restored = await f.library.restoreVersion(f.ctx, f.projectId, saved.asset.id, { versionId: saved.version.id, baseVersionId: uploaded.version.id, operationId: 'restore-1' });
+  assert.deepEqual([restored.version.written, restored.asset.current.written], [true, true]);
+  assert.equal((await f.library.read(f.ctx, f.projectId, restored.version.id)).written, true);
+});
+
+test('a project copy is an independent asset with only the current content, which survives source removal, damage and archive', async (t) => {
+  const f = await fixture(t);
+  const { project: other } = f.store.createProject(f.ctx, { name: 'Other' });
+  const refs = f.library.createFolder(f.ctx, other.id, { name: 'refs' });
+  const v1 = await f.upload('logo.png', Buffer.from('logo one'));
+  const v2 = await f.upload('logo.png', Buffer.from('logo two'), { collision: 'replace', assetId: v1.asset.id });
+
+  const copied = await f.library.copyAsset(f.ctx, f.projectId, v1.asset.id, { targetProjectId: other.id, folderId: refs.id, filename: 'logo.png', operationId: 'copy-1' });
+  assert.equal(copied.outcome, 'copied');
+  assert.notEqual(copied.asset.id, v1.asset.id);
+  assert.deepEqual([copied.asset.projectId, copied.asset.folderId, copied.asset.filename, copied.asset.versionCount], [other.id, refs.id, 'logo.png', 1]);
+  assert.notEqual(copied.version.id, v2.version.id);
+  assert.deepEqual([copied.version.number, copied.version.hash, copied.version.size], [1, v2.version.hash, v2.version.size], 'only the current content');
+  assert.deepEqual(copied.asset.copiedFrom, { projectId: f.projectId, assetId: v1.asset.id, versionId: v2.version.id });
+  assert.deepEqual(f.library.list(f.ctx, other.id).assets.map((asset) => asset.id), [copied.asset.id]);
+  assert.equal(f.library.asset(f.ctx, f.projectId, v1.asset.id).versionCount, 2, 'the source is untouched');
+  // Each project reads only its own asset's versions.
+  await assert.rejects(f.library.read(f.ctx, f.projectId, copied.version.id), (error) => error.status === 404);
+  await assert.rejects(f.library.read(f.ctx, other.id, v2.version.id), (error) => error.status === 404);
+
+  // A retry reports the same copy.
+  const again = await f.library.copyAsset(f.ctx, f.projectId, v1.asset.id, { targetProjectId: other.id, folderId: refs.id, filename: 'logo.png', operationId: 'copy-1' });
+  assert.deepEqual([again.asset.id, again.version.id], [copied.asset.id, copied.version.id]);
+
+  // Equal bytes never alias: the source's damage, removal and archive leave the copy whole.
+  const payload = path.join(f.dataDir, 'retained', 'versions', v2.version.id);
+  await chmod(payload, 0o600); await writeFile(payload, 'tampered');
+  f.library.removeAsset(f.ctx, f.projectId, v1.asset.id);
+  f.store.archiveProject(f.ctx, f.projectId);
+  await f.restart();
+  assert.deepEqual(await collect((await f.library.read(f.ctx, other.id, copied.version.id)).stream), Buffer.from('logo two'));
+  const resolved = f.library.resolve(f.ctx, other.id, [{ kind: 'asset', id: copied.asset.id }]);
+  assert.deepEqual([resolved.problems, resolved.files.map((file) => [file.versionId, file.libraryPath])], [[], [[copied.version.id, 'refs/logo.png']]]);
+});
+
+test('a project copy chooses its destination folder and name explicitly and requires both projects to be active', async (t) => {
+  const f = await fixture(t);
+  const { project: other } = f.store.createProject(f.ctx, { name: 'Other' });
+  const { project: third } = f.store.createProject(f.ctx, { name: 'Third' });
+  const source = await f.upload('logo.png', Buffer.from('logo'));
+  const held = await f.upload('logo.png', Buffer.from('logo'), { projectId: other.id });
+  const copy = (input, projectId = f.projectId, assetId = source.asset.id) => f.library.copyAsset(f.ctx, projectId, assetId, { targetProjectId: other.id, filename: 'logo.png', operationId: randomUUID(), ...input });
+
+  // A taken name offers Create new; a copy never becomes a version of the destination's file.
+  await assert.rejects(copy({}), (error) => error.status === 409 && error.conflict.suggested === 'logo (1).png' && !error.conflict.assetId);
+  await assert.rejects(copy({ collision: 'replace', assetId: held.asset.id }), (error) => error.status === 400);
+  const suffixed = await copy({ collision: 'create' });
+  assert.deepEqual([suffixed.asset.filename, suffixed.asset.folderId], ['logo (1).png', null]);
+  const renamed = await copy({ filename: 'brand mark.png' });
+  assert.equal(renamed.asset.filename, 'brand mark.png');
+  assert.deepEqual(f.library.list(f.ctx, other.id).assets.map((asset) => [asset.filename, asset.versionCount]), [['brand mark.png', 1], ['logo (1).png', 1], ['logo.png', 1]]);
+  assert.equal(f.library.asset(f.ctx, other.id, held.asset.id).current.id, held.version.id, 'equal bytes never merge with the held file');
+
+  // Ownership: the folder must be the destination's, the source the named project's.
+  const foreignFolder = f.library.createFolder(f.ctx, third.id, { name: 'refs' });
+  await assert.rejects(copy({ folderId: foreignFolder.id }), (error) => error.status === 404);
+  await assert.rejects(copy({ targetProjectId: randomUUID() }), (error) => error.status === 404);
+  await assert.rejects(copy({}, third.id), (error) => error.status === 404);
+  await assert.rejects(copy({ filename: '../escape.png' }), (error) => error.status === 400);
+
+  f.store.archiveProject(f.ctx, other.id);
+  await assert.rejects(copy({ filename: 'late.png' }), (error) => error.status === 409 && /archived/i.test(error.message));
+  f.store.unarchiveProject(f.ctx, other.id);
+  f.store.archiveProject(f.ctx, f.projectId);
+  await assert.rejects(copy({ filename: 'late.png' }), (error) => error.status === 409 && /archived/i.test(error.message));
+  f.store.unarchiveProject(f.ctx, f.projectId);
+  f.library.removeAsset(f.ctx, f.projectId, source.asset.id);
+  await assert.rejects(copy({ filename: 'late.png' }), (error) => error.status === 404);
+  assert.equal(f.library.list(f.ctx, other.id).assets.length, 3);
+});
+
+test('a failed project copy leaves nothing in the destination, and its retry copies the version it began with', async (t) => {
+  const f = await fixture(t);
+  const { project: other } = f.store.createProject(f.ctx, { name: 'Other' });
+  const v1 = await f.upload('script.md', Buffer.from('# Take one'));
+  const input = { targetProjectId: other.id, filename: 'script.md', operationId: 'copy-1' };
+
+  f.faults.checkpoint = async (stage) => { if (stage === 'bytes-published') throw new Error('crashed before commit'); };
+  await assert.rejects(f.library.copyAsset(f.ctx, f.projectId, v1.asset.id, input), /crashed/);
+  f.faults.checkpoint = async () => {};
+  await f.restart();
+  assert.deepEqual(f.library.list(f.ctx, other.id).assets, []);
+  // The name stays free while nothing was saved.
+  assert.equal((await f.upload('notes.md', Buffer.from('x'), { projectId: other.id })).asset.filename, 'notes.md');
+
+  // The source changes before the retry: the retry still copies v1, verified.
+  await f.upload('script.md', Buffer.from('# Take two'), { collision: 'replace', assetId: v1.asset.id });
+  const payload = path.join(f.dataDir, 'retained', 'versions', v1.version.id);
+  await chmod(payload, 0o600); await writeFile(payload, 'tampered!!');
+  await assert.rejects(f.library.copyAsset(f.ctx, f.projectId, v1.asset.id, input), (error) => error.status === 409 && /unavailable/.test(error.message));
+  assert.equal(f.library.list(f.ctx, other.id).assets.length, 1);
+  await f.library.repair(f.ctx, f.projectId, v1.version.id, Buffer.from('# Take one'));
+  const copied = await f.library.copyAsset(f.ctx, f.projectId, v1.asset.id, input);
+  assert.deepEqual([copied.version.hash, copied.asset.copiedFrom.versionId], [sha(Buffer.from('# Take one')), v1.version.id]);
+  assert.deepEqual(f.library.list(f.ctx, other.id).assets.map((asset) => asset.filename), ['notes.md', 'script.md']);
+  await assert.rejects(f.library.copyAsset(f.ctx, f.projectId, v1.asset.id, { ...input, filename: 'other.md' }), (error) => error.status === 409);
+});
+
+test('a copied written document stays written text in its new project', async (t) => {
+  const f = await fixture(t);
+  const { project: other } = f.store.createProject(f.ctx, { name: 'Other' });
+  const draft = await f.library.createDraft(f.ctx, f.projectId, { filename: 'cover.png', text: 'written' });
+  const saved = await f.library.saveDraft(f.ctx, f.projectId, draft.id, { revision: draft.revision, operationId: 'doc-1' });
+  const copied = await f.library.copyAsset(f.ctx, f.projectId, saved.asset.id, { targetProjectId: other.id, filename: 'cover.png', operationId: 'copy-1' });
+  assert.deepEqual([copied.asset.kind, copied.version.written], ['document', true]);
+  const edit = await f.library.createDraft(f.ctx, other.id, { assetId: copied.asset.id });
+  assert.equal(edit.text, 'written');
+});
+
+test('over HTTP, restoring a version and copying into another project name their choices; archive and maintenance refuse both', async (t) => {
+  const f = await httpFixture(t);
+  const other = (await f.ok('POST', '/api/projects', { name: 'Other' })).project;
+  const otherLibrary = `/api/projects/${other.id}/library`;
+  const v1 = (await f.upload('script.md', Buffer.from('# Take one'))).body;
+  const v2 = (await f.upload('script.md', Buffer.from('# Take two'), { collision: 'replace', asset: v1.asset.id })).body;
+  const restoreUrl = `${f.library}/assets/${v1.asset.id}/restore`; const copyUrl = `${f.library}/assets/${v1.asset.id}/copy`;
+
+  assert.equal((await f.call('POST', restoreUrl, { versionId: v1.version.id, baseVersionId: v2.version.id })).status, 400, 'an operation ID is required');
+  const stale = await f.call('POST', restoreUrl, { versionId: v1.version.id, baseVersionId: v1.version.id, operation: randomUUID() });
+  assert.deepEqual([stale.status, stale.body.conflict.currentVersion.id], [409, v2.version.id]);
+  const restored = await f.ok('POST', restoreUrl, { versionId: v1.version.id, baseVersionId: v2.version.id, operation: 'restore-1' });
+  assert.deepEqual([restored.outcome, restored.version.number, restored.version.restoredFrom], ['restored', 3, v1.version.id]);
+  const detail = await f.ok('GET', `${f.library}/assets/${v1.asset.id}`);
+  assert.deepEqual(detail.versions.map((version) => [version.number, version.current]), [[3, true], [2, false], [1, false]]);
+  assert.deepEqual(Buffer.from(await (await f.raw(`${f.library}/versions/${restored.version.id}/content`)).arrayBuffer()), Buffer.from('# Take one'));
+
+  const folder = await f.ok('POST', `${otherLibrary}/folders`, { name: 'Scripts' });
+  const copied = await f.ok('POST', copyUrl, { targetProjectId: other.id, folderId: folder.id, filename: 'script.md', operation: 'copy-1' });
+  assert.deepEqual([copied.asset.projectId, copied.asset.folderId, copied.asset.versionCount, copied.version.hash], [other.id, folder.id, 1, restored.version.hash]);
+  const taken = await f.call('POST', copyUrl, { targetProjectId: other.id, folderId: folder.id, filename: 'script.md', operation: randomUUID() });
+  assert.deepEqual([taken.status, taken.body.conflict.suggested, taken.body.conflict.assetId], [409, 'script (1).md', undefined]);
+  for (const claim of [{ versionId: v1.version.id }, { hash: v1.version.hash }, { path: 'retained/versions/x' }]) {
+    const refused = await f.call('POST', copyUrl, { targetProjectId: other.id, filename: 'claimed.md', operation: randomUUID(), ...claim });
+    assert.equal(refused.status, 400, JSON.stringify(claim));
+  }
+  assert.deepEqual(Buffer.from(await (await f.raw(`${otherLibrary}/versions/${copied.version.id}/content`)).arrayBuffer()), Buffer.from('# Take one'));
+  assert.equal((await f.raw(`${f.library}/versions/${copied.version.id}/content`)).status, 404, 'the copy belongs to its destination');
+
+  await f.ok('POST', `/api/projects/${other.id}/archive`, {});
+  assert.equal((await f.call('POST', copyUrl, { targetProjectId: other.id, filename: 'late.md', operation: randomUUID() })).status, 409);
+  await f.ok('POST', `/api/projects/${other.id}/unarchive`, {});
+  await f.ok('POST', `/api/projects/${f.projectId}/archive`, {});
+  assert.equal((await f.call('POST', restoreUrl, { versionId: v2.version.id, baseVersionId: restored.version.id, operation: randomUUID() })).status, 409);
+  assert.equal((await f.call('POST', copyUrl, { targetProjectId: other.id, filename: 'late.md', operation: randomUUID() })).status, 409);
+  await f.ok('POST', `/api/projects/${f.projectId}/unarchive`, {});
+
+  const output = await mkdtemp(path.join(tmpdir(), 'frameboard-library-export-'));
+  t.after(() => rm(output, { recursive: true, force: true }));
+  await f.ok('POST', '/api/maintenance/export', { output });
+  assert.equal((await f.call('POST', restoreUrl, { versionId: v2.version.id, baseVersionId: restored.version.id, operation: randomUUID() })).status, 503);
+  assert.equal((await f.call('POST', copyUrl, { targetProjectId: other.id, filename: 'paused.md', operation: randomUUID() })).status, 503);
+  await waitFor(async () => !(await f.ok('GET', '/api/maintenance')).active);
+  assert.deepEqual([(await f.ok('GET', f.library)).assets[0].versionCount, (await f.ok('GET', otherLibrary)).assets.length], [3, 1]);
+});
+
+test('export and restore keep a restored history and an independent project copy, with their own identities and bytes', async (t) => {
+  const f = await httpFixture(t);
+  const other = (await f.ok('POST', '/api/projects', { name: 'Other' })).project;
+  const otherLibrary = `/api/projects/${other.id}/library`;
+  const v1 = (await f.upload('logo.png', Buffer.from('logo one'))).body;
+  const v2 = (await f.upload('logo.png', Buffer.from('logo two'), { collision: 'replace', asset: v1.asset.id })).body;
+  await f.ok('POST', `${f.library}/assets/${v1.asset.id}/restore`, { versionId: v1.version.id, baseVersionId: v2.version.id, operation: 'restore-1' });
+  const copied = await f.ok('POST', `${f.library}/assets/${v1.asset.id}/copy`, { targetProjectId: other.id, filename: 'logo.png', operation: 'copy-1' });
+  // The source's later life never reaches the copy.
+  await f.ok('DELETE', `${f.library}/assets/${v1.asset.id}`);
+  await f.ok('POST', `/api/projects/${f.projectId}/archive`, {});
+  const source = await f.ok('GET', `${f.library}/assets/${v1.asset.id}`);
+  const copy = await f.ok('GET', `${otherLibrary}/assets/${copied.asset.id}`);
+  assert.deepEqual(source.versions.map((version) => [version.number, version.restoredFrom ?? null]), [[3, v1.version.id], [2, null], [1, null]]);
+  assert.deepEqual([copy.versions.length, copy.copiedFrom.versionId, copy.versions[0].hash], [1, source.versions[0].id, source.versions[0].hash]);
+
+  const root = await mkdtemp(path.join(tmpdir(), 'frameboard-library-copies-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await f.close();
+  const { backupDir } = await createBackup({ dataDir: f.dataDir, output: path.join(root, 'backups'), codexHome: path.join(root, 'native') });
+  const manifest = JSON.parse(await readFile(path.join(backupDir, 'manifest.json'), 'utf8'));
+  const copyEntry = manifest.inventory.retained.find((entry) => entry.versionId === copy.versions[0].id);
+  assert.deepEqual([copyEntry.objectId, copyEntry.projectId, copyEntry.path === `retained/versions/${source.versions[0].id}`], [copied.asset.id, other.id, false], 'the copy has its own retained payload');
+  const dataDir = path.join(root, 'restored');
+  await restoreBackup({ backupDir, dataDir, codexHome: path.join(root, 'native') });
+  const restored = await createApp({ dataDir, codexAdapter: new ControlledCodex(path.join(root, 'native')) });
+  await new Promise((resolve) => restored.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => restored.close(resolve)));
+  const base = `http://127.0.0.1:${restored.address().port}`;
+  assert.deepEqual(await (await fetch(`${base}${f.library}/assets/${v1.asset.id}`)).json(), source);
+  assert.deepEqual(await (await fetch(`${base}${otherLibrary}/assets/${copied.asset.id}`)).json(), copy);
+  for (const [library, version, bytes] of [[f.library, source.versions[0], 'logo one'], [f.library, source.versions[1], 'logo two'], [otherLibrary, copy.versions[0], 'logo one']]) {
+    assert.deepEqual(Buffer.from(await (await fetch(`${base}${library}/versions/${version.id}/content`)).arrayBuffer()), Buffer.from(bytes));
+  }
+});
