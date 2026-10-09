@@ -124,6 +124,23 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
   function activeAttempt(cardId) {
     return attemptFrom(get("SELECT * FROM chat_attempts WHERE card_id = ? AND status IN ('dispatching', 'accepted', 'running', 'interrupt-requested')", cardId));
   }
+  // What Retry depends on that is the same for every submission of a card.
+  function retryState(cardId) {
+    const conversation = current(cardId);
+    return { conversation, active: Boolean(activeAttempt(cardId)),
+      uncertain: Boolean(get("SELECT 1 FROM chat_submissions WHERE conversation_id = ? AND status = 'uncertain' LIMIT 1", conversation.id)) };
+  }
+  // Why a submission cannot be retried now, or null. A retried submission
+  // keeps its place in the queue, so it would be sent ahead of later work:
+  // an uncertain delivery anywhere in the conversation is reconciled first.
+  function retryRefusal(row, state = retryState(row.card_id)) {
+    if (row.revoked === 'archived') return 'This work was cancelled when its project was archived, so it cannot be retried. Send a new prompt or Run playbook instead.';
+    if (row.revoked === 'restored') return restoredRetryMessage;
+    if (!['failed', 'interrupted'].includes(row.status) || row.conversation_id !== state.conversation.id
+      || state.conversation.state !== 'active' || state.active) return 'Retry requires a terminal attempt in the current, available conversation. Reconcile uncertainty before retrying.';
+    if (state.uncertain) return 'Delivery of another prompt in this conversation is uncertain. Check delivery or mark it interrupted before retrying.';
+    return null;
+  }
   function invalidateRequests(attemptId) { run("UPDATE chat_requests SET status = 'invalidated' WHERE attempt_id = ? AND status = 'pending'", attemptId); }
   function status(ctx, id, value, reason = '', type = `submission_${value}`) {
     run('UPDATE chat_submissions SET status = ?, reason = ?, completed_at = ? WHERE id = ?', value, reason,
@@ -170,9 +187,10 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
     snapshot(ctx, cardId) {
       const row = ensure(ctx, cardId);
       const card = retainedCard(ctx, cardId);
+      const state = retryState(cardId);
       return { cardId, deleted: Boolean(card.deleted_at), composer: { provider: 'codex', ...JSON.parse(row.composer), revision: row.composer_revision },
         conversations: all('SELECT * FROM chat_conversations WHERE card_id = ? ORDER BY position', cardId).map(conversationFrom),
-        submissions: all('SELECT * FROM chat_submissions WHERE card_id = ? ORDER BY sequence', cardId).map(submissionFrom),
+        submissions: all('SELECT * FROM chat_submissions WHERE card_id = ? ORDER BY sequence', cardId).map((row) => ({ ...submissionFrom(row), retryable: !retryRefusal(row, state) })),
         attempts: all('SELECT * FROM chat_attempts WHERE card_id = ? ORDER BY rowid', cardId).map(attemptFrom),
         items: all('SELECT i.* FROM chat_items i JOIN chat_attempts a ON a.id = i.attempt_id WHERE a.card_id = ? ORDER BY i.sequence', cardId)
           .map((item) => ({ sequence: item.sequence, attemptId: item.attempt_id, nativeId: item.native_id, kind: item.kind, text: item.text, data: JSON.parse(item.data), completed: Boolean(item.completed) })),
@@ -497,13 +515,27 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
       if (!['queued', 'waiting', 'held'].includes(row.status)) fail(409, 'Only queued, waiting or held submissions can be cancelled here. Stop active work first.');
       transaction(() => status(ctx, id, 'cancelled', 'Cancelled by the user.'));
     },
+    // How each of a card's lane runs can be recovered: whether Retry would be
+    // accepted now, and whether the native agent may have received it
+    // without Frameboard knowing (delivery uncertain, or an uncertain
+    // delivery marked interrupted), so running it again may repeat its work.
+    // `conversationUncertain` is why Retry waits even for other submissions.
+    recovery(cardId) {
+      // A run that failed before queueing may have no card chat to read.
+      if (!get('SELECT 1 FROM card_chats WHERE card_id = ?', cardId)) return { conversationUncertain: false, of: () => ({ retryable: false, possiblyDelivered: false }) };
+      const state = retryState(cardId);
+      return { conversationUncertain: state.uncertain, of(id) {
+        const row = id && get('SELECT * FROM chat_submissions WHERE id = ?', id);
+        if (!row) return { retryable: false, possiblyDelivered: false };
+        return { retryable: !retryRefusal(row, state), possiblyDelivered: row.status === 'uncertain'
+          || Boolean(get("SELECT 1 FROM chat_attempts WHERE submission_id = ? AND cause = 'resolved' LIMIT 1", id)) };
+      } };
+    },
     retry(ctx, cardId, id) {
       requireCard(ctx, cardId);
       const row = requireSubmission(ctx, cardId, id);
-      if (row.revoked === 'archived') fail(409, 'This work was cancelled when its project was archived, so it cannot be retried. Send a new prompt or Run playbook instead.');
-      if (row.revoked === 'restored') fail(409, restoredRetryMessage);
-      if (!['failed', 'interrupted'].includes(row.status) || row.conversation_id !== current(cardId).id
-        || current(cardId).state !== 'active' || activeAttempt(cardId)) fail(409, 'Retry requires a terminal attempt in the current, available conversation. Reconcile uncertainty before retrying.');
+      const refusal = retryRefusal(row);
+      if (refusal) fail(409, refusal);
       transaction(() => {
         status(ctx, id, 'queued', 'Explicitly retried by the user with the original frozen inputs.');
         run("UPDATE lane_runs SET status = 'queued', reason = '', result = NULL, updated_at = ? WHERE submission_id = ?", now(), id);

@@ -18,6 +18,23 @@ export function runLabel(run) {
   return run.reason ? `${label} · ${run.reason}` : label;
 }
 
+// What the user can do after a run that did not finish cleanly. Retry
+// resends one frozen submission; Run playbook is new whole work from what is
+// saved now, for the card's current lane. Neither continues where a failed
+// run stopped. `here` is false for a run in a lane the card has since left.
+export function runGuidance(run, { here = true } = {}) {
+  const repeat = run.possiblyDelivered ? ' The agent may already have received it, so either may repeat its work.' : '';
+  const rerun = 'Run playbook starts a new run with the current playbook, inputs and notes.';
+  if (run.submissionStatus === 'uncertain') return 'The agent may have received this run. Check delivery in the card chat before anything else is sent there; running the playbook again may repeat its work.';
+  if (run.status !== 'failed') return '';
+  if (!here) return run.retryable ? "Retry in the card chat resends that run's original submission; its field changes become proposals. Run playbook runs this lane's playbook instead." : '';
+  if (!run.submissionId) return 'Nothing was sent, so there is nothing to retry. Fix the problem, then Run playbook to start new work.';
+  if (run.submissionStatus === 'completed') return 'The reply is kept in the card chat, but its result was not applied. Run playbook to start new work.';
+  if (run.conversationUncertain) return `Another prompt's delivery in the card chat is uncertain. Check delivery there first: Retry waits for it, and a new run queues behind it.${repeat}`;
+  if (run.retryable) return `Retry in the card chat resends this run's original submission exactly as it was sent. ${rerun} Earlier notes and card changes stay either way.${repeat}`;
+  return `${rerun}${repeat}`;
+}
+
 export function cardPlaybookMarkup() {
   return '<section id="card-playbook" class="card-playbook" aria-label="Lane playbook"></section>';
 }
@@ -65,9 +82,11 @@ export function renderBar() {
   const playbook = lane.playbook;
   const runnable = playbook && playbook.hasInstructions && playbook.run !== 'off' && !playbook.errors.length;
   const latest = active.runs[0];
+  const guidance = latest && runGuidance(latest, { here: latest.stageId === lane.id });
   panel.innerHTML = `<div class="card-playbook-info">${icon('playbook')}<div><strong>${escape(lane.name)} playbook</strong><span>${escape(playbook ? playbook.summary : 'No playbook yet. Open playbooks to write one.')}</span></div></div>
     <div class="card-playbook-actions">${button('run-playbook', 'Run playbook', 'arrow', 'button small secondary', runnable ? '' : 'disabled title="This lane has no runnable playbook"')}${button('open-lane-playbook', 'Open playbook', null, 'button small secondary', `data-id="${lane.id}"`)}</div>
-    ${latest ? `<p class="card-playbook-run ${latest.status === 'failed' ? 'failed' : ''}"><span>Last run${latest.stageId !== lane.id ? ` in ${escape(found.project.lanes.find((item) => item.id === latest.stageId)?.name ?? 'another lane')}` : ''}:</span> ${escape(runLabel(latest))}</p>` : ''}`;
+    ${latest ? `<p class="card-playbook-run ${latest.status === 'failed' ? 'failed' : ''}"><span>Last run${latest.stageId !== lane.id ? ` in ${escape(found.project.lanes.find((item) => item.id === latest.stageId)?.name ?? 'another lane')}` : ''}:</span> ${escape(runLabel(latest))}</p>` : ''}
+    ${guidance ? `<p class="card-playbook-guidance">${escape(guidance)}</p>` : ''}`;
 }
 
 function renderNotes() {

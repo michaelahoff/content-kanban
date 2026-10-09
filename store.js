@@ -1102,7 +1102,11 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
       pending: (ctx) => all("SELECT * FROM lane_runs WHERE workspace_id = ? AND status = 'pending' ORDER BY created_at", ctx.workspaceId).map(laneRunFrom),
       forCard(ctx, cardId) {
         retainedCard(ctx, cardId);
-        return all('SELECT * FROM lane_runs WHERE card_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 20', cardId).map(laneRunFrom);
+        // Retry resends a run's frozen submission. A run that failed before
+        // queueing has none, so only Run playbook starts new work.
+        const recovery = chats.recovery(cardId);
+        return all('SELECT * FROM lane_runs WHERE card_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 20', cardId)
+          .map((row) => ({ ...laneRunFrom(row), ...recovery.of(row.submission_id), conversationUncertain: recovery.conversationUncertain }));
       },
       // Everything a lane run prompt needs about where the card is.
       context(ctx, id) {

@@ -93,6 +93,7 @@
   .card-playbook-run { grid-column: 1 / -1; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
   .card-playbook-run span { color: var(--faint); }
   .card-playbook-run.failed { color: var(--danger); }
+  .card-playbook-guidance { grid-column: 1 / -1; color: var(--muted); font-size: 12px; line-height: 1.5; }
   .notes-section textarea { min-height: 140px; font: 13px/1.7 Consolas, monospace; }
   .notes-conflict { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-bottom: 8px; padding: 8px 10px; border: 1px solid #d8b77855; border-radius: 8px; color: var(--amber); font-size: 12px; }
   .notes-conflict div { display: flex; gap: 8px; }
