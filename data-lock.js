@@ -12,14 +12,22 @@ export async function lockDataDirectory(dataDir) {
     return null;
   }) ?? path.join(await realpath(path.dirname(dataDir)), path.basename(dataDir));
   const filename = path.join(path.dirname(dataDir), `.${path.basename(dataDir)}.frameboard-lock.sqlite`);
+  const db = holdExclusiveLock(filename);
+  if (!db) throw new Error('Stop Frameboard before backup or restore. Another app or backup/restore operation is using this data directory.');
+  return { dataDir, release: () => db.close() };
+}
+
+// Returns an open database holding the file's OS lock, or null if another
+// connection holds it. The kernel releases the lock when the process dies.
+export function holdExclusiveLock(filename) {
   let db;
   try {
     db = new DatabaseSync(filename);
-    db.exec('PRAGMA busy_timeout = 0; PRAGMA locking_mode = EXCLUSIVE; BEGIN EXCLUSIVE;');
+    db.exec('PRAGMA busy_timeout = 0; PRAGMA journal_mode = MEMORY; PRAGMA locking_mode = EXCLUSIVE; BEGIN EXCLUSIVE;');
+    return db;
   } catch (error) {
     db?.close();
-    if (error.errcode === 5 || /locked/.test(error.message)) throw new Error('Stop Frameboard before backup or restore. Another app or backup/restore operation is using this data directory.');
+    if (error.errcode === 5 || /locked/.test(error.message)) return null;
     throw error;
   }
-  return { dataDir, release: () => db.close() };
 }

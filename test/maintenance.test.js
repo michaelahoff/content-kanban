@@ -153,3 +153,21 @@ test('saved image outputs are bundled; unsaved outputs are inventoried with thei
   assert.equal(inventory[outputs.lost.id].nativePath, null);
   assert.ok(manifest.files.some((entry) => entry.path === `native/codex/${rollout}`));
 });
+
+test('native image saves arriving during maintenance wait until it ends, so the export never races app writes', async (t) => {
+  const f = await maintenanceFixture(t);
+  const card = await f.card({ title: 'Generating' });
+  await f.queue(card.id, await f.compose(card.id));
+  const send = await waitFor(() => f.codex.sends[0]);
+  await f.ok('POST', '/api/maintenance/export', { output: f.output });
+  f.codex.image(send, { id: 'during', result: png.toString('base64') });
+  await waitFor(async () => (await f.chat(card.id)).outputs.length === 1);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal((await f.chat(card.id)).outputs[0].importStatus, 'pending');
+  f.codex.finish(send);
+  const result = await f.finished();
+  assert.equal(result.status, 'completed', JSON.stringify(result));
+  assert.deepEqual(f.bundled(result.backupDir, 'SELECT import_status FROM chat_outputs'), [{ import_status: 'pending' }]);
+  const saved = await waitFor(async () => { const [output] = (await f.chat(card.id)).outputs; return output.importStatus === 'imported' && output; });
+  assert.ok(saved.imageId);
+});

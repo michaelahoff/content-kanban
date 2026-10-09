@@ -110,9 +110,10 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
     };
     maintenance = createMaintenance({ store, ctx: currentUser(), worker, lanes, dataDir, codexHome,
       settle: async () => { await chat.drain(); await providers.drain(); },
-      exportBackup: (options) => createBackup({ ...options, checkpoint: backupCheckpoint }) });
-    // Running work may finish during maintenance: Stop and request answers stay available.
-    const duringMaintenance = (pathname) => pathname.startsWith('/api/maintenance') || /^\/api\/cards\/[^/]+\/chat\/(stop|answer)$/.test(pathname);
+      exportWorkspace: (options) => createBackup({ ...options, checkpoint: backupCheckpoint }) });
+    // Running work may finish during maintenance: Stop and request answers stay
+    // available. Every other mutating route, including new ones, is refused.
+    const finishesRunningWork = (pathname) => /^\/api\/cards\/[^/]+\/chat\/(stop|answer)$/.test(pathname);
     lanes.wake();
     const flowFor = (ctx, flowId) => {
       const flow = store.workspace(ctx).flows.find((entry) => entry.id === flowId);
@@ -215,9 +216,9 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
         if (!/^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/.test(host)) return send(res, 403, { error: 'Use localhost to access this board.' });
         if (req.headers.origin && req.headers.origin !== `http://${host}`) return send(res, 403, { error: 'Cross-origin requests are not allowed.' });
         const url = new URL(req.url, `http://${host}`);
-        if (url.pathname.startsWith('/api/') && !['GET', 'HEAD'].includes(req.method) && !duringMaintenance(url.pathname)) {
-          if (maintenance.active) return send(res, 503, { error: maintenanceMessage });
-          // Maintenance drains writes that started before it began.
+        if (url.pathname.startsWith('/api/') && !url.pathname.startsWith('/api/maintenance') && !['GET', 'HEAD'].includes(req.method)) {
+          if (maintenance.active && !finishesRunningWork(url.pathname)) return send(res, 503, { error: maintenanceMessage });
+          // Maintenance drains writes in progress before it exports.
           res.once('close', maintenance.track());
         }
         if (url.pathname === '/api/stream' && req.method === 'GET') {

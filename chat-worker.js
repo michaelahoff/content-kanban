@@ -27,6 +27,11 @@ export function createChatWorker({ store, adapter, adapters = { codex: adapter }
   const requests = new Map();
   const importing = new Set();
   let closed = false; let scheduled = false; let nativeHome = null;
+  // Read-only reconciliation in progress; maintenance waits for it.
+  let background = 0;
+  const tracked = async (work) => { background++; try { return await work(); } finally { background--; } };
+  // Image saves that arrived during maintenance; the output stays pending.
+  const deferred = new Map();
   // Native transcript rows keep image provenance, not the base64 payload.
   const transcriptData = (native) => {
     if (native.type !== 'imageGeneration') return native;
@@ -35,6 +40,7 @@ export function createChatWorker({ store, adapter, adapters = { codex: adapter }
   };
   async function saveOutput(output, native) {
     if (closed || importing.has(output.id)) return;
+    if (paused()) { deferred.set(output.id, { output, native }); return; }
     importing.add(output.id);
     const automation = { ...ctx, actor: `automation:${output.attemptId}` };
     try {
@@ -77,7 +83,8 @@ export function createChatWorker({ store, adapter, adapters = { codex: adapter }
     release(work);
     if (exited && status === 'uncertain') void recheck(work.attempt.id, true);
   }
-  async function recheck(attemptId, proof) {
+  function recheck(attemptId, proof) { return tracked(() => settle(attemptId, proof)); }
+  async function settle(attemptId, proof) {
     const entry = store.chats.unfinished(ctx).find((candidate) => candidate.attempt.id === attemptId);
     if (!entry) return;
     try { await settleFromHistory(entry, proof); }
@@ -248,7 +255,8 @@ export function createChatWorker({ store, adapter, adapters = { codex: adapter }
       scheduled = false;
       if (closed) return;
       for (const work of live.values()) if (store.chats.attempt(work.attempt.id)?.status === 'interrupt-requested') void interrupt(work);
-      // Maintenance holds new dispatch; queued work stays queued until it ends.
+      // Maintenance holds new dispatch and image saves; queued work waits.
+      if (!paused()) for (const [id, { output, native }] of deferred) { deferred.delete(id); void saveOutput(output, native); }
       if (!paused()) for (const submission of store.chats.ready(ctx)) {
         if (live.has(submission.cardId)) continue;
         const claimed = store.chats.claim(ctx, submission.id);
@@ -345,7 +353,7 @@ export function createChatWorker({ store, adapter, adapters = { codex: adapter }
       catch (error) { if (!closed) store.chats.reconcile(ctx, entry.attempt.id, 'uncertain', `Reconciliation failed: ${error.message}`); }
     }
   }
-  void reconcile().catch((error) => { if (!closed) console.error(error); }).finally(wake);
+  void tracked(reconcile).catch((error) => { if (!closed) console.error(error); }).finally(wake);
   // Unfinished rows fence their own cards while read-only recovery proceeds.
   // An unavailable old conversation must not delay independent ready cards.
   wake();
@@ -376,8 +384,8 @@ export function createChatWorker({ store, adapter, adapters = { codex: adapter }
     // A snapshot then includes everything streamed so far, so the next delta's
     // offset continues exactly where the snapshot ends.
     flushCard(cardId) { for (const work of retained) if (work.submission.cardId === cardId) flush(work); },
-    // No dispatched work or image save is in progress.
-    idle: () => !live.size && !importing.size,
+    // No dispatched work, image save or reconciliation is in progress.
+    idle: () => !live.size && !importing.size && !background,
     stop(cardId) { const result = store.chats.stop(ctx, cardId); wake(); return result; },
     answer(cardId, requestId, response) {
       const pending = requests.get(requestId);

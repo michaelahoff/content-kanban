@@ -6,28 +6,26 @@ import path from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 const fail = (status, message) => { throw Object.assign(new Error(message), { status }); };
-const active = ['dispatching', 'accepted', 'running', 'interrupt-requested'];
 export const maintenanceMessage = 'Frameboard is exporting a backup. Changes are paused until it finishes; your edits are kept and can be retried.';
 
-export function createMaintenance({ store, ctx, worker, lanes, settle, exportBackup, dataDir, codexHome, pollMs = 25 }) {
+export function createMaintenance({ store, ctx, worker, lanes, settle, exportWorkspace, dataDir, codexHome, pollMs = 25 }) {
   let current = null; let last = null; let writers = 0;
   const defaultOutput = path.join(path.dirname(dataDir), 'backups');
-  const running = () => store.chats.unfinished(ctx).filter((entry) => active.includes(entry.attempt.status))
-    .map(({ attempt }) => ({ cardId: attempt.cardId, attemptId: attempt.id, status: attempt.status }));
+  const running = () => store.chats.activeAttempts(ctx);
   const quiet = () => !writers && worker.idle() && lanes.idle() && !running().length;
   const status = () => ({ active: Boolean(current), phase: current?.phase ?? 'idle', output: current?.output ?? null, defaultOutput,
     startedAt: current?.startedAt ?? null, running: current ? running() : [], last });
 
   async function run(job) {
     try {
-      // Drain: wait for in-flight requests, preparation and running work.
+      // Drain: in-flight requests, preparation, reconciliation and running work.
       for (;;) {
         job.controller.signal.throwIfAborted();
         if (quiet()) { await settle(); if (quiet()) break; }
         await sleep(pollMs, null, { signal: job.controller.signal });
       }
       job.phase = 'exporting';
-      const result = await exportBackup({ dataDir, output: job.output, codexHome: await codexHome(), signal: job.controller.signal });
+      const result = await exportWorkspace({ dataDir, output: job.output, codexHome: await codexHome(), signal: job.controller.signal });
       last = { status: 'completed', backupDir: result.backupDir, label: result.label, finishedAt: new Date().toISOString() };
     } catch (error) {
       last = job.controller.signal.aborted

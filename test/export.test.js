@@ -125,7 +125,7 @@ test('an external writer changing playbooks or workspaces during export fails vi
   const good = await f.export();
   let once = false;
   await assert.rejects(f.export({ checkpoint: async (boundary) => { if (boundary === 'verifying' && !once) { once = true; await writeFile(map, '# Edited map'); } } }),
-    /App data changed during export: flows\/.*MAP\.md.*Close programs editing/);
+    /App data changed during export: flows\/.*MAP\.md.*close programs editing playbooks/);
   await assert.rejects(f.export({ checkpoint: async (boundary, relative) => { if (relative?.endsWith('notes.md')) await writeFile(path.join(path.dirname(notes), 'scratch.txt'), 'New'); } }),
     /App data changed during export: workspaces\/card\/scratch\.txt/);
   assert.deepEqual(await readdir(f.output), [path.basename(good.backupDir)]);
@@ -147,4 +147,23 @@ test('the manifest inventories active and archived projects, image versions and 
   assert.ok(manifest.inventory.tables.activity_log > 0);
   assert.ok(manifest.coverage.excluded.some((entry) => /credentials/i.test(entry)));
   assert.ok(manifest.coverage.excluded.some((entry) => /external service/i.test(entry)));
+});
+
+test('reclaim removes only staging Frameboard can prove it owns, never similarly named folders', async (t) => {
+  const f = await fixture(t); f.stop();
+  await mkdir(path.join(f.output, '.incomplete-mine', 'notes'), { recursive: true });
+  await writeFile(path.join(f.output, '.incomplete-mine', 'notes', 'keep.txt'), 'User folder');
+  await mkdir(path.join(f.output, '.incomplete-Ab12Cd'));
+  await f.export();
+  assert.equal(await readFile(path.join(f.output, '.incomplete-mine', 'notes', 'keep.txt'), 'utf8'), 'User folder');
+  assert.ok((await readdir(f.output)).includes('.incomplete-Ab12Cd'));
+});
+
+test('a project map recorded by the database is required coverage', async (t) => {
+  const f = await fixture(t);
+  const flow = f.store.workspace(f.ctx).flows[0].id;
+  f.stop();
+  await rm(path.join(f.dataDir, 'flows', flow, 'MAP.md'));
+  await assert.rejects(f.export(), new RegExp(`Missing project map .*flows/${flow}/MAP\\.md`));
+  assert.deepEqual(await readdir(f.output), []);
 });
