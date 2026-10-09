@@ -11,7 +11,7 @@ export const providers = ['codex', 'claude'];
 // Playbooks say "display"; the card stores that image role as "cover".
 const roleNames = { original: 'original', inspiration: 'inspiration', display: 'cover', cover: 'cover' };
 const roleLabels = { original: 'Original', inspiration: 'Inspiration', cover: 'Display' };
-const knownKeys = ['lane', 'run', 'provider', 'model', 'context', 'may_edit', 'set', 'conversation', 'skills'];
+const knownKeys = ['lane', 'run', 'provider', 'model', 'context', 'may_edit', 'set', 'conversation', 'skills', 'assets'];
 export const skillName = /^[a-z0-9][a-z0-9_-]{0,79}$/i;
 const notesInPrompt = 20000;
 
@@ -193,6 +193,82 @@ export function serializeDocument(data, body) {
 // --- Lane playbook settings ------------------------------------------------
 const listOf = (value) => (Array.isArray(value) ? value : typeof value === 'string' && value.trim() ? value.split(',').map((item) => item.trim()) : []);
 
+// --- Library selections ----------------------------------------------------
+// `assets:` names Library sources by identity, in order: asset:<id> for a file
+// and folder:<id> for every file in a folder. Tokens never name versions,
+// filenames or paths.
+export const assetToken = /^(asset|folder):([\w-]{1,100})$/;
+export function assetSources(value) {
+  const sources = []; const errors = []; const warnings = [];
+  if (value && typeof value === 'object' && !Array.isArray(value)) return { sources, errors: ['assets must be a list, such as [asset:<id>, folder:<id>].'], warnings };
+  for (const raw of listOf(value)) {
+    const token = String(raw).trim();
+    const match = assetToken.exec(token);
+    if (!match) errors.push(`assets: “${token}” is not asset:<id> or folder:<id>. Choose Library files with Add Library files.`);
+    else if (sources.some((source) => source.kind === match[1] && source.id === match[2])) warnings.push(`assets: ${token} is listed more than once; it is sent once.`);
+    else sources.push({ kind: match[1], id: match[2] });
+  }
+  return { sources, errors, warnings };
+}
+
+// The draft with only its assets: setting changed to the given sources, as
+// the Library picker edits it. Every other byte stays: other settings, the
+// body, comments, quoting and line endings. A kept block-list item keeps its
+// line and the comments just above it; a removed item's comments move to the
+// end of the list, and a repeated item's join its first copy. A draft whose settings cannot be read is refused rather
+// than rewritten, so raw Markdown stays the way to fix it.
+export function withAssets(text, sources) {
+  const original = String(text ?? '');
+  const tokens = sources.map((source) => `${source.kind}:${source.id}`);
+  if (tokens.some((token) => !assetToken.test(token))) throw Object.assign(new Error('Library sources are asset:<id> or folder:<id>.'), { status: 400 });
+  const before = parseDocument(original);
+  const problems = [...before.errors, ...assetSources(before.data.assets).errors];
+  if (problems.length) throw Object.assign(new Error(`Fix the settings in Markdown before choosing Library files: ${problems[0]}`), { status: 400 });
+  const lines = original.split('\n');
+  const cr = lines[0].endsWith('\r') ? '\r' : '';
+  const bare = (line) => line.replace(/\r$/, '');
+  let patched;
+  if (before.body === original.replace(/\r\n?/g, '\n')) patched = [`---${cr}`, `assets: [${tokens.join(', ')}]${cr}`, `---${cr}`, ...lines].join('\n');
+  else {
+    const close = lines.findIndex((line, index) => index > 0 && bare(line) === '---');
+    const key = lines.findLastIndex((line, index) => index > 0 && index < close && /^assets:/.test(line));
+    if (key < 0) lines.splice(close, 0, `assets: [${tokens.join(', ')}]${cr}`);
+    else {
+      const rest = bare(lines[key]).slice('assets:'.length);
+      const value = withoutComment(rest);
+      const comment = rest.slice(value.length);
+      const items = [];
+      for (let index = key + 1; index < close && (blank(lines[index]) || indentOf(lines[index])); index++) if (bare(lines[index]).trim().startsWith('-')) items.push(index);
+      if (value.trim() || !items.length) lines[key] = `assets:${value.match(/^\s*/)[0] || ' '}[${tokens.join(', ')}]${comment}${cr}`;
+      else {
+        // Block list: each item with the comment and blank lines above it.
+        const groups = new Map(); let pending = [];
+        for (let index = key + 1; index <= items.at(-1); index++) {
+          if (!items.includes(index)) { pending.push(lines[index]); continue; }
+          const token = String(scalar(bare(lines[index]).trim().slice(1))).trim();
+          // A repeated item is written once; its comments join the first copy.
+          groups.set(token, groups.has(token) ? [...groups.get(token), ...pending] : [...pending, lines[index]]);
+          pending = [];
+        }
+        const prefix = bare(lines[items[0]]).match(/^\s*-\s*/)[0];
+        const kept = tokens.flatMap((token) => groups.get(token) ?? [`${prefix}${token}${cr}`]);
+        const orphaned = [...groups].filter(([token]) => !tokens.includes(token)).flatMap(([, group]) => group.filter((line) => !bare(line).trim().startsWith('-')));
+        if (!tokens.length) lines[key] = `assets: []${comment}${cr}`;
+        lines.splice(key + 1, items.at(-1) - key, ...kept, ...orphaned);
+      }
+    }
+    patched = lines.join('\n');
+  }
+  // The patch must change nothing but the selection.
+  const after = parseDocument(patched);
+  const { assets: _old, ...others } = before.data; const { assets: _new, ...othersAfter } = after.data;
+  if (after.errors.length || after.body !== before.body || JSON.stringify(others) !== JSON.stringify(othersAfter)
+    || JSON.stringify(assetSources(after.data.assets).sources) !== JSON.stringify(sources.map(({ kind, id }) => ({ kind, id })))) {
+    throw Object.assign(new Error('Fix the settings in Markdown before choosing Library files: the assets setting could not be changed on its own.'), { status: 400 });
+  }
+  return patched;
+}
+
 // Resolves a parsed lane playbook against a card template. Problems that
 // would make a run misbehave are errors; unknown settings are warnings.
 export function playbookSettings(document, templateId) {
@@ -243,7 +319,9 @@ export function playbookSettings(document, templateId) {
     if (!skillName.test(clean)) errors.push(`skills: “${name}” is not a valid skill name.`);
     else if (!skills.includes(clean)) skills.push(clean);
   }
-  return { lane: data.lane ? String(data.lane) : null, run, provider, model, conversation, selections, mayEdit, set, skills,
+  const library = assetSources(data.assets);
+  errors.push(...library.errors); warnings.push(...library.warnings);
+  return { lane: data.lane ? String(data.lane) : null, run, provider, model, conversation, selections, mayEdit, set, skills, assets: library.sources,
     instructions: body.trim(), errors, warnings };
 }
 

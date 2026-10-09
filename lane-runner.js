@@ -3,6 +3,7 @@
 // and freezes all of it into one prompt. The chat worker delivers it.
 import { composeLanePrompt, parseLaneResult, setFields } from './public/playbook-format.js';
 import { submissionText } from './public/chat-context.js';
+import { problemMessage } from './submission-inputs.js';
 
 const providerName = (provider) => (provider === 'claude' ? 'Claude' : 'Codex');
 
@@ -81,7 +82,7 @@ export function createLaneRunner({ store, service, providers, ctx, paused = () =
     try {
       // queueLane links the run and its submission in one commit.
       const submission = await service.queueLane(ctx, card.id, { id: `lane-${run.id}`, prompt: prepared.prompt, provider, model: prepared.model,
-        selections: settings.selections, authority: { fields: settings.mayEdit },
+        selections: settings.selections, assets: settings.assets, authority: { fields: settings.mayEdit },
         lane: { runId: run.id, stageId: stage.id, stageName: stage.name, trigger: run.trigger, entry: store.laneRuns.entry(card.id),
           playbook: { ...prepared.document }, map: prepared.map && { ...prepared.map },
           skills: prepared.skills.map(({ name, path, hash, text }) => ({ name, path, hash: hash ?? null, text })),
@@ -125,10 +126,15 @@ export function createLaneRunner({ store, service, providers, ctx, paused = () =
     async preview(cardId) {
       const { card, stage, project, stages } = store.laneRuns.place(ctx, cardId);
       const prepared = prepare(card, stage, project, stages, 'manual');
-      const captured = prepared.prompt ? await service.previewLane(ctx, cardId, prepared.settings.selections) : null;
-      return { stageId: stage.id, path: prepared.document?.path ?? null, error: prepared.error ?? prepared.warning ?? '',
+      const captured = prepared.prompt ? await service.previewLane(ctx, cardId, { selections: prepared.settings.selections, assets: prepared.settings.assets,
+        provider: prepared.provider, model: prepared.model, prompt: prepared.prompt }) : null;
+      // Sources that cannot be sent stay inspectable here; a run refuses them.
+      const problems = captured?.problems ?? [];
+      return { stageId: stage.id, path: prepared.document?.path ?? null, hash: prepared.document?.hash ?? null,
+        error: prepared.error ?? (problems.length ? problemMessage(problems) : prepared.warning) ?? '',
         provider: prepared.provider ?? null, model: prepared.model ?? null,
-        images: captured?.context.images ?? [],
+        images: captured?.context.images ?? [], library: captured?.context.library ?? [], librarySelections: captured?.context.librarySelections ?? [],
+        problems, warnings: captured?.context.warnings ?? [],
         prompt: captured ? submissionText({ prompt: prepared.prompt, context: captured.context, authority: { fields: prepared.settings.mayEdit } }) : '' };
     },
   };

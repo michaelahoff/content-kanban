@@ -30,7 +30,7 @@ export const referencePath = (image) => `references/${image.hash}.${image.id.spl
 const libraryEntry = (file, texts) => {
   // Submissions frozen before folders captured only a filename.
   const label = `${file.libraryPath ?? file.filename} (asset ${file.assetId}, version ${file.versionId}, SHA-256 ${file.hash}, ${file.size} bytes)`;
-  if (file.method === 'text') return `Library file ${label}:\n----- BEGIN LIBRARY FILE ${file.versionId} -----\n${texts.get(file.versionId)}\n----- END LIBRARY FILE ${file.versionId} -----`;
+  if (file.method === 'text') return `Library file ${label}:\n----- BEGIN LIBRARY FILE ${file.versionId} -----\n${texts.get(file.versionId) ?? '(Its verified text is inserted here when it is sent.)'}\n----- END LIBRARY FILE ${file.versionId} -----`;
   if (file.method === 'image') return `Library image ${label}, attached at ${file.path}`;
   if (file.method === 'document') return `Library PDF ${label}, attached as a native PDF document; attached documents follow this message in the order listed.`;
   return `Library file ${label}, an independent read-only copy at ${file.path}${file.format ? ` (recognized as ${file.format})` : ''}. Read it with your tools. Frameboard has not checked that this format can be interpreted and has not extracted, rendered or transcribed it. The copy is rebuilt from the original before each delivery, so write anything you derive from it elsewhere in the workspace.`;

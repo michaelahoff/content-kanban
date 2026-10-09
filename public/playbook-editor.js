@@ -2,9 +2,11 @@
 // skills. Each document is edited as plain Markdown; the side panel explains
 // what the saved settings will do. Drafts stay here until Save.
 import { $, escape, icon, toast, smallForm } from './ui.js';
-import { project, loadPlaybooks, savePlaybook, deletePlaybook, previewLaneRun } from './state.js';
+import { project, loadPlaybooks, savePlaybook, deletePlaybook, previewLaneRun, checkPlaybookAssets, loadLibraryListing } from './state.js';
 import { renderBoard } from './board.js';
-import { parseDocument, playbookSettings, describeSettings, playbookTemplate, skillTemplate, setFields, skillName } from './playbook-format.js';
+import { parseDocument, playbookSettings, describeSettings, playbookTemplate, skillTemplate, setFields, skillName, withAssets } from './playbook-format.js';
+import { deliveryDescription, parseSourceKey, sourceKey } from './library-format.js';
+import { libraryChoices } from './library.js';
 import { contextFields } from './chat-context.js';
 import { defaultTemplate } from './card-template.js';
 
@@ -13,6 +15,8 @@ const dialog = $('#playbook-dialog');
 let folder = null; let saved = new Map(); let drafts = new Map(); let selection = null; let previewing = null; let busy = false;
 // Paths whose file changed on disk after the draft began.
 let conflicts = new Set();
+// How each list of Library sources resolves, by its keys; refreshed on load.
+let resolutions = new Map();
 const control = (action, label, symbol, cls = 'button secondary', attrs = '') => `<button type="button" class="${cls}" data-playbook-action="${action}" ${attrs}>${symbol ? icon(symbol) : ''}${label}</button>`;
 const slug = (name) => String(name).toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'lane';
 const laneDocument = (laneId) => [...saved.values()].find((document) => document.laneId === laneId);
@@ -36,7 +40,7 @@ export async function openPlaybooks({ laneId = null } = {}) {
   const p = project();
   if (!p) return;
   try { remember(await loadPlaybooks(p)); } catch (error) { return toast(error.message); }
-  drafts = new Map(); conflicts = new Set(); previewing = null;
+  drafts = new Map(); conflicts = new Set(); resolutions = new Map(); previewing = null;
   selection = laneId ? { kind: 'lane', laneId } : { kind: 'map', path: 'MAP.md' };
   dialog.innerHTML = `<header class="playbook-header"><div><div class="playbook-breadcrumb">${escape(p.name)} ${icon('chevron')} Playbooks</div><h2 id="playbook-heading"></h2></div>${control('close', '<span class="sr-only">Close playbooks</span>', 'close', 'icon-button')}</header>
     <div class="playbook-workspace"><nav class="playbook-nav" aria-label="Playbook documents"></nav><div class="playbook-main"></div><aside class="playbook-inspector" aria-label="What this document does"></aside></div>
@@ -81,7 +85,10 @@ function renderMain() {
   const main = $('.playbook-main', dialog);
   if (previewing) {
     main.innerHTML = `<div class="playbook-preview-head"><div><strong>Prompt preview</strong><span>${escape(previewing.card)} · ${escape(previewing.provider === 'claude' ? 'Claude' : previewing.provider === 'codex' ? 'Codex' : '')} ${escape(previewing.model ?? '')}</span></div>${control('close-preview', 'Back to editing', 'left')}</div>
-      ${previewing.error ? `<p class="playbook-error">${escape(previewing.error)}</p>` : ''}<pre class="playbook-preview" tabindex="0">${escape(previewing.prompt)}</pre>`;
+      ${previewNote()}
+      ${previewing.error ? `<p class="playbook-error">${escape(previewing.error)}</p>` : ''}
+      ${previewing.library?.length ? `<ul class="playbook-preview-library" aria-label="Library files sent">${previewing.library.map((file) => `<li>${escape(file.libraryPath ?? file.filename)} <small>v${file.number} · ${escape(deliveryDescription(file))}</small></li>`).join('')}</ul>` : ''}
+      <pre class="playbook-preview" tabindex="0">${escape(previewing.prompt)}</pre>`;
     return;
   }
   const path = currentPath();
@@ -95,6 +102,15 @@ function renderMain() {
   if (focused) { $('#playbook-text').focus(); $('#playbook-text').setSelectionRange(...focused); }
 }
 
+// A preview uses the file as saved now, which may differ from the editor's
+// draft, or from the copy it loaded before another editor changed the file.
+function previewNote() {
+  const path = previewing.path;
+  if (!path) return '';
+  const reason = dirty(path) ? `Unsaved changes are not in this preview. It shows the saved ${escape(path)}.`
+    : previewing.newer ? `${escape(path)} changed on disk since you opened it. The preview and the editor now show the newer file.` : '';
+  return reason ? `<p class="playbook-unsaved-note" role="note"><i class="playbook-unsaved"></i>${reason}</p>` : '';
+}
 function list(items) { return items.length ? items.map((entry) => `<li>${entry}</li>`).join('') : '<li class="muted">None</li>'; }
 function renderInspector() {
   const inspector = $('.playbook-inspector', dialog);
@@ -132,17 +148,71 @@ function renderInspector() {
       <dt>When</dt><dd>${!settings.instructions ? 'No instructions, so no agent runs' : settings.run === 'on-enter' ? 'Each time a card enters this lane' : settings.run === 'manual' ? 'When you choose Run playbook on a card' : 'Turned off'}</dd>
       <dt>Agent</dt><dd>${settings.provider ? (settings.provider === 'claude' ? 'Claude' : 'Codex') : 'The card chat’s provider'}${settings.model ? ` · ${escape(settings.model)}` : ' · its selected or default model'}</dd>
       <dt>Conversation</dt><dd>${settings.conversation === 'fresh' ? 'Starts fresh context each run' : 'Continues the card chat'}</dd>
-      <dt>Sends</dt><dd>${escape([...settings.selections.fields.map(label), 'All card photos (with original, inspiration and display labels)'].join(', '))}</dd>
+      <dt>Sends</dt><dd>${escape([...settings.selections.fields.map(label), 'All card photos (with original, inspiration and display labels)', ...(settings.assets.length ? [`then ${settings.assets.length} Library source${settings.assets.length === 1 ? '' : 's'} listed below`] : [])].join(', '))}</dd>
       <dt>May edit</dt><dd>${escape(settings.mayEdit.map(label).join(', ') || 'Nothing directly; changes become proposals')}</dd>
     </dl>
     <h4>Sets on entry</h4><ul>${list(Object.entries(settings.set).map(([key, value]) => `<strong>${escape(label(key))}</strong> ${value ? `= ${escape(value.length > 80 ? `${value.slice(0, 80)}…` : value)}` : '(cleared)'}`))}</ul>
     <h4>Skills</h4><ul>${list(settings.skills.map((name) => `${escape(name)}${knownSkills.has(name) ? '' : ' <span class="playbook-missing">missing</span>'}`))}</ul>
+    ${libraryMarkup(settings)}
     <details class="playbook-reference"><summary>Settings reference</summary>
       <p><code>run:</code> on-enter, manual or off</p><p><code>provider:</code> codex or claude · <code>model:</code> a model ID from Settings</p>
       <p><code>conversation:</code> continue or fresh</p><p><code>context:</code> card fields to send: ${escape(contextFields(defaultTemplate).map((field) => field.key).join(', '))}. Every card photo is always included; original, inspiration and display identify their roles.</p>
       <p><code>may_edit:</code> fields the agent changes directly</p><p><code>set:</code> one <code>field: value</code> per line, applied on entry. Use <code>|</code> for several lines. Fields: ${escape(fields.map((field) => field.key).join(', '))}</p>
-      <p><code>skills:</code> skill names to include</p></details>
+      <p><code>skills:</code> skill names to include</p><p><code>assets:</code> Library files and folders to send, in order, as <code>asset:&lt;id&gt;</code> or <code>folder:&lt;id&gt;</code>. Add Library files writes them for you. A file named only in the instructions is not sent.</p></details>
     ${lane?.cards.length ? `<div class="playbook-try"><label class="form-label" for="playbook-preview-card">Preview the saved playbook's prompt for</label><select id="playbook-preview-card" class="form-input">${lane.cards.map((card) => `<option value="${card.id}">${escape(card.title || 'Untitled card')}</option>`).join('')}</select>${control('preview', 'Preview prompt', 'search', 'button small secondary')}</div>` : ''}`;
+}
+
+// The draft's Library sources in order, each named by its current path or
+// shown unresolved with its ID and reason. Unresolved sources can be saved;
+// a lane run refuses them until they are removed or replaced.
+function resolution(keys) {
+  if (!keys.length) return { selections: [], problems: [], files: [] };
+  const key = keys.join(',');
+  if (!resolutions.has(key)) {
+    resolutions.set(key, { loading: true });
+    checkPlaybookAssets(project(), keys).then((result) => resolutions.set(key, result), (error) => resolutions.set(key, { error: error.message }))
+      .finally(() => { if (dialog.open && !previewing) renderInspector(); });
+  }
+  return resolutions.get(key);
+}
+function libraryMarkup(settings) {
+  const keys = settings.assets.map(sourceKey);
+  const checked = resolution(keys);
+  const items = settings.assets.map((source, index) => {
+    const key = keys[index]; const noun = source.kind === 'folder' ? 'folder' : 'file';
+    const found = checked.selections?.find((entry) => sourceKey(entry) === key);
+    const problem = checked.problems?.find((entry) => entry.key === key);
+    const count = found && noun === 'folder' && checked.files.filter((file) => file.sources.some((entry) => entry.kind === 'folder' && entry.id === source.id)).length;
+    const name = found ? `${escape(found.path)}${noun === 'folder' ? ` <small>· ${count ? `${count} file${count === 1 ? '' : 's'}` : 'no files'}</small>` : ''}`
+      : problem ? `<strong class="playbook-missing">Unresolved ${noun}</strong> <code>${escape(key)}</code> <small>${escape(problem.reason)}</small>` : `<code>${escape(key)}</code>`;
+    return `<li><span>${name}</span>${control('remove-asset', `Remove<span class="sr-only"> ${escape(found?.path ?? key)}</span>`, null, 'text-button', `data-key="${escape(key)}"`)}</li>`;
+  });
+  return `<h4>Library files</h4><p class="field-help">Sent after the card photos as reference material, in this order. Naming a file in the instructions does not send it.</p>
+    ${items.length ? `<ol class="playbook-assets">${items.join('')}</ol>` : '<p class="field-help">None. Runs send the card, all its photos and the playbook documents.</p>'}
+    ${checked.error ? `<p class="playbook-error">Library files could not be checked: ${escape(checked.error)}</p>` : checked.problems?.length ? '<p class="playbook-missing">Runs are refused until every unresolved source is removed or replaced.</p>' : ''}
+    ${control('add-assets', 'Add Library files…', 'plus', 'button small secondary')}`;
+}
+// The picker edits the same draft as the Markdown: only the assets: setting
+// changes. A draft whose settings cannot be read is left for raw editing.
+function setAssets(path, sources) {
+  drafts.set(path, withAssets(textOf(path), sources));
+  render();
+}
+const draftAssets = (path) => playbookSettings(parseDocument(textOf(path)), defaultTemplate).assets;
+async function pickAssets() {
+  const path = currentPath();
+  // Refuse an unreadable draft before listing the Library.
+  withAssets(textOf(path), draftAssets(path));
+  const listing = await loadLibraryListing(project());
+  resolutions = new Map();
+  const available = libraryChoices(listing, new Set(draftAssets(path).map(sourceKey)));
+  smallForm({ title: 'Add Library files', description: available.length ? 'Chosen files and folders join the end of this playbook\'s assets: list. Each run sends their current versions.' : 'Everything in the Library is already selected, or the Library is empty.',
+    fields: `<div class="chat-library-picker">${available.map((entry) => `<label><input type="checkbox" name="source" value="${escape(sourceKey(entry.source))}">${escape(entry.label)} <small>${escape(entry.detail)}</small></label>`).join('')}</div>`,
+    submit: 'Add', onSubmit: async (data) => {
+      // The draft may have changed while the picker was open.
+      const current = draftAssets(path); const keys = new Set(current.map(sourceKey));
+      setAssets(path, [...current, ...data.getAll('source').map(parseSourceKey).filter((source) => source && !keys.has(sourceKey(source)))]);
+    } });
 }
 
 function renderFooter() {
@@ -182,6 +252,7 @@ async function save() {
 async function reloadFromDisk() {
   const before = new Map([...saved].map(([path, document]) => [path, document.hash]));
   remember(await loadPlaybooks(project()));
+  resolutions = new Map();
   for (const path of drafts.keys()) if (dirty(path) && before.get(path) !== saved.get(path)?.hash) conflicts.add(path);
   const path = currentPath();
   if (path && dirty(path)) { renderNav(); renderInspector(); renderFooter(); } else render();
@@ -266,10 +337,15 @@ dialog.addEventListener('click', async (event) => {
       const cardId = $('#playbook-preview-card').value;
       const card = project().lanes.flatMap((lane) => lane.cards).find((item) => item.id === cardId);
       const result = await previewLaneRun(cardId);
-      previewing = { card: card?.title || 'Untitled card', ...result };
+      // With no draft to keep, a newer saved file replaces the editor's copy.
+      const newer = Boolean(result.path && result.hash && !dirty(result.path) && saved.get(result.path)?.hash !== result.hash);
+      previewing = { card: card?.title || 'Untitled card', ...result, newer };
+      if (newer) await reloadFromDisk().catch(() => {});
       render();
     }
     if (action === 'close-preview') { previewing = null; render(); }
+    if (action === 'add-assets') await pickAssets();
+    if (action === 'remove-asset') setAssets(currentPath(), draftAssets(currentPath()).filter((source) => sourceKey(source) !== target.dataset.key));
   } catch (error) {
     toast(error.message);
     if (error.status === 409) await reloadFromDisk().catch(() => {});

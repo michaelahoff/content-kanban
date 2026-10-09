@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdtemp, rm, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, mkdir, writeFile, readFile, appendFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import assert from 'node:assert/strict';
@@ -786,6 +786,77 @@ These values apply when a card enters this lane.
   await click('[data-action="library-close"]');
   await waitFor(`document.querySelectorAll('.library-asset').length === 6`);
   console.log('PASS Library documents keep drafts across reload, save explicit versions and keep saved content apart from drafts');
+
+  // A lane playbook's Library selection: the picker and the Markdown edit one
+  // draft, Save writes it whole, and the saved preview leaves the draft out.
+  {
+    const call = async (method, url, body) => (await fetch(base + url, { method, headers: { 'Content-Type': 'application/json' }, body: body && JSON.stringify(body) })).json();
+    const board = (await state()).projects[0];
+    const lane = board.lanes.find((entry) => !entry.playbook);
+    const hook = (await call('GET', `/api/projects/${board.id}/library`)).assets.find((entry) => entry.filename === 'Hook guide.md');
+    const previewCard = await call('POST', `/api/projects/${board.id}/cards`, { stageId: lane.id, title: 'Picker preview' });
+    await send('Page.navigate', { url: base });
+    await waitFor(`document.querySelectorAll('.lane').length >= 4 && !!document.querySelector('[data-action="edit-playbook"][data-id="${lane.id}"]')`);
+    await click(`[data-action="edit-playbook"][data-id="${lane.id}"]`);
+    await waitFor(`!!document.querySelector('[data-playbook-action="create-lane"]')`);
+    await click('[data-playbook-action="create-lane"]');
+    await waitFor(`document.querySelector('#playbook-text')?.value.includes('lane: ${lane.id}')`);
+    const written = `---\nlane: ${lane.id}\nrun: off   # Quiet during checks\nmay_edit: []\n---\n# Picker lane\n\nMention Hook guide.md in prose; that alone sends nothing.\n`;
+    await fill('#playbook-text', written);
+    await waitFor(`document.querySelector('.playbook-inspector')?.textContent.includes('Library files') && !!document.querySelector('[data-playbook-action="add-assets"]')`);
+    await click('[data-playbook-action="add-assets"]');
+    await waitFor(`!!document.querySelector('#small-form input[value="asset:${hook.id}"]')`);
+    await click(`#small-form input[value="asset:${hook.id}"]`);
+    await click('#small-form [type="submit"]');
+    const picked = written.replace('may_edit: []\n', `may_edit: []\nassets: [asset:${hook.id}]\n`);
+    await waitFor(`document.querySelector('#playbook-text').value === ${JSON.stringify(picked)}`);
+    await waitFor(`document.querySelector('.playbook-assets')?.textContent.includes('Hook guide.md')`);
+    // Raw Markdown adds a source the Library does not have; it stays visible and saves.
+    await fill('#playbook-text', picked.replace(`[asset:${hook.id}]`, `[asset:${hook.id}, asset:not-in-library]`));
+    await waitFor(`document.querySelector('.playbook-assets')?.textContent.includes('Unresolved file') && document.querySelector('.playbook-assets').textContent.includes('asset:not-in-library')`);
+    await snapshot('playbook-library-selection');
+    await click('[data-playbook-action="save"]');
+    await waitFor(`document.querySelector('#playbook-status').textContent.startsWith('Saved')`);
+    const { lanes: documents } = await call('GET', `/api/flows/${board.flowId}/playbooks`);
+    const file = path.join(temporary, 'data', 'flows', board.flowId, documents.find((entry) => entry.laneId === lane.id).path);
+    assert.equal(await readFile(file, 'utf8'), picked.replace(`[asset:${hook.id}]`, `[asset:${hook.id}, asset:not-in-library]`), 'One save writes the new instructions and the selection together');
+    // Another editor changes the file; the picker's removal stays a draft through the conflict.
+    await appendFile(file, '\nEdited elsewhere.\n');
+    await click('[data-playbook-action="remove-asset"][data-key="asset:not-in-library"]');
+    await waitFor(`document.querySelector('#playbook-text').value === ${JSON.stringify(picked)}`);
+    await click('[data-playbook-action="save"]');
+    await waitFor(`document.querySelector('#playbook-status').textContent.includes('changed on disk')`);
+    assert.equal(await evaluate(`document.querySelector('#playbook-text').value`), picked, 'A conflicting save keeps the draft');
+    assert.match(await readFile(file, 'utf8'), /Edited elsewhere/);
+    // The preview uses the newer saved file and marks the draft as left out.
+    await select('#playbook-preview-card', previewCard.id);
+    await click('[data-playbook-action="preview"]');
+    await waitFor(`!!document.querySelector('.playbook-preview')`);
+    assert.ok(await evaluate(`!!document.querySelector('.playbook-unsaved-note')`), 'The preview says unsaved changes are not in it');
+    assert.match(await evaluate(`document.querySelector('.playbook-error').textContent`), /asset:not-in-library/);
+    assert.ok(await evaluate(`document.querySelector('.playbook-preview-library').textContent.includes('Hook guide.md') && document.querySelector('.playbook-preview').textContent.includes('Edited elsewhere')`));
+    await click('[data-playbook-action="close-preview"]');
+    // Saving now deliberately replaces the newer file with the draft.
+    await waitFor(`!!document.querySelector('[data-playbook-action="save"]:not([disabled])')`);
+    await click('[data-playbook-action="save"]');
+    await waitFor(`document.querySelector('#playbook-status').textContent.startsWith('Saved')`);
+    assert.equal(await readFile(file, 'utf8'), picked);
+    // With no draft, a preview of a file changed elsewhere says it is newer than the editor's copy.
+    await writeFile(file, `${picked}Edited elsewhere again.\n`);
+    await click('[data-playbook-action="preview"]');
+    await waitFor(`!!document.querySelector('.playbook-preview')?.textContent.includes('Edited elsewhere again')`);
+    assert.match(await evaluate(`document.querySelector('.playbook-unsaved-note')?.textContent ?? ''`), /changed on disk/);
+    await click('[data-playbook-action="close-preview"]');
+    assert.ok(await evaluate(`document.querySelector('#playbook-text').value.includes('Edited elsewhere again')`), 'The editor shows the newer file');
+    await click('[data-playbook-action="delete"]');
+    await waitFor(`document.querySelector('#form-dialog').open`);
+    await click('#small-form [type="submit"]');
+    await waitFor(`!document.querySelector('#form-dialog').open && !!document.querySelector('[data-playbook-action="create-lane"]')`);
+    await click('[data-playbook-action="close"]');
+    await waitFor(`!document.querySelector('#playbook-dialog').open`);
+    await call('DELETE', `/api/cards/${previewCard.id}`);
+    console.log('PASS the playbook Library picker and raw Markdown edit one draft; conflicts keep it and the saved preview leaves it out');
+  }
 
   // Restore an older version as a new current one, then copy the file into another project.
   const json = async (method, url, body) => (await fetch(base + url, { method, headers: { 'Content-Type': 'application/json' }, body: body && JSON.stringify(body) })).json();

@@ -370,6 +370,9 @@ export async function deletePlaybook(p, path, baseHash) {
 export const laneRuns = (cardId) => request(`${url('cards', cardId)}/lane-runs`);
 export const runPlaybook = (cardId) => enqueue(() => send('POST', `${url('cards', cardId)}/lane-runs`, {}), undefined, { rejectOnError: true });
 export const previewLaneRun = (cardId) => request(`${url('cards', cardId)}/lane-runs/preview`);
+// How a playbook draft's Library sources resolve in its project, and the Library to choose from.
+export const checkPlaybookAssets = (p, keys) => request(`${url('flows', p.flowId)}/playbooks/assets?${new URLSearchParams({ sources: keys.join(',') })}`);
+export const loadLibraryListing = (p) => request(`${url('projects', p.id)}/library`);
 export const loadNotes = (cardId) => request(`${url('cards', cardId)}/notes`);
 export const saveNotes = (cardId, text, baseHash) => enqueue(() => send('PUT', `${url('cards', cardId)}/notes`, { text, baseHash }), undefined, { rejectOnError: true });
 export function deleteLane(p, laneId) {

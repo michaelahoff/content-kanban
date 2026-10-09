@@ -18,6 +18,7 @@ import { createBackup } from './backup.js';
 import { createMaintenance, maintenanceMessage } from './maintenance.js';
 import { homedir } from 'node:os';
 import { assetPreview } from './public/library-format.js';
+import { assetSources } from './public/playbook-format.js';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const imageTypes = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif', 'image/avif': 'avif' };
@@ -236,6 +237,15 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
       ['POST', /^\/api\/cards\/([^/]+)\/undo-move$/, async (ctx, req, id) => store.undoMove(ctx, id, await read(req))],
       ['POST', /^\/api\/cards\/([^/]+)\/transitions$/, async (ctx, req, id) => store.transitionCard(ctx, id, await read(req))],
       ['GET', /^\/api\/flows\/([^/]+)\/playbooks$/, (ctx, req, id) => ({ ...store.playbooks.list(flowFor(ctx, id).id), stages: flowFor(ctx, id).stages })],
+      // How a playbook draft's Library sources resolve in this flow's project,
+      // before or after saving. A source from another project is reported,
+      // never rebound by name.
+      ['GET', /^\/api\/flows\/([^/]+)\/playbooks\/assets$/, (ctx, req, id, url) => {
+        const project = store.workspace(ctx).projects.find((entry) => entry.flowId === flowFor(ctx, id).id);
+        if (!project) throw Object.assign(new Error('This project no longer exists. Reload the page.'), { status: 404 });
+        const { files, selections, problems } = store.library.resolve(ctx, project.id, assetSources(url.searchParams.get('sources') ?? '').sources);
+        return { selections, problems, files: files.map(({ assetId, libraryPath, sources }) => ({ assetId, libraryPath, sources })) };
+      }],
       ['PUT', /^\/api\/flows\/([^/]+)\/playbooks$/, async (ctx, req, id) => {
         const flow = flowFor(ctx, id); const input = bodyOf(await read(req));
         store.editableFlow(ctx, flow.id);

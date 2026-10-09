@@ -215,7 +215,7 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
       const card = requireCard(ctx, cardId);
       ensure(ctx, cardId);
       const versions = Object.fromEntries(all('SELECT field, version FROM card_field_versions WHERE card_id = ?', cardId).map((row) => [row.field, row.version]));
-      return { cardRevision: card.revision, conversationId: current(cardId).id, versions, card,
+      return { cardRevision: card.revision, conversationId: current(cardId).id, projectId: card.projectId, versions, card,
         // A lane can need portraits, backgrounds or other gallery photos that
         // have no role. Text selections must never hide those inputs.
         context: selectedContext(card, { fields: selections.fields, roles: ['original', 'inspiration', 'cover'], images: card.images.map((image) => image.id) }, versions, []) };

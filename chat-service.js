@@ -5,13 +5,20 @@ import { cardTools } from './card-tools.js';
 import { nativeImageBytes, storeImage, readRegularFile, within, sha256 as hash, maxImageBytes, imageFormat } from './image-files.js';
 import { referencePath } from './public/chat-context.js';
 import { sourceKey } from './public/library-format.js';
-import { planInputs, hasShellTool, noShellTool } from './submission-inputs.js';
+import { planInputs, hasShellTool, noShellTool, problemMessage } from './submission-inputs.js';
 
 const fail = (status, message) => { throw Object.assign(new Error(message), { status }); };
 // What a resolution captures: the selections with their paths, and each
 // file's identity, version, label and every selecting source.
+// A preflight's problems refuse the whole submission, and its Library capture
+// must still match the sources resolved synchronously with the commit: a file
+// replaced, renamed, moved, added or removed while preflight read it is never
+// sent with stale versions, labels or folder membership.
+function assertSendable(captured, current, changed) {
+  if (captured.problems.length) throw Object.assign(new Error(problemMessage(captured.problems)), { status: 409, problems: captured.problems });
+  if (current && (current.problems.length || membershipKey(current.files, current.selections) !== membershipKey(captured.context.library, captured.context.librarySelections))) fail(409, changed);
+}
 const membershipKey = (files, selections) => JSON.stringify([selections, files.map(({ assetId, versionId, libraryPath, sources }) => [assetId, versionId, libraryPath, sources])]);
-const problemMessage = (problems) => `Not sent. ${problems.map((problem) => `${problem.label}: ${problem.reason}`).join(' ')}`;
 export function createChatService({ store, adapter, adapters = { codex: adapter }, providers, dataDir }) {
   const workspace = (cardId) => path.resolve(dataDir, 'workspaces', cardId);
   async function imageBytes(image) {
@@ -44,15 +51,15 @@ export function createChatService({ store, adapter, adapters = { codex: adapter 
       if (await realpath(filename) !== resolved || !(await within(root, filename))) fail(403, 'The rendered image path changed during registration.');
       return { ...await storeImage(imagesDir, bytes), name: input.name || path.basename(filename), sourcePath: filename };
     },
-    // The shared resolution, preflight and capture for a manual Send and its
-    // preview: the card images and selected Library files as one union, checked
-    // for existence, ownership, byte integrity and the target's capabilities and
-    // known limits. Problems are reported by source; nothing is silently dropped.
-    // Send verifies every byte against the model and tools it discovered; a
-    // preview samples large files and uses the saved provider catalog.
-    async preview(ctx, cardId, { verify = false, discovery } = {}) {
-      const captured = store.chats.context(ctx, cardId);
-      discovery ??= store.providerCatalog(ctx, captured.provider).discovery;
+    // The shared resolution, preflight and capture for a manual Send, a lane
+    // run and their previews: the card images and selected Library files as
+    // one union, checked for existence, ownership, byte integrity and the
+    // target's capabilities and known limits. Problems are reported by source;
+    // nothing is silently dropped. Sends verify every byte against the model
+    // and tools they discovered; a preview samples large files and uses the
+    // saved provider catalog.
+    async preflight(ctx, captured, { selections, provider, model, prompt, verify = false, discovery }) {
+      discovery ??= store.providerCatalog(ctx, provider).discovery;
       const models = discovery?.models ?? [];
       const items = []; const imageProblems = [];
       for (const image of captured.context.images) {
@@ -63,8 +70,8 @@ export function createChatService({ store, adapter, adapters = { codex: adapter 
         image.hash = hash(bytes);
         items.push({ key, label, kind: 'image', format: imageFormat(bytes), size: bytes.length });
       }
-      const resolved = store.library.resolve(ctx, captured.projectId, captured.librarySelections);
-      const { files, selections } = resolved; const problems = [...imageProblems, ...resolved.problems];
+      const resolved = store.library.resolve(ctx, captured.projectId, selections);
+      const { files } = resolved; const problems = [...imageProblems, ...resolved.problems];
       const library = [];
       for (const file of files) {
         const key = sourceKey({ kind: 'asset', id: file.assetId });
@@ -74,18 +81,22 @@ export function createChatService({ store, adapter, adapters = { codex: adapter 
           problems.push({ key, label: file.filename, phase: 'integrity', reason: `Version ${file.number} is unavailable: its bytes are missing or damaged. Repair it with its exact original bytes.` });
         }
       }
-      const textBytes = Buffer.byteLength(captured.prompt) + captured.context.fields.reduce((sum, field) => sum + Buffer.byteLength(String(field.value ?? '')), 0);
-      const plan = planInputs(captured.provider, [...items, ...library], { textBytes, model: models.find((model) => model.id === captured.model), shellTool: hasShellTool(discovery) });
+      const textBytes = Buffer.byteLength(prompt) + captured.context.fields.reduce((sum, field) => sum + Buffer.byteLength(String(field.value ?? '')), 0);
+      const plan = planInputs(provider, [...items, ...library], { textBytes, model: models.find((entry) => entry.id === model), shellTool: hasShellTool(discovery) });
       captured.context.library = plan.inputs.slice(items.length).map(({ key, label, ...file }) => ({ ...file, ...(file.method === 'text' ? {} : { path: store.library.copyPath(file) }) }));
-      captured.context.librarySelections = selections;
+      captured.context.librarySelections = resolved.selections;
       captured.context.warnings = plan.warnings;
       captured.problems = [...problems, ...plan.problems];
       return captured;
     },
-    async previewLane(ctx, cardId, selections) {
-      const captured = store.chats.laneContext(ctx, cardId, selections);
-      for (const image of captured.context.images) image.hash = hash(await imageBytes(image));
-      return captured;
+    async preview(ctx, cardId, { verify = false, discovery } = {}) {
+      const captured = store.chats.context(ctx, cardId);
+      return this.preflight(ctx, captured, { selections: captured.librarySelections, provider: captured.provider, model: captured.model, prompt: captured.prompt, verify, discovery });
+    },
+    // A lane run's inputs: every gallery photo, then the playbook's Library
+    // sources, checked like a manual Send for the lane's provider and model.
+    async previewLane(ctx, cardId, { selections, assets, provider, model, prompt, verify = false, discovery }) {
+      return this.preflight(ctx, store.chats.laneContext(ctx, cardId, selections), { selections: assets, provider, model, prompt, verify, discovery });
     },
     async discover(ctx, cardId) {
       store.getCard(ctx, cardId);
@@ -110,28 +121,26 @@ export function createChatService({ store, adapter, adapters = { codex: adapter 
       if (captured.archiveGeneration !== start.archiveGeneration) fail(409, 'The project was archived while preparing Send, so it was not sent. Review and send again.');
       if (['composerRevision', 'cardRevision', 'conversationId'].some((key) => captured[key] !== start[key])) fail(409, 'The card, composer or conversation changed while preparing Send. Review and send again.');
       if (!discovery.models.some((model) => model.id === captured.model)) fail(400, 'Choose an available model in Settings.');
-      if (captured.problems.length) throw Object.assign(new Error(problemMessage(captured.problems)), { status: 409, problems: captured.problems });
+      assertSendable(captured);
       if (settings.revision !== store.providerConfiguration(ctx, start.provider).revision) fail(409, 'Provider settings changed while preparing Send. Review and send again.');
-      // Revalidated synchronously with the commit: a Library file replaced,
-      // renamed, moved, added or removed while preflight read it is never sent
-      // with stale versions, labels or folder membership.
-      const current = store.library.resolve(ctx, captured.projectId, store.chats.context(ctx, cardId).librarySelections);
-      if (current.problems.length || membershipKey(current.files, current.selections) !== membershipKey(captured.context.library, captured.context.librarySelections)) fail(409, 'A selected Library file changed while preparing Send. Review and send again.');
+      assertSendable(captured, store.library.resolve(ctx, captured.projectId, store.chats.context(ctx, cardId).librarySelections), 'A selected Library file changed while preparing Send. Review and send again.');
       return store.chats.queue(ctx, cardId, input, captured, compileConfiguration(settings.selection, discovery, cardTools, captured.provider));
     },
     // A lane run's frozen submission: the playbook's prompt, selections and
     // field authority with the provider configuration current at queue time.
-    async queueLane(ctx, cardId, { id, prompt, provider, model, selections, authority, lane }) {
+    async queueLane(ctx, cardId, { id, prompt, provider, model, selections, assets = [], authority, lane }) {
       const existing = store.chats.findSubmission(ctx, cardId, id);
       if (existing) return existing;
-      const captured = await this.previewLane(ctx, cardId, selections);
       providers?.assertEnabled(ctx, provider);
       const settings = store.providerConfiguration(ctx, provider);
       const cwd = workspace(cardId);
       await mkdir(cwd, { recursive: true });
       const discovery = await configurationDiscovery(adapters[provider], { cwd }, provider);
       if (!discovery.models.some((entry) => entry.id === model)) fail(409, `The model ${model} is not available for ${provider === 'claude' ? 'Claude' : 'Codex'}. Choose another model in the playbook or card chat.`);
+      const captured = await this.previewLane(ctx, cardId, { selections, assets, provider, model, prompt, verify: true, discovery });
+      assertSendable(captured);
       if (settings.revision !== store.providerConfiguration(ctx, provider).revision) fail(409, 'Provider settings changed while preparing the lane run.');
+      assertSendable(captured, store.library.resolve(ctx, captured.projectId, assets), 'A selected Library file changed while preparing the lane run.');
       return store.chats.queueLane(ctx, cardId, { id }, { ...captured, prompt, provider, model, authority,
         lane: { ...lane, fieldVersions: captured.versions } }, compileConfiguration(settings.selection, discovery, cardTools, provider));
     },
@@ -208,7 +217,7 @@ export function createChatService({ store, adapter, adapters = { codex: adapter 
   // Finish filesystem operations before the app releases its backup/restore
   // lock. Native events can already have started an import when shutdown begins.
   const pending = new Set();
-  for (const name of ['importNative', 'renderedImage', 'preview', 'previewLane', 'discover', 'queue', 'queueLane', 'references', 'deliveryInputs']) {
+  for (const name of ['importNative', 'renderedImage', 'preflight', 'preview', 'previewLane', 'discover', 'queue', 'queueLane', 'references', 'deliveryInputs']) {
     const operation = service[name];
     service[name] = function (...args) {
       const task = operation.apply(this, args);

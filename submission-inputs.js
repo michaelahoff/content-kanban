@@ -41,6 +41,9 @@ export const noShellTool = 'This Codex setup has its shell tool turned off (feat
 // provider decides. A Claude model sends PDFs as native documents only when
 // its discovered `pdf` route is available. shellTool is false when the Codex setup cannot read a
 // workspace copy.
+// Every problem in one refusal. Each source is named with its identity too,
+// since a name can be reused.
+export const problemMessage = (problems) => `Not sent. ${problems.map((problem) => `${problem.label}${problem.key && problem.key !== problem.label ? ` (${problem.key})` : ''}: ${problem.reason}`).join(' ')}`;
 export function planInputs(provider, items, { textBytes, model = null, shellTool = true }) {
   const claude = provider === 'claude';
   const problems = []; const warnings = [];

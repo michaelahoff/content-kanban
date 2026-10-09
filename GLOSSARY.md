@@ -23,7 +23,7 @@ A reviewed transfer summary waiting to accompany the first manual prompt to the 
 The boundary in a retained conversation identifying the messages on which a transfer summary was based. A summary is stale when newer source messages exist beyond that boundary.
 
 **Lane playbook**:
-A Markdown file that says what happens when a card enters a lane: values to set at once, and instructions for an agent with the fields it may edit. One per lane, identified by the lane's ID in its settings.
+A Markdown file that says what happens when a card enters a lane: values to set at once, and instructions for an agent with the fields it may edit and the Library files it sends. One per lane, identified by the lane's ID in its settings.
 _Avoid_: Lane command, command graph, graph prompt
 
 **Project map**:
@@ -76,7 +76,7 @@ _Avoid_: Artifact, attachment
 A project's collection of project assets, shown in its Library tab beside the board. Selecting assets for prompts is separate from keeping them in the Library.
 
 **Library selection**:
-The ordered project assets and asset folders a user explicitly chose for a card chat's manual prompts. It names sources, not versions: each Send captures their current versions and each folder's current files, once per asset with every source that selected it. It persists across ordinary messages and is cleared by fresh context. Selected files are reference material; choosing one does not tell the agent to follow it.
+The ordered project assets and asset folders a user explicitly chose for a card chat's manual prompts, or that a lane playbook's `assets:` setting names for its lane runs. It names sources, not versions: each Send captures their current versions and each folder's current files, once per asset with every source that selected it. A manual selection persists across ordinary messages and is cleared by fresh context; a playbook's changes only when its file does. Selected files are reference material; choosing one does not tell the agent to follow it.
 
 **Workspace copy**:
 An independent read-only copy of a frozen asset version in a card workspace, the route for files a target cannot take as text or an image. It is rebuilt from the retained original before each delivery, so edits to it never reach the original. It is usable only by a target with a tool that can read it (Codex with its shell tool); delivering one claims nothing about whether the format was interpreted. A Claude PDF route sends a copy's verified bytes as a native document instead.
