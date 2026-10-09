@@ -79,8 +79,12 @@ A project's collection of project assets, shown in its Library tab beside the bo
 The ordered project assets and asset folders a user explicitly chose for a card chat's manual prompts. It names sources, not versions: each Send captures their current versions and each folder's current files, once per asset with every source that selected it. It persists across ordinary messages and is cleared by fresh context. Selected files are reference material; choosing one does not tell the agent to follow it.
 
 **Workspace copy**:
-An independent read-only copy of a frozen asset version in a card workspace, the route for files a target cannot take as text or an image. It is rebuilt from the retained original before each delivery, so edits to it never reach the original. It is usable only by a target with a tool that can read it (Codex with its shell tool); delivering one claims nothing about whether the format was interpreted.
+An independent read-only copy of a frozen asset version in a card workspace, the route for files a target cannot take as text or an image. It is rebuilt from the retained original before each delivery, so edits to it never reach the original. It is usable only by a target with a tool that can read it (Codex with its shell tool); delivering one claims nothing about whether the format was interpreted. A Claude PDF route sends a copy's verified bytes as a native document instead.
 _Avoid_: Attachment, file upload
+
+**Claude PDF route**:
+Sending a selected PDF's exact bytes to Claude as a native document rather than a path. It exists only for a setup (Claude Code version, model, account kind and retained-data protection state) with a recorded passing live PDF check, and Claude may still remove a PDF it cannot process, which stops the attempt.
+_Avoid_: PDF support, PDF attachment
 
 **Project asset**:
 An uploaded file or explicitly saved document with a stable identity owned by exactly one project. Its filename is a label, not a path; matching names or bytes never merge two assets. Uploading over a taken name requires choosing Create new, Replace or Cancel.

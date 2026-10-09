@@ -8,9 +8,9 @@ import { fileURLToPath } from 'node:url';
 import { createClaudeAdapter } from '../claude-adapter.js';
 import { waitFor } from './support/chat-fixture.js';
 const fixtureCommand = fileURLToPath(new URL('./support/fake-claude.js', import.meta.url));
-async function fixture(t) {
+async function fixture(t, extra = {}) {
   const directory = await mkdtemp(path.join(tmpdir(), 'frameboard-claude-'));
-  const options = { command: process.execPath, args: [fixtureCommand], cwd: directory, env: { ...process.env, CLAUDE_CONFIG_DIR: directory } };
+  const options = { command: process.execPath, args: [fixtureCommand], cwd: directory, env: { ...process.env, CLAUDE_CONFIG_DIR: directory }, ...extra };
   const adapter = createClaudeAdapter(options);
   t.after(async () => { await adapter.close(); await rm(directory, { recursive: true, force: true }); });
   return { adapter, directory, options };
@@ -19,6 +19,18 @@ test('Claude discovery initializes without inference, strips account details, an
   const { adapter } = await fixture(t); const discovery = await adapter.discover();
   assert.deepEqual(discovery.models.map((model) => model.id), ['sonnet', 'opus']);
   assert.ok(!JSON.stringify(discovery).includes('must-not-persist')); assert.equal(adapter.running, false);
+});
+const pro = { apiProvider: 'firstParty', subscriptionType: 'Claude Pro' };
+const sonnetEvidence = [{ harness: '2.1.291', model: 'claude-fixture-sonnet', account: pro, retainedDataProtection: false, pages: 600, checked: '2026-10-08' }];
+test('Claude discovery reports its harness version, account kind and each model\'s recorded PDF route, keeping no account identity', async (t) => {
+  const { adapter } = await fixture(t, { pdfEvidence: sonnetEvidence });
+  const discovery = await adapter.discover();
+  assert.equal(discovery.harness.version, '2.1.291');
+  assert.deepEqual(discovery.harness.account, pro);
+  assert.deepEqual(discovery.models.map((model) => [model.id, model.pdf.available]), [['sonnet', true], ['opus', false]]);
+  assert.equal(discovery.models[0].pdf.pages, 600);
+  assert.match(discovery.models[1].pdf.reason, /No passing PDF check is recorded for Claude Code 2\.1\.291 with claude-fixture-opus on a Claude Pro account/);
+  assert.ok(!JSON.stringify(discovery).includes('fixture@example.com'));
 });
 test('Claude transport streams exact text/image input, resumes its native history, and stops without replay', async (t) => {
   const { adapter, directory, options } = await fixture(t);
@@ -43,6 +55,46 @@ test('Claude transport streams exact text/image input, resumes its native histor
   await reopened.interrupt({ threadId: resumed.threadId, turnId: second });
   await waitFor(() => after.find((event) => event.type === 'turn-completed' && event.status === 'interrupted'));
 });
+const userContent = async (directory, threadId) => (await readFile(path.join(directory, 'projects', directory.replace(/[^a-zA-Z0-9]/g, '-'), `${threadId}.jsonl`), 'utf8'))
+  .trim().split('\n').map((line) => JSON.parse(line)).filter((entry) => entry.type === 'user').at(-1).message.content;
+test('Claude transport translates a PDF into a native document block of its exact bytes, and refuses bytes that are not a PDF', async (t) => {
+  const { adapter, directory } = await fixture(t);
+  const opened = await adapter.openThread({ cwd: directory, model: 'sonnet', threadConfig: { developerInstructions: '' } });
+  const events = []; adapter.subscribe(opened.threadId, { onEvent: (event) => events.push(event) });
+  const bytes = Buffer.from('%PDF-1.4\n1 0 obj\n<< >>\nendobj\n%%EOF\n'); const brief = path.join(directory, 'brief.pdf'); await writeFile(brief, bytes);
+  await adapter.startTurn({ threadId: opened.threadId, model: 'sonnet', clientUserMessageId: randomUUID(), input: [{ type: 'text', text: 'Read it' }, { type: 'localDocument', path: brief }] });
+  await waitFor(() => events.find((event) => event.type === 'turn-completed'));
+  assert.deepEqual((await userContent(directory, opened.threadId))[1], { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: bytes.toString('base64') } });
+  const zip = path.join(directory, 'renamed.pdf'); await writeFile(zip, Buffer.from('PK\x03\x04', 'latin1'));
+  await assert.rejects(adapter.startTurn({ threadId: opened.threadId, model: 'sonnet', clientUserMessageId: randomUUID(), input: [{ type: 'text', text: 'Read it' }, { type: 'localDocument', path: zip }] }), /not a PDF/);
+});
+test('a PDF Claude removes as unprocessable fails the turn, never letting it count as completed without the PDF', async (t) => {
+  const { adapter, directory } = await fixture(t);
+  const opened = await adapter.openThread({ cwd: directory, model: 'sonnet', threadConfig: { developerInstructions: '' } });
+  const events = []; adapter.subscribe(opened.threadId, { onEvent: (event) => events.push(event) });
+  const brief = path.join(directory, 'brief.pdf'); await writeFile(brief, Buffer.from('%PDF-1.4\nunprocessable\n%%EOF\n'));
+  await adapter.startTurn({ threadId: opened.threadId, model: 'sonnet', clientUserMessageId: randomUUID(), input: [{ type: 'text', text: 'Read it' }, { type: 'localDocument', path: brief }] });
+  const completed = await waitFor(() => events.find((event) => event.type === 'turn-completed'));
+  assert.match(events.find((event) => event.type === 'input-rejected')?.reason ?? '', /could not process a PDF/);
+  assert.equal(completed.status, 'failed');
+  assert.match(completed.error.message, /removed it/);
+});
+test('a removed-document error in a turn that sent no PDF leaves that turn to complete', async (t) => {
+  const { adapter, directory } = await fixture(t);
+  const opened = await adapter.openThread({ cwd: directory, model: 'sonnet', threadConfig: { developerInstructions: '' } });
+  const events = []; adapter.subscribe(opened.threadId, { onEvent: (event) => events.push(event) });
+  await adapter.startTurn({ threadId: opened.threadId, model: 'sonnet', clientUserMessageId: randomUUID(), input: [{ type: 'text', text: 'earlier document removed' }] });
+  const completed = await waitFor(() => events.find((event) => event.type === 'turn-completed'));
+  assert.equal(completed.status, 'completed');
+  assert.ok(!events.some((event) => event.type === 'input-rejected'));
+});
+test('a Claude session opened here that has had no turn yet lists no turns instead of reporting its history missing', async (t) => {
+  const { adapter, directory } = await fixture(t);
+  const opened = await adapter.openThread({ cwd: directory, model: 'sonnet', threadConfig: { developerInstructions: '' } });
+  assert.deepEqual(await adapter.listTurns({ threadId: opened.threadId }), { data: [], nextCursor: null });
+  const other = await fixture(t); other.adapter.bindHistory({ threadId: opened.threadId, cwd: directory });
+  await assert.rejects(other.adapter.listTurns({ threadId: opened.threadId }), /history is unavailable/, 'a bound session without its history is still missing');
+});
 test('a reply streamed after a thinking block completes as one text item, live and from history', async (t) => {
   const { adapter, directory } = await fixture(t);
   const opened = await adapter.openThread({ cwd: directory, model: 'sonnet', threadConfig: { developerInstructions: '' } });
@@ -62,7 +114,7 @@ test('Claude rejects missing installations and unavailable models before input d
   await assert.rejects(adapter.openThread({ cwd: directory, model: 'invalid', threadConfig: { developerInstructions: '' } }), { kind: 'model-unavailable' });
   const opened = await adapter.openThread({ cwd: directory, model: 'sonnet', threadConfig: { developerInstructions: '' } });
   await assert.rejects(adapter.startTurn({ threadId: opened.threadId, model: 'invalid', clientUserMessageId: randomUUID(), input: [{ type: 'text', text: 'Never send' }] }), /Model unavailable/);
-  await assert.rejects(adapter.listTurns({ threadId: opened.threadId }), { kind: 'native-unavailable' });
+  assert.deepEqual(await adapter.listTurns({ threadId: opened.threadId }), { data: [], nextCursor: null }, 'nothing was sent, so there is no turn');
 });
 
 test('native Claude transport completes card submissions and keeps follow-up context across an app restart', async (t) => {

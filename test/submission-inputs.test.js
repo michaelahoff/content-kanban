@@ -121,3 +121,22 @@ test('Claude names the unproven PDF, audio and video routes; Codex gets a tool c
   assert.match(plan.problems[2].reason, /video/);
   assert.deepEqual(planInputs('codex', [pdf, audio, film], { textBytes: 0 }).inputs.map((input) => input.method), ['copy', 'copy', 'copy']);
 });
+
+test('Claude sends a PDF as a native document only where its route is enabled, counting it toward the request and warning that pages are not counted', () => {
+  const pdf = { key: 'asset:brief', label: 'brief.pdf', kind: 'file', format: 'pdf', size: 1000 };
+  const enabled = { id: 'haiku', pdf: { available: true, pages: 100, checked: '2026-10-08' } };
+  const plan = planInputs('claude', [script, pdf], { textBytes: 0, model: enabled });
+  assert.deepEqual(plan.problems, []);
+  assert.deepEqual(plan.inputs.map((input) => input.method), ['text', 'document']);
+  assert.equal(plan.warnings.length, 1);
+  assert.match(plan.warnings[0], /100 pages/);
+  assert.match(plan.warnings[0], /cannot count/);
+  const disabled = planInputs('claude', [script, pdf], { textBytes: 0, model: { id: 'opus', pdf: { available: false, reason: 'No passing PDF check is recorded for this setup.' } } });
+  assert.deepEqual(disabled.problems.map(({ key, phase }) => ({ key, phase })), [{ key: 'asset:brief', phase: 'capability' }]);
+  assert.ok(disabled.problems[0].reason.includes('No passing PDF check is recorded for this setup.'));
+  const oversized = planInputs('claude', [{ ...pdf, size: 25 * MiB }], { textBytes: 0, model: enabled });
+  assert.deepEqual(oversized.problems.map(({ key }) => key), [null], 'an encoded PDF counts toward the request size');
+  assert.match(oversized.problems[0].reason, /32 MB/);
+  assert.deepEqual(planInputs('claude', [{ ...video, format: 'mp4' }], { textBytes: 0, model: enabled }).problems.map(({ phase }) => phase), ['capability'], 'the PDF route carries nothing else');
+  assert.deepEqual(planInputs('codex', [pdf], { textBytes: 0, model: enabled }).inputs.map((input) => input.method), ['copy']);
+});

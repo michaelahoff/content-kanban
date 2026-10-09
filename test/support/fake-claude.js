@@ -3,6 +3,7 @@ import readline from 'node:readline';
 import { appendFile, mkdir } from 'node:fs/promises';
 import path from 'node:path';
 const args = process.argv.slice(2);
+if (args.includes('--version')) { process.stdout.write(`${process.env.FAKE_CLAUDE_VERSION ?? '2.1.291'} (Claude Code)\n`); process.exit(0); }
 const flagValue = (flag) => args.includes(flag) ? args[args.indexOf(flag) + 1] : null;
 const id = flagValue('--session-id') || flagValue('--resume');
 const output = (message) => process.stdout.write(JSON.stringify(message) + '\n');
@@ -13,7 +14,8 @@ let pending = null;
 for await (const line of readline.createInterface({ input: process.stdin })) {
   const message = JSON.parse(line);
   if (message.type === 'control_request') {
-    if (message.request.subtype === 'initialize') response(message.request_id, { models: [{ value: 'sonnet', displayName: 'Fixture Sonnet' }, { value: 'opus', displayName: 'Fixture Opus' }], account: { secret: 'must-not-persist' } });
+    if (message.request.subtype === 'initialize') response(message.request_id, { models: [{ value: 'sonnet', displayName: 'Fixture Sonnet', resolvedModel: 'claude-fixture-sonnet' }, { value: 'opus', displayName: 'Fixture Opus', resolvedModel: 'claude-fixture-opus' }],
+      account: { secret: 'must-not-persist', email: 'fixture@example.com', subscriptionType: 'Claude Pro', apiProvider: 'firstParty' } });
     if (message.request.subtype === 'set_model') response(message.request_id, {}, message.request.model === 'invalid' ? 'Model unavailable' : undefined);
     if (message.request.subtype === 'interrupt') {
       response(message.request_id, {});
@@ -24,6 +26,12 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
     await record({ type: 'user', uuid: message.uuid, message: message.message });
     if (message.message.content.some((block) => block.text === 'wait')) continue;
     const prompt = message.message.content.filter((block) => block.type === 'text').map((block) => block.text).join('\n');
+    // Like Claude Code 2.1.291 when the API rejects a document: a synthetic
+    // error message, then the turn carries on without it.
+    if (message.message.content.some((block) => (block.type === 'document' && Buffer.from(block.source.data, 'base64').includes('unprocessable')) || block.text === 'earlier document removed')) {
+      output({ type: 'assistant', uuid: 'api-error-' + message.uuid, error: 'invalid_request', is_api_error_message: true, message: { id: 'synthetic-' + message.uuid, model: '<synthetic>', role: 'assistant', stop_reason: 'stop_sequence',
+        content: [{ type: 'text', text: 'API Error: a document in the conversation could not be processed and was removed. Re-read the file with a different approach if you still need it.' }] } });
+    }
     // A lane run prompt asks for a result block; answer with one.
     const text = prompt.includes('frameboard-result')
       ? 'Lane fixture reply\n\n```frameboard-result\n{"fields": {"intro": "Fixture intro"}, "notes": "Fixture notes"}\n```'
