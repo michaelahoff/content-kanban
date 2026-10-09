@@ -1045,6 +1045,30 @@ These values apply when a card enters this lane.
   await click('[data-action="toggle-chat"]');
   await waitFor(`!document.querySelector('[data-activity-card="${a.id}"].done')`);
   console.log('PASS Working timer, streamed text, Input needed navigation/focus, other-tab Done clearing and hidden-chat reveal');
+  // A Library script selected in the composer is previewed, sent in full and shown frozen in history.
+  const libraryCard = await api('POST', `/api/projects/${chatProject.id}/cards`, { stageId: chatStage, title: 'Chat Library card' });
+  await api('POST', `/api/projects/${chatProject.id}/library/folders`, { name: 'Next episode' });
+  await send('Page.navigate', { url: base }); await open(libraryCard.id);
+  await evaluate(`document.querySelector('#chat-context-preview').open = true`);
+  await click('[data-action="chat-library-add"]');
+  await waitFor(`[...document.querySelectorAll('#small-form label')].some(label => label.textContent.includes('script.md'))`);
+  await evaluate(`[...document.querySelectorAll('#small-form label')].find(label => label.textContent.includes('script.md')).querySelector('input').click()`);
+  // An existing empty folder is a valid selection that adds no files.
+  await evaluate(`[...document.querySelectorAll('#small-form label')].find(label => label.textContent.startsWith('Next episode/')).querySelector('input').click()`);
+  await click('#small-form button[type="submit"]');
+  await waitFor(`document.querySelector('.chat-library ol')?.textContent.includes('script.md') && document.querySelector('.chat-library ol')?.textContent.includes('Next episode/')`);
+  await waitFor(`document.querySelector('#chat-exact-preview .chat-library-inputs')?.textContent.includes('full text')`);
+  await snapshot('chat-library-selection');
+  await select('#chat-model', 'test-model'); await fill('#chat-prompt', 'Tighten the hook using the script');
+  await click('[data-action="chat-send"]');
+  for (let i = 0; i < 100 && codex.sends.length < 3; i++) await pause(20);
+  assert.equal(codex.sends.length, 3, await evaluate(`document.querySelector('#chat-error').textContent + ' / ' + document.querySelector('#chat-transcript').textContent`));
+  assert.ok(codex.sends[2].input[0].text.includes('Hook: the desk studio.'), 'The selected script is sent in full.');
+  codex.finish(codex.sends[2]);
+  await waitFor(`document.querySelector('.chat-delivery')?.textContent.includes('script.md · full text · sent')`);
+  assert.ok(await evaluate(`document.querySelector('.chat-library ol')?.textContent.includes('script.md')`), 'An ordinary message keeps the selection.');
+  await click('[data-action="close-card"]');
+  console.log('PASS Library script selected in the composer, previewed, sent in full and shown frozen with its delivery');
   // Global settings and provider combinations use one saved catalog for all cards.
   await click('[data-action="close-card"]');
   await waitFor(`import('/chat.js').then(m => !m.hasUnsentChatChanges())`);

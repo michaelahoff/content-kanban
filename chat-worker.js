@@ -67,6 +67,8 @@ export function createChatWorker({ store, adapter, adapters = { codex: adapter }
     }
   }
   function release(work) {
+    // Prepared inputs of an attempt that ended before sending were not sent.
+    if (!closed && !work.deliveryStatus) deliver(work, 'not-sent');
     flush(work);
     clearInterval(work.timer);
     if (live.get(work.submission.cardId) === work) live.delete(work.submission.cardId);
@@ -183,6 +185,10 @@ export function createChatWorker({ store, adapter, adapters = { codex: adapter }
       return { success: true, contentItems: [{ type: 'inputText', text: JSON.stringify(result) }] };
     } catch (error) { return { success: false, contentItems: [{ type: 'inputText', text: error.message }] }; }
   }
+  const deliver = (work, status) => {
+    work.deliveryStatus = status;
+    if (work.delivery?.length) store.chats.delivered(ctx, work.attempt.id, work.delivery.map((entry) => ({ ...entry, status })));
+  };
   // Before sending, a Stop or archive ends the attempt rather than leaving it
   // waiting for a native interruption that can never come.
   function stopped(work) {
@@ -209,8 +215,9 @@ export function createChatWorker({ store, adapter, adapters = { codex: adapter }
       if (!store.chats.bind(ctx, attempt.id, opened.binding)) { end(work, 'interrupted'); return; }
       work.unsubscribe = adapter.subscribe(opened.threadId, { acceptsRequest: (request) => request.turnId === work.turnId,
         onEvent: (event) => receive(work, event), onRequest: (request) => pendingRequest(work, request), onToolCall: (request) => toolCall(work, request) });
-      const images = await service.references(submission);
+      const inputs = await service.deliveryInputs(ctx, submission);
       if (closed) return;
+      work.delivery = inputs.delivery;
       if (store.chats.attempt(attempt.id)?.status === 'interrupt-requested') { end(work, 'interrupted'); return; }
       const actualDiscovery = await configurationDiscovery(adapter, { cwd }, submission.provider);
       if (closed) return;
@@ -227,15 +234,20 @@ export function createChatWorker({ store, adapter, adapters = { codex: adapter }
       if (closed) return;
       if (store.chats.attempt(attempt.id)?.status !== 'dispatching') { stopped(work); return; }
       work.dispatching = true; work.sent = true;
+      deliver(work, 'sending');
       const started = await adapter.startTurn({ threadId: opened.threadId, model: submission.model,
         fullAccess: store.chats.requestGrants(ctx, submission.cardId).some((grant) => grant.kind === 'full'),
-        clientUserMessageId: attempt.id, input: [{ type: 'text', text: submissionText(submission) }, ...images] });
+        clientUserMessageId: attempt.id, input: [{ type: 'text', text: submissionText(submission, inputs.texts) }, ...inputs.images] });
+      work.accepted = true;
       if (closed) return;
+      deliver(work, 'sent');
       work.turnId = started.turnId;
       store.chats.running(ctx, attempt.id, started.turnId);
       if (store.chats.attempt(attempt.id)?.status === 'interrupt-requested') void interrupt(work);
     } catch (error) {
       if (closed) return;
+      if (error.delivery) { work.deliveryStatus = 'failed'; store.chats.delivered(ctx, work.attempt.id, error.delivery); }
+      else if (!work.accepted) deliver(work, work.sent && ['timeout', 'process-exited', 'protocol', 'binding-mismatch'].includes(error.kind) ? 'uncertain' : 'not-sent');
       // Nothing reached Codex, or Codex refused it before acceptance: wait for
       // the provider and retry. Possible delivery is never retried this way.
       if (overloaded(error) || (!work.sent && ['timeout', 'process-exited', 'busy'].includes(error.kind))) {

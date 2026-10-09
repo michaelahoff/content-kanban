@@ -2,6 +2,7 @@
 // happens here. All mutations use the board store's transaction and activity log.
 import { randomUUID } from 'node:crypto';
 import { defaultSelections, contextFields, selectedContext } from './public/chat-context.js';
+import { sourceKey } from './public/library-format.js';
 
 export const chatMigration = `
   CREATE TABLE card_field_versions (card_id TEXT NOT NULL REFERENCES cards(id), field TEXT NOT NULL, version INTEGER NOT NULL,
@@ -66,7 +67,7 @@ const conversationFrom = (row) => ({ id: row.id, cardId: row.card_id, provider: 
 const submissionFrom = (row) => ({ ...JSON.parse(row.frozen), id: row.id, cardId: row.card_id,
   conversationId: row.conversation_id, status: row.status, reason: row.reason, hold: row.hold, retryAt: row.retry_at, revoked: row.revoked, createdAt: row.created_at, completedAt: row.completed_at });
 const attemptFrom = (row) => row && ({ id: row.id, submissionId: row.submission_id, cardId: row.card_id,
-  previousAttemptId: row.previous_attempt_id, status: row.status, turnId: row.turn_id, startedAt: row.started_at, completedAt: row.completed_at, error: row.error, cause: row.cause, revoked: row.revoked });
+  previousAttemptId: row.previous_attempt_id, status: row.status, turnId: row.turn_id, startedAt: row.started_at, completedAt: row.completed_at, error: row.error, cause: row.cause, revoked: row.revoked, delivery: row.delivery ? JSON.parse(row.delivery) : null });
 
 export function createChatStore({ all, get, run, transaction, retainedCard, requireCard, recordChange, now }) {
   function activity(ctx, cardId, type, data = {}) {
@@ -112,7 +113,12 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
     check(Array.isArray(selections.images) && selections.images.length <= 200 && selections.images.every((id) => text(id, 100)), 'Invalid image references.');
     check(object(value.authority) && Array.isArray(value.authority.fields) && value.authority.fields.length <= fields.length
       && value.authority.fields.every((key) => fields.includes(key)), 'Invalid text authority.');
-    return { prompt: value.prompt, provider: value.provider ?? 'codex', model: value.model, selections: { fields: [...new Set(selections.fields)], roles: [...new Set(selections.roles)], images: [...new Set(selections.images)] },
+    // Library choices are ordered typed source IDs. A removed or foreign
+    // source may stay selected; Send refuses it by name until corrected.
+    const library = selections.library ?? [];
+    check(Array.isArray(library) && library.length <= 200 && library.every((entry) => object(entry) && ['asset', 'folder'].includes(entry.kind) && validId(entry.id)), 'Invalid Library selections.');
+    return { prompt: value.prompt, provider: value.provider ?? 'codex', model: value.model, selections: { fields: [...new Set(selections.fields)], roles: [...new Set(selections.roles)], images: [...new Set(selections.images)],
+      library: [...new Map(library.map((entry) => [sourceKey(entry), { kind: entry.kind, id: entry.id }])).values()] },
       authority: { fields: [...new Set(value.authority.fields)] } };
   }
   function activeAttempt(cardId) {
@@ -180,7 +186,14 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
       check(object(input) && Number.isInteger(input.revision), 'Composer updates need their revision.');
       if (row.composer_revision !== input.revision) fail(409, 'The composer changed in another tab. Your unsent draft has been kept here; reload the saved composer or copy your draft.');
       const composer = validateComposer(card, input);
-      if ((composer.model !== JSON.parse(row.composer).model || composer.provider !== (JSON.parse(row.composer).provider ?? 'codex')) && activeAttempt(cardId)) fail(409, 'Wait for the active response to finish or Stop it before changing model.');
+      // A primary-provider change clears the earlier Library choices; any made
+      // together with the change are kept.
+      const previous = JSON.parse(row.composer);
+      if (composer.provider !== (previous.provider ?? 'codex')) {
+        const earlier = new Set((previous.selections.library ?? []).map(sourceKey));
+        composer.selections.library = composer.selections.library.filter((entry) => !earlier.has(sourceKey(entry)));
+      }
+      if ((composer.model !== previous.model || composer.provider !== (previous.provider ?? 'codex')) && activeAttempt(cardId)) fail(409, 'Wait for the active response to finish or Stop it before changing model.');
       return transaction(() => {
         run('UPDATE card_chats SET composer = ?, composer_revision = composer_revision + 1 WHERE card_id = ?', JSON.stringify(composer), cardId);
         activity(ctx, cardId, 'composer_saved');
@@ -192,7 +205,7 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
       const row = ensure(ctx, cardId);
       const versions = Object.fromEntries(all('SELECT field, version FROM card_field_versions WHERE card_id = ?', cardId).map((row) => [row.field, row.version]));
       return { cardRevision: card.revision, composerRevision: row.composer_revision, conversationId: current(cardId).id, archiveGeneration: archiveGeneration(cardId),
-        prompt: JSON.parse(row.composer).prompt, provider: JSON.parse(row.composer).provider ?? 'codex', model: JSON.parse(row.composer).model,
+        projectId: card.projectId, librarySelections: JSON.parse(row.composer).selections.library ?? [], prompt: JSON.parse(row.composer).prompt, provider: JSON.parse(row.composer).provider ?? 'codex', model: JSON.parse(row.composer).model,
         authority: JSON.parse(row.composer).authority, context: selectedContext(card, JSON.parse(row.composer).selections, versions,
           all("SELECT image_id AS id, name, id AS outputId FROM chat_outputs WHERE card_id = ? AND import_status = 'imported'", cardId)) };
     },
@@ -326,6 +339,15 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
     },
     attempt,
     activeAttempt,
+    // The actual outcome of each Library input for one attempt: prepared,
+    // sent, not sent, uncertain or failed with its reason.
+    delivered(ctx, id, delivery) {
+      transaction(() => {
+        const a = attempt(id); if (!a) return;
+        run('UPDATE chat_attempts SET delivery = ? WHERE id = ?', JSON.stringify(delivery), id);
+        activity(ctx, a.cardId, 'delivery_recorded', { attemptId: id });
+      });
+    },
     // Why an attempt may no longer produce effects, or null. Status alone does
     // not say this: a late native event can still arrive for a revoked attempt.
     revocation(id) {
@@ -524,7 +546,11 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
         if (queued.length && input.cancelQueued !== true) fail(409, 'Explicitly cancel the old queued submissions before starting fresh context.');
         for (const submission of queued) status(ctx, submission.id, 'cancelled', 'Cancelled for empty fresh context.');
         run("UPDATE chat_conversations SET state = 'previous' WHERE id = ?", old.id);
-        const next = newConversation(cardId, JSON.parse(row.composer).model, JSON.parse(row.composer).provider ?? 'codex');
+        // Manual Library choices belong to the conversation they were made in.
+        const composer = JSON.parse(row.composer);
+        if (composer.selections.library?.length) run('UPDATE card_chats SET composer = ?, composer_revision = composer_revision + 1 WHERE card_id = ?',
+          JSON.stringify({ ...composer, selections: { ...composer.selections, library: [] } }), cardId);
+        const next = newConversation(cardId, composer.model, composer.provider ?? 'codex');
         activity(ctx, cardId, 'fresh_context', { previousConversationId: old.id, conversationId: next.id });
         return this.snapshot(ctx, cardId);
       });

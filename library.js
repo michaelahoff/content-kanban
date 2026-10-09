@@ -1,10 +1,36 @@
 // The project Library: uploaded files with stable asset identities and
 // immutable versions. Bytes live in retained storage; names are labels.
-import { availableFilename, comparePaths, libraryFilename, nameConflict } from './public/library-format.js';
-import { libraryKinds } from './store-retained.js';
 import { createHash } from 'node:crypto';
+import { availableFilename, comparePaths, libraryFilename, nameConflict, splitExtension, sourceKey } from './public/library-format.js';
+import { libraryKinds } from './store-retained.js';
+import { imageFormat } from './image-files.js';
+import { rasterFormats, limits } from './submission-inputs.js';
 
 const fail = (status, message, extra = {}) => { throw Object.assign(new Error(message), { status, ...extra }); };
+// Library text larger than any request can hold is delivered as a file.
+const textProbeBytes = limits.certainTextBytes;
+const utf8 = () => new TextDecoder('utf-8', { fatal: true });
+async function collect(stream, limit = Infinity) {
+  const chunks = []; let length = 0;
+  try { for await (const chunk of stream) { chunks.push(chunk); length += chunk.length; if (length >= limit) break; } }
+  finally { stream.destroy(); }
+  return Buffer.concat(chunks);
+}
+// A supported raster image, UTF-8 text without NUL bytes, or any other file.
+// A large file whose start reads as text is a file of format text.
+function classify(bytes, size) {
+  const format = imageFormat(bytes);
+  if (rasterFormats.includes(format)) return { kind: 'image', format };
+  const readable = !bytes.includes(0) && (() => { try { utf8().decode(bytes, { stream: size > textProbeBytes }); return true; } catch { return false; } })();
+  if (readable && size <= textProbeBytes) return { kind: 'text', format: 'utf-8' };
+  return { kind: 'file', format: format ?? (readable ? 'text' : null) };
+}
+// Workspace copies are named by version, never by the filename label.
+const copyPath = (file) => {
+  const extension = file.kind === 'image' ? file.format : splitExtension(file.filename)[1].toLowerCase();
+  return `references/library/${file.versionId}${/^[a-z0-9]{1,10}$/.test(extension) ? `.${extension}` : ''}`;
+};
+
 // Written documents are UTF-8 text; larger files are edited elsewhere.
 export const maxDocumentBytes = 4 * 1024 * 1024;
 function documentText(value) {
@@ -13,7 +39,6 @@ function documentText(value) {
   return value;
 }
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
-const collect = async (stream) => { const chunks = []; for await (const chunk of stream) chunks.push(chunk); return Buffer.concat(chunks); };
 const savedOutcome = (provenance) => provenance.baseVersionId ? 'saved' : provenance.collision === 'replace' ? 'replaced' : 'created';
 
 export function createLibrary({ retained, metadata, drafts, project, record }) {
@@ -191,45 +216,6 @@ export function createLibrary({ retained, metadata, drafts, project, record }) {
       project(ctx, projectId, { allowArchived: true });
       return { assets: metadata.removed(ctx, projectId).map((row) => ({ ...assetFrom(ctx, row), path: folderPath(ctx, row.folder_id) + row.filename })) };
     },
-    // Remembered asset/folder IDs resolve to current versions and live folder
-    // membership. Folders expand recursively in relative-path order; overlaps
-    // keep their first position and every selecting source. A removed, foreign
-    // or missing source stays unresolved: nothing substitutes by name.
-    resolve(ctx, projectId, sources) {
-      project(ctx, projectId);
-      if (!Array.isArray(sources) || sources.some((source) => !['asset', 'folder'].includes(source?.kind) || typeof source.id !== 'string')) fail(400, 'Select Library files and folders by ID.');
-      const live = metadata.sources(ctx, projectId);
-      // Each folder's chain is read once per resolution, however many sources share it.
-      const chains = new Map();
-      const chainOf = (folderId) => { if (!chains.has(folderId)) chains.set(folderId, chain(ctx, folderId)); return chains.get(folderId); };
-      const pathOf = (folderId) => labels(chainOf(folderId));
-      const resolved = []; const byId = new Map();
-      const include = (row, index, relativePath) => {
-        if (!byId.has(row.id)) {
-          const version = metadata.version(ctx, row.current_version_id);
-          byId.set(row.id, { id: row.id, versionId: version.id, filename: row.filename, path: pathOf(row.folder_id) + row.filename,
-            hash: version.hash, size: version.size, available: version.available, selectedBy: [] });
-          resolved.push(byId.get(row.id));
-        }
-        byId.get(row.id).selectedBy.push({ source: index, relativePath });
-      };
-      const status = sources.map((source, index) => {
-        const row = source.kind === 'asset' ? metadata.object(ctx, source.id) : metadata.folder(ctx, source.id);
-        if (!row || row.project_id !== projectId || (source.kind === 'asset' && (!libraryKinds.includes(row.kind) || !row.current_version_id))) return { ...source, status: 'missing' };
-        const path = source.kind === 'asset' ? pathOf(row.folder_id) + row.filename : pathOf(row.id);
-        if (row.removed_at) return { ...source, status: 'removed', path };
-        if (source.kind === 'asset') include(row, index, row.filename);
-        else {
-          const members = live.flatMap((asset) => {
-            const folders = chainOf(asset.folder_id); const at = folders.findIndex((folder) => folder.id === row.id);
-            return at < 0 ? [] : [{ row: asset, relativePath: labels(folders.slice(at + 1)) + asset.filename }];
-          }).sort((a, b) => comparePaths(a.relativePath, b.relativePath));
-          for (const member of members) include(member.row, index, member.relativePath);
-        }
-        return { ...source, status: 'resolved', path };
-      });
-      return { sources: status, assets: resolved };
-    },
     // Collisions are folder-local. Without an explicit Create new or Replace
     // choice, a taken name is refused unread.
     async upload(ctx, projectId, input, source, { signal } = {}) {
@@ -359,6 +345,70 @@ export function createLibrary({ retained, metadata, drafts, project, record }) {
       await retained.repair(ctx, version.id, source, { signal });
       record(ctx, 'asset_repaired', version.objectId, projectId, { versionId: version.id });
       return numberedVersion(ctx, version);
+    },
+    // The current committed versions named by ordered typed selections: an
+    // asset, or a folder expanded recursively over its live files in
+    // relative-path order. One entry per asset identity, in first-selected
+    // position, keeps every selection that named it (a folder's with the
+    // file's relative path). An unresolvable source is reported by identity,
+    // never resolved empty or substituted by name; an existing empty folder adds nothing.
+    resolve(ctx, projectId, selections) {
+      const files = new Map(); const problems = [];
+      // Each folder's chain is read once per resolution, however many files share it.
+      const chains = new Map();
+      const chainOf = (folderId) => { if (!chains.has(folderId)) chains.set(folderId, chain(ctx, folderId)); return chains.get(folderId); };
+      const pathOf = (folderId) => labels(chainOf(folderId));
+      let live;
+      const include = (row, source) => {
+        if (!files.has(row.id)) {
+          const version = numberedVersion(ctx, metadata.version(ctx, row.current_version_id));
+          files.set(row.id, { projectId, assetId: row.id, versionId: version.id, number: version.number, filename: row.filename, libraryPath: pathOf(row.folder_id) + row.filename,
+            hash: version.hash, size: version.size, sources: [] });
+        }
+        files.get(row.id).sources.push(source);
+      };
+      for (const selection of selections) {
+        const key = sourceKey(selection);
+        if (selection.kind === 'folder') {
+          const row = metadata.folder(ctx, selection.id);
+          const owned = row && row.project_id === projectId;
+          const reason = !owned ? 'It is not a folder in this project’s Library.' : row.removed_at ? 'It was removed from the Library.' : null;
+          if (reason) { problems.push({ key, label: owned ? pathOf(row.id) : key, phase: 'resolve', reason }); continue; }
+          live ??= metadata.sources(ctx, projectId);
+          live.flatMap((asset) => {
+            const folders = chainOf(asset.folder_id); const at = folders.findIndex((folder) => folder.id === row.id);
+            return at < 0 ? [] : [{ asset, relativePath: labels(folders.slice(at + 1)) + asset.filename }];
+          }).sort((a, b) => comparePaths(a.relativePath, b.relativePath))
+            .forEach(({ asset, relativePath }) => include(asset, { kind: 'folder', id: row.id, relativePath }));
+          continue;
+        }
+        const row = selection.kind === 'asset' ? metadata.object(ctx, selection.id) : null;
+        const owned = row && row.project_id === projectId && libraryKinds.includes(row.kind);
+        const reason = !owned ? 'It is not a file in this project’s Library.' : row.removed_at ? 'It was removed from the Library.'
+          : !row.current_version_id ? 'Its first upload has not finished.' : null;
+        if (reason) { problems.push({ key, label: owned ? row.filename : key, phase: 'resolve', reason }); continue; }
+        include(row, { kind: selection.kind, id: selection.id });
+      }
+      return { files: [...files.values()], problems };
+    },
+    // How a version can be delivered. Sends verify every byte; previews read
+    // small files whole but only sample large ones, trusting their last check.
+    async inspect(ctx, projectId, versionId, { verify = true } = {}) {
+      const { version } = owned(ctx, projectId, versionId);
+      if (verify || version.size <= textProbeBytes) return classify(await collect(await retained.read(ctx, version.id), version.size > textProbeBytes ? 64 : Infinity), version.size);
+      if (!version.available) fail(409, `Retained version ${version.id} is unavailable. ${version.error}`);
+      return classify(await retained.peek(ctx, version.id, 64), version.size);
+    },
+    copyPath,
+    // A frozen text version, read verified, for inline delivery.
+    async text(ctx, projectId, versionId) {
+      const { version } = owned(ctx, projectId, versionId);
+      return utf8().decode(await collect(await retained.read(ctx, version.id)));
+    },
+    // An independent verified workspace copy of a frozen version.
+    materialize(ctx, projectId, versionId, workspace, relative) {
+      const { version } = owned(ctx, projectId, versionId);
+      return retained.materialize(ctx, version.id, workspace, relative);
     },
     async read(ctx, projectId, versionId) {
       project(ctx, projectId, { allowArchived: true });

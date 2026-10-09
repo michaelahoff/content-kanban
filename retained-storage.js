@@ -158,6 +158,17 @@ export async function createRetainedStorage({ dataDir, metadata, checkpoint = as
       pipeline(handle.createReadStream({ start: 0, highWaterMark: 64 * 1024, autoClose: true }), stream).catch(() => {});
       return stream;
     },
+    // The first bytes of a committed original, not verified: for previews that
+    // must not hash a whole large file. Anything delivered is read verified.
+    async peek(ctx, id, length) {
+      const version = requireVersion(ctx, id);
+      const handle = await regular(payload(version.id));
+      try {
+        const buffer = Buffer.alloc(Math.min(length, version.size));
+        const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+        return buffer.subarray(0, bytesRead);
+      } finally { await handle.close(); }
+    },
     async materialize(ctx, id, workspace, relative, { signal } = {}) {
       const version = requireVersion(ctx, id);
       if (typeof relative !== 'string' || path.isAbsolute(relative) || relative.includes('\\') || relative.includes('\0')

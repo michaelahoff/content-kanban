@@ -771,22 +771,20 @@ test('remembered sources resolve to current versions: folders expand recursively
 
   const selection = [{ kind: 'asset', id: logo.asset.id }, { kind: 'folder', id: thumbnails.id }, { kind: 'asset', id: script.asset.id }, { kind: 'folder', id: empty.id }];
   const resolved = f.library.resolve(f.ctx, f.projectId, selection);
-  assert.deepEqual(resolved.sources.map((source) => [source.kind, source.id, source.status, source.path]), [
-    ['asset', logo.asset.id, 'resolved', 'Thumbnails/logo.png'], ['folder', thumbnails.id, 'resolved', 'Thumbnails/'],
-    ['asset', script.asset.id, 'resolved', 'script.md'], ['folder', empty.id, 'resolved', 'Next episode/']]);
+  assert.deepEqual(resolved.problems, [], 'an existing empty folder is a valid selection');
   // logo.png keeps its first position; the folder adds the rest in relative-path
   // order, compared segment by segment, so refs/a.png sorts before refs.txt.
-  assert.deepEqual(resolved.assets.map((asset) => [asset.id, asset.path]), [
+  assert.deepEqual(resolved.files.map((file) => [file.assetId, file.libraryPath]), [
     [logo.asset.id, 'Thumbnails/logo.png'], [b.asset.id, 'Thumbnails/b.png'], [deep.asset.id, 'Thumbnails/refs/a.png'],
     [dot.asset.id, 'Thumbnails/refs.txt'], [script.asset.id, 'script.md']]);
-  assert.deepEqual(resolved.assets[0].selectedBy, [{ source: 0, relativePath: 'logo.png' }, { source: 1, relativePath: 'logo.png' }]);
-  assert.deepEqual(resolved.assets[2].selectedBy, [{ source: 1, relativePath: 'refs/a.png' }]);
-  assert.deepEqual([resolved.assets[4].versionId, resolved.assets[4].hash, resolved.assets[4].size], [script.version.id, sha(Buffer.from('# A')), 3]);
+  assert.deepEqual(resolved.files[0].sources, [{ kind: 'asset', id: logo.asset.id }, { kind: 'folder', id: thumbnails.id, relativePath: 'logo.png' }]);
+  assert.deepEqual(resolved.files[2].sources, [{ kind: 'folder', id: thumbnails.id, relativePath: 'refs/a.png' }]);
+  assert.deepEqual([resolved.files[4].versionId, resolved.files[4].hash, resolved.files[4].size, resolved.files[4].filename], [script.version.id, sha(Buffer.from('# A')), 3, 'script.md']);
 
   // Replace and move follow the identity; removal leaves the ID unresolved, even after its name is reused.
   const v2 = await f.upload('script.md', Buffer.from('# B'), { collision: 'replace', assetId: script.asset.id });
   f.library.updateAsset(f.ctx, f.projectId, script.asset.id, { folderId: empty.id });
-  assert.deepEqual(f.library.resolve(f.ctx, f.projectId, [selection[3]]).assets.map((asset) => [asset.id, asset.versionId, asset.path]), [[script.asset.id, v2.version.id, 'Next episode/script.md']]);
+  assert.deepEqual(f.library.resolve(f.ctx, f.projectId, [selection[3]]).files.map((file) => [file.assetId, file.versionId, file.libraryPath]), [[script.asset.id, v2.version.id, 'Next episode/script.md']]);
   f.library.updateAsset(f.ctx, f.projectId, script.asset.id, { folderId: null });
   f.library.removeAsset(f.ctx, f.projectId, script.asset.id);
   f.library.removeFolder(f.ctx, f.projectId, thumbnails.id);
@@ -794,11 +792,15 @@ test('remembered sources resolve to current versions: folders expand recursively
   f.library.createFolder(f.ctx, f.projectId, { name: 'Thumbnails' });
   const { project: other } = f.store.createProject(f.ctx, { name: 'Other' });
   const foreign = f.library.createFolder(f.ctx, other.id, { name: 'Elsewhere' });
-  const after = f.library.resolve(f.ctx, f.projectId, [...selection, { kind: 'folder', id: foreign.id }, { kind: 'folder', id: logo.asset.id }]);
-  assert.deepEqual(after.sources.map((source) => [source.id, source.status]), [
-    [logo.asset.id, 'removed'], [thumbnails.id, 'removed'], [script.asset.id, 'removed'], [empty.id, 'resolved'], [foreign.id, 'missing'], [logo.asset.id, 'missing']]);
-  assert.deepEqual(after.assets, [], 'an existing empty folder adds no files, and nothing substitutes for removed sources');
-  assert.throws(() => f.library.resolve(f.ctx, f.projectId, [{ kind: 'path', id: 'script.md' }]), (error) => error.status === 400);
+  const after = f.library.resolve(f.ctx, f.projectId, [...selection, { kind: 'folder', id: foreign.id }, { kind: 'folder', id: logo.asset.id }, { kind: 'path', id: 'script.md' }]);
+  assert.deepEqual(after.problems.map((problem) => [problem.key, problem.label, problem.phase, problem.reason]), [
+    [`asset:${logo.asset.id}`, 'logo.png', 'resolve', 'It was removed from the Library.'],
+    [`folder:${thumbnails.id}`, 'Thumbnails/', 'resolve', 'It was removed from the Library.'],
+    [`asset:${script.asset.id}`, 'script.md', 'resolve', 'It was removed from the Library.'],
+    [`folder:${foreign.id}`, `folder:${foreign.id}`, 'resolve', 'It is not a folder in this project’s Library.'],
+    [`folder:${logo.asset.id}`, `folder:${logo.asset.id}`, 'resolve', 'It is not a folder in this project’s Library.'],
+    ['path:script.md', 'path:script.md', 'resolve', 'It is not a file in this project’s Library.']]);
+  assert.deepEqual(after.files, [], 'an existing empty folder adds no files, and nothing substitutes for removed sources');
 });
 
 test('a dropped folder path reuses live folders, steps around a file holding its name, and repeats exactly on retry', async (t) => {
