@@ -53,6 +53,36 @@ Deleting a card hides it from the board while retaining its saved data and histo
 
 Saves use SQLite transactions and check each card's content revision. If another tab saved the same card, your draft stays in memory and other cards can still save. Choose **Review** to open the conflicted card, copy anything you want to keep, then choose **Use saved version** and confirm to discard that card's unsaved changes. You can paste your copied edits into the saved version afterward. Temporary save failures show a retry button. Wait for **All changes saved** before closing the app.
 
+## Project assets: what works today
+
+- **Works:** Codex card chats and lane runs on Linux x64 with bubblewrap, a C compiler with Landlock ABI 10 headers, and a Landlock ABI 10+ kernel, running Codex 0.160.1. They send selected Library files, folders and same-card saved outputs:
+  - text in full;
+  - PNG, JPEG, GIF and WebP as native images;
+  - any other file as an exact read-only workspace copy, which Codex reads with its shell tool.
+
+  Ordinary turns, approved escalation and Full native access all run inside the retained-data boundary, so no agent can change Library originals, saved outputs, frozen history or the database.
+- **Held, by design, before anything runs:**
+  - every Claude prompt and lane run, until a protected Claude configuration is proven;
+  - a Codex setup whose inherited MCP servers or plugins Frameboard cannot isolate. Choose **Use my full Codex setup (not isolated)** in Settings if you accept that they run as your Codex normally does, inside the same boundary;
+  - any other OS, kernel or Codex version.
+
+  The hold explains what to change.
+- **Not offered:**
+  - Claude PDF documents. The route exists but has evidence only outside protection;
+  - native audio or video input for either provider;
+  - files to Claude other than text and supported images;
+  - automatic conversion, extraction, transcription or rendering, by Frameboard or by an installed converter.
+
+  Send refuses an unsupported file by name and never sends the rest without it.
+- **"Sent" means delivered, not read.** A copy or image that was sent may still be misread. Check important answers against the file.
+- **Recovery:**
+  - A missing or damaged file version shows **Unavailable**. Only **Repair…** with its exact bytes restores it; then Retry resends the same frozen version.
+  - To use different files, change the selection or playbook and Send or **Run playbook** again. Retry never picks up newer files.
+  - After a workspace restore, nothing resumes. Held work waits for you, and old conversations continue in fresh context. Exact native conversation resume is not promised.
+  - Lane runs stay one prompt each. There is no step-by-step continuation after a failure.
+
+See [the integrated release evidence](docs/implementation/project-assets-release.md) for every acceptance case, the native and signed-in checks, and how to rerun them.
+
 ## Development and checks
 
 ```sh
