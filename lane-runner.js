@@ -188,7 +188,7 @@ export function createLaneRunner({ store, service, providers, ctx, paused = () =
 
 // Applies the result block of a completed lane run reply, through the same
 // card tools and authority checks as any card chat, then saves its declared
-// documents while the attempt still holds authority. Each save has its own
+// documents and workspace files while the attempt still holds authority. Each save has its own
 // outcome, separate from the card effects. Returns a summary line.
 export async function applyLaneResult({ store, ctx, attempt, submission, text }) {
   const run = store.laneRuns.bySubmission(submission.id);
@@ -243,8 +243,9 @@ export async function applyLaneResult({ store, ctx, attempt, submission, text })
   const automation = { ...ctx, actor: `automation:${attempt.id}` };
   for (const [index, output] of (result?.outputs ?? []).entries()) {
     try {
-      const saved = await store.savedOutputs.saveDocument(automation, submission.cardId, { operationId: `lane:${attempt.id}:${index}`, attemptId: attempt.id,
-        filename: output.filename, text: output.text, creationMethod: 'lane-result', sources: output.sources, requireLive: true });
+      const save = output.path === undefined ? store.savedOutputs.saveDocument : store.savedOutputs.saveFile;
+      const saved = await save(automation, submission.cardId, { operationId: `lane:${attempt.id}:${index}`, attemptId: attempt.id,
+        filename: output.filename, text: output.text, path: output.path, creationMethod: 'lane-result', sources: output.sources, requireLive: true });
       outcome.outputs.push({ filename: saved.filename, status: saved.status, outputId: saved.id, ...(saved.error ? { error: saved.error } : {}) });
     } catch (error) { outcome.outputs.push({ filename: output.filename, status: 'failed', error: error.message }); }
   }

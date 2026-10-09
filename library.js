@@ -415,13 +415,15 @@ export function createLibrary({ retained, metadata, drafts, project, record }) {
       const filename = libraryFilename(input.filename); const folderId = input.folderId ?? null;
       const prior = metadata.operation(ctx, input.operationId);
       if (prior && prior.provenance.savedOutputId !== input.outputId) fail(409, 'This Library save was started for a different output. Save it to the Library again.');
-      const { outcome, descriptor } = placement(ctx, projectId, { filename, folderId, collision: input.collision ?? null, assetId: input.assetId, operationId: input.operationId, method: 'promote', prior });
+      // A saved document stays written text; a saved file or image is published as uploaded bytes.
+      const written = input.written !== false;
+      const { outcome, descriptor } = placement(ctx, projectId, { filename, folderId, collision: input.collision ?? null, assetId: input.assetId, operationId: input.operationId, method: 'promote', kind: written ? 'document' : 'asset', prior });
       if (prior?.state === 'committed') return savedResult(ctx, outcome, prior);
       const output = metadata.version(ctx, input.versionId);
       const owner = output && metadata.object(ctx, output.objectId);
       if (!owner || owner.kind !== 'output' || owner.project_id !== projectId || output.state !== 'committed') fail(404, 'This saved output does not exist in this project.');
       const provenance = { method: 'promote', requestedFilename: filename, collision: input.collision ?? null, ...(folderId ? { folderId } : {}),
-        cardId: input.cardId, savedOutputId: input.outputId, outputVersionId: output.id, written: true };
+        cardId: input.cardId, savedOutputId: input.outputId, outputVersionId: output.id, ...(written ? { written: true } : {}) };
       const stream = await retained.read(ctx, output.id);
       let version;
       try { version = await retained.publish(ctx, { operationId: input.operationId, projectId, ...descriptor, provenance }, stream, { signal }); }

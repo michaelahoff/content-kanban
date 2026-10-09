@@ -410,7 +410,10 @@ When you finish, end your reply with exactly one fenced code block tagged \`${re
   "fields": { "titleOptions": "the complete new value" },
   "notes": "a short hand-off for whoever works on this card next",
   "move": "Lane name",
-  "outputs": [{ "filename": "script.md", "text": "the document's complete exact text", "sources": ["a supplied version ID"] }]
+  "outputs": [
+    { "filename": "script.md", "text": "the document's complete exact text", "sources": ["a supplied version ID"] },
+    { "path": "renders/thumbnail.png", "filename": "thumbnail.png", "sources": [] }
+  ]
 }
 \`\`\`
 
@@ -419,7 +422,7 @@ When you finish, end your reply with exactly one fenced code block tagged \`${re
 - ${settings.mayEdit.length ? `Frameboard applies ${settings.mayEdit.map(label).join(', ')} directly.` : 'This lane may not edit fields directly.'} Every other field becomes a proposal the user reviews.
 - Include "move" only if the playbook tells you to propose a move. Moves always wait for the user. Lanes: ${lanes.map((lane) => lane.name).join(', ')}.
 - Always include "notes": what you did, decisions made and anything still open.
-- Include "outputs" only for finished documents the playbook asks you to deliver. Frameboard saves each one's exact "text" as a document kept with this card chat; a file path or filename alone saves nothing. In "sources", list the version IDs of the supplied images or Library files it was derived from, [] if none, or leave it out if unsure. Saving never adds a document to the project Library: only the user can save it to the project Library, so suggest that in "notes" if it would help.
+- Include "outputs" only for finished documents and files the playbook asks you to deliver. Give a document's exact "text", or the workspace-relative "path" of a finished file you wrote in this card workspace ("filename" defaults to its last part). Frameboard saves exactly those bytes when you finish, kept with this card chat; it saves nothing you do not list, and mentioning a path in your reply saves nothing. A path is saved only if you could write files here and it is a regular file inside the workspace, not a link or a reference copy. In "sources", list the version IDs of the supplied images or Library files it was derived from, [] if none, or leave it out if unsure. Saving never adds anything to the project Library: only the user can save it to the project Library, so suggest that in "notes" if it would help.
 - Report through this block only. Do not call Frameboard card tools or edit notes.md yourself during a lane run.`,
   ];
   return sections.filter(Boolean).join('\n\n');
@@ -454,23 +457,30 @@ export function parseLaneResult(text, templateId) {
     if (typeof value.move === 'string') result.move = value.move.trim();
     else result.errors.push('Ignored “move”: it must be a lane name.');
   }
-  // Explicit inline documents to save. Leaving out "sources" leaves the
+  // Explicit outputs to save: an inline document's exact text, or a finished
+  // file named by its workspace path. Leaving out "sources" leaves the
   // derivation unknown; an empty list declares none.
   if (value.outputs !== undefined) {
-    if (!Array.isArray(value.outputs)) result.errors.push('Ignored “outputs”: “outputs” must be a list of documents.');
+    if (!Array.isArray(value.outputs)) result.errors.push('Ignored “outputs”: “outputs” must be a list of documents or files.');
     else for (const [index, output] of value.outputs.entries()) {
-      const name = typeof output?.filename === 'string' && output.filename.trim() ? output.filename : null;
+      const object = output && typeof output === 'object' && !Array.isArray(output);
+      const file = object && typeof output.path === 'string' && output.path.trim() ? output.path : null;
+      const name = object && typeof output.filename === 'string' && output.filename.trim() ? output.filename
+        : file && output.filename === undefined ? file.split('/').at(-1) : null;
       const label = name ? `“${name}”` : `output ${index + 1}`;
-      if (index >= maxLaneOutputs) { result.errors.push(`Ignored ${label}: a lane result can save up to ${maxLaneOutputs} documents.`); continue; }
-      if (!output || typeof output !== 'object' || Array.isArray(output) || !name) result.errors.push(`Ignored ${label}: each output needs a filename and its exact text.`);
-      else if (output.text === undefined) result.errors.push(`Ignored ${label}: only documents with their exact text in “text” can be saved from a lane result.`);
-      else if (typeof output.text !== 'string' || !output.text.length) result.errors.push(`Ignored ${label}: its text must be non-empty text.`);
+      if (index >= maxLaneOutputs) { result.errors.push(`Ignored ${label}: a lane result can save up to ${maxLaneOutputs} outputs.`); continue; }
+      if (!object || !name) result.errors.push(`Ignored ${label}: each output needs a filename with its exact text, or a workspace file path.`);
+      else if (output.text !== undefined && output.path !== undefined) result.errors.push(`Ignored ${label}: give either its exact “text” or a workspace file “path”, not both.`);
+      else if (output.path !== undefined && !file) result.errors.push(`Ignored ${label}: its “path” must name a file in the card workspace.`);
+      else if (!file && output.text === undefined) result.errors.push(`Ignored ${label}: give a document's exact text in “text”, or a finished file's workspace “path”.`);
+      else if (!file && (typeof output.text !== 'string' || !output.text.length)) result.errors.push(`Ignored ${label}: its text must be non-empty text.`);
       else if (output.sources !== undefined && (!Array.isArray(output.sources) || !output.sources.every((id) => typeof id === 'string'))) result.errors.push(`Ignored ${label}: “sources” must be a list of supplied version IDs.`);
       else {
-        result.outputs.push({ filename: name, text: output.text, sources: output.sources ? [...new Set(output.sources)] : null });
-        // Saving takes only these keys and never places a document in the Library.
-        const extra = Object.keys(output).filter((key) => !['filename', 'text', 'sources'].includes(key));
-        if (extra.length) result.errors.push(`Ignored ${extra.map((key) => `“${key}”`).join(', ')} in ${label}: an output is saved with this card chat from its filename, text and sources only, and only the user can save it to the project Library.`);
+        result.outputs.push({ filename: name, ...(file ? { path: file } : { text: output.text }), sources: output.sources ? [...new Set(output.sources)] : null });
+        // Saving takes only these keys and never places an output in the Library.
+        const keys = ['filename', file ? 'path' : 'text', 'sources'];
+        const extra = Object.keys(output).filter((key) => !keys.includes(key));
+        if (extra.length) result.errors.push(`Ignored ${extra.map((key) => `“${key}”`).join(', ')} in ${label}: an output is saved with this card chat from its filename, ${keys[1]} and sources only, and only the user can save it to the project Library.`);
       }
     }
   }

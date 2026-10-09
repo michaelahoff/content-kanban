@@ -113,25 +113,31 @@ test('a saved document survives Stop, fresh context, workspace changes, archive 
 
 const block = (value) => `Done.\n\n\`\`\`frameboard-result\n${JSON.stringify(value, null, 2)}\n\`\`\``;
 
-test('a lane result may declare inline documents with their source IDs; anything else in outputs is reported, not saved', () => {
+test('a lane result may declare inline documents or workspace files with their source IDs; anything else in outputs is reported, not saved', () => {
   const parsed = parseLaneResult(block({ fields: { intro: 'Hi' }, outputs: [
     { filename: 'script.md', text: '# Script', sources: ['v1', 'v2'] },
     { filename: 'bare.md', text: 'No sources' },
-    { filename: 'render.png', path: 'out/render.png' },
+    { filename: 'render.png', path: 'out/render.png', sources: [] },
+    { path: 'out/cut.mov' },
     { filename: 'empty.md', text: '' },
     { text: 'No name' },
     { filename: 'bad-sources.md', text: 'x', sources: 'v1' },
+    { filename: 'both.md', text: 'x', path: 'both.md' },
+    { filename: 'blank-path.bin', path: ' ' },
   ] }), 'youtube-video');
   assert.deepEqual(parsed.fields, { intro: 'Hi' });
   assert.deepEqual(parsed.outputs, [
     { filename: 'script.md', text: '# Script', sources: ['v1', 'v2'] },
     { filename: 'bare.md', text: 'No sources', sources: null },
+    { filename: 'render.png', path: 'out/render.png', sources: [] },
+    { filename: 'cut.mov', path: 'out/cut.mov', sources: null },
   ]);
-  assert.equal(parsed.errors.length, 4);
-  assert.match(parsed.errors[0], /render\.png.*exact text/);
-  assert.match(parsed.errors[1], /empty\.md/);
-  assert.match(parsed.errors[2], /filename/);
-  assert.match(parsed.errors[3], /bad-sources\.md.*sources/);
+  assert.equal(parsed.errors.length, 5);
+  assert.match(parsed.errors[0], /empty\.md/);
+  assert.match(parsed.errors[1], /filename/);
+  assert.match(parsed.errors[2], /bad-sources\.md.*sources/);
+  assert.match(parsed.errors[3], /both\.md.*not both/);
+  assert.match(parsed.errors[4], /blank-path\.bin.*path/);
   assert.deepEqual(parseLaneResult(block({ notes: 'n' }), 'youtube-video').outputs, []);
   assert.match(parseLaneResult(block({ outputs: { filename: 'x' } }), 'youtube-video').errors[0], /“outputs” must be a list/);
 });
