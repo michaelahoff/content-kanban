@@ -1,12 +1,15 @@
 // Native Claude Code stream-json transport. Initialization lists models without
-// sending a prompt. Card chats keep native sessions and use text/image inputs.
-import { spawn } from 'node:child_process';
+// sending a prompt. Card chats keep native sessions and use text and image
+// inputs, and PDF documents where claude-pdf-gate.js has evidence for the setup.
+import { spawn, execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { imageFormat } from './image-files.js';
+import { fileFormat } from './public/library-format.js';
 import { createNativeBoundary } from './native-boundary.js';
+import { claudePdfRoute, claudePdfEvidence } from './claude-pdf-gate.js';
 
 const error = (kind, message) => Object.assign(new Error(message), { kind });
 // Claude Code reports thinking and text as separate blocks, and its final
@@ -19,7 +22,9 @@ function textOrdinal(counters, messageId, key) {
   return `${messageId}:${entry.keys.get(key)}`;
 }
 const uuid = (value) => /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(value);
-export function createClaudeAdapter({ command = 'claude', args = [], env = process.env, cwd = process.cwd(), timeoutMs = 15000 } = {}) {
+// The account kind, never its identity: only these fields are kept.
+const accountKind = (account) => typeof account?.apiProvider === 'string' ? { apiProvider: account.apiProvider, subscriptionType: typeof account.subscriptionType === 'string' ? account.subscriptionType : null } : null;
+export function createClaudeAdapter({ command = 'claude', args = [], env = process.env, cwd = process.cwd(), timeoutMs = 15000, pdfEvidence = claudePdfEvidence } = {}) {
   const sessions = new Map(); const processes = new Set(); const listeners = new Map();
   const nativeHome = env.CLAUDE_CONFIG_DIR || path.join(homedir(), '.claude');
   let retainedDataDir = null; let boundaryTask = null;
@@ -37,7 +42,8 @@ export function createClaudeAdapter({ command = 'claude', args = [], env = proce
       '--safe-mode', '--tools', '', '--strict-mcp-config', ...(id ? [resume ? '--resume' : '--session-id', id] : []),
       ...(model ? ['--model', model] : []), ...(instructions ? ['--append-system-prompt', instructions] : [])],
     { cwd: work, env, stdio: ['pipe', 'pipe', 'pipe'] });
-    const session = { id, work, child, turnId: null, ended: false, buffer: '', items: new Map(), controls: new Map(), streamed: new Map(), completed: new Map() };
+    // A new session has no native history file until its first turn.
+    const session = { id, work, child, turnId: null, ended: false, unused: !resume, buffer: '', items: new Map(), controls: new Map(), streamed: new Map(), completed: new Map() };
     processes.add(session);
     let resolveInit; let rejectInit;
     const ready = new Promise((resolve, reject) => { resolveInit = resolve; rejectInit = reject; });
@@ -86,18 +92,27 @@ export function createClaudeAdapter({ command = 'claude', args = [], env = proce
           emit(session, { type: 'delta', itemId, delta: event.delta.text });
         }
       } else if (session.turnId && message.type === 'assistant') {
+        // Claude Code reports a document the API rejected as a synthetic error
+        // message, removes it and lets the model answer without it. That reply
+        // would use a subset of the submission, so the turn is stopped and fails.
+        const apiError = message.is_api_error_message && (message.message?.content ?? []).find((block) => block.type === 'text' && /\bdocument\b/i.test(block.text));
+        if (apiError && !session.rejected) {
+          session.rejected = `Claude could not process a PDF in this prompt (it may be damaged, encrypted or over the page limit) and removed it, so the turn was stopped rather than continue without it. Claude Code reported: ${apiError.text}`;
+          emit(session, { type: 'input-rejected', reason: session.rejected });
+          session.control({ subtype: 'interrupt' }).catch(() => {});
+        }
         for (const [index, block] of (message.message?.content ?? []).entries()) if (block.type === 'text') {
           const itemId = textOrdinal(session.completed, message.message.id, `${message.uuid ?? ''}:${index}`);
           emit(session, { type: 'item-completed', item: { id: itemId, type: 'agentMessage', text: block.text } });
         }
       } else if (session.turnId && message.type === 'result') {
-        const status = session.interrupted ? 'interrupted' : message.is_error ? 'failed' : 'completed';
+        const status = session.rejected ? 'failed' : session.interrupted ? 'interrupted' : message.is_error ? 'failed' : 'completed';
         if (message.session_id && message.session_id !== session.id) {
           emit(session, { type: 'target-unavailable', error: error('binding-mismatch', 'Claude returned a different session. Nothing will be resent automatically.') });
         } else {
-          emit(session, { type: 'turn-completed', status, error: message.is_error ? { message: (message.errors ?? [message.result ?? 'Claude could not complete this prompt.']).join(' ') } : undefined });
+          emit(session, { type: 'turn-completed', status, error: session.rejected ? { message: session.rejected } : message.is_error ? { message: (message.errors ?? [message.result ?? 'Claude could not complete this prompt.']).join(' ') } : undefined });
         }
-        session.turnId = null; session.interrupted = false;
+        session.turnId = null; session.interrupted = false; session.rejected = null;
       }
     }
     child.stdout.setEncoding('utf8');
@@ -113,6 +128,10 @@ export function createClaudeAdapter({ command = 'claude', args = [], env = proce
     write({ type: 'control_request', request_id: 'initialize', request: { subtype: 'initialize' } });
     try { session.info = await ready; return session; } catch (cause) { child.kill(); throw cause; }
   }
+  // The installed version, for matching PDF evidence. Inside retained-data
+  // protection no native process runs unconfined, and no evidence applies.
+  const harnessVersion = () => new Promise((resolve) => execFile(command, [...args, '--version'], { env, timeout: timeoutMs },
+    (failure, stdout) => resolve(failure ? null : /^(\d+\.\d+\.\d+)\b/.exec(stdout.trim())?.[1] ?? null)));
   async function stop(session) {
     if (session.ended) return;
     const done = new Promise((resolve) => session.child.once('close', resolve));
@@ -132,7 +151,10 @@ export function createClaudeAdapter({ command = 'claude', args = [], env = proce
       try {
         const models = session.info.models;
         if (!Array.isArray(models) || !models.length) throw error('configuration-unavailable', 'Claude Code returned no available models. Update Claude Code and refresh.');
-        return { cwd: work, harness: { userAgent: 'Claude Code', claudeHome: nativeHome }, models: models.map((model) => ({ id: model.value, displayName: model.displayName ?? model.value, resolvedModel: model.resolvedModel })), items: [], errors: [],
+        const version = retainedDataDir ? null : await harnessVersion(); const account = accountKind(session.info.account);
+        const pdf = (model) => claudePdfRoute({ harness: version, model, account, retainedDataProtection: Boolean(retainedDataDir) }, pdfEvidence);
+        return { cwd: work, harness: { userAgent: 'Claude Code', claudeHome: nativeHome, version, account },
+          models: models.map((model) => ({ id: model.value, displayName: model.displayName ?? model.value, resolvedModel: model.resolvedModel, pdf: pdf(model.resolvedModel ?? model.value) })), items: [], errors: [],
           ...(retainedDataDir ? { protection: { supported: false, reason: 'Retained-data protection for Claude is unproven. Use the verified Codex configuration until a Claude native gate is available.' } } : {}) };
       } finally { await stop(session); }
     },
@@ -170,8 +192,15 @@ export function createClaudeAdapter({ command = 'claude', args = [], env = proce
           if (!['png', 'jpg', 'gif', 'webp'].includes(format)) throw error('configuration-unavailable', 'Claude accepts PNG, JPEG, GIF and WebP references. Remove or convert this reference before sending.');
           content.push({ type: 'image', source: { type: 'base64', media_type: `image/${format === 'jpg' ? 'jpeg' : format}`, data: bytes.toString('base64') } });
         }
+        // Explicit PDF translation: the frozen copy's exact bytes as one base64
+        // document block, never a path for a tool-disabled model to guess at.
+        if (entry.type === 'localDocument') {
+          const bytes = await readFile(entry.path);
+          if (fileFormat(bytes) !== 'pdf') throw error('configuration-unavailable', 'This document is not a PDF, so Claude cannot receive it as one. Nothing was sent.');
+          content.push({ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: bytes.toString('base64') } });
+        }
       }
-      session.turnId = clientUserMessageId; session.items.clear(); session.streamed = new Map(); session.completed = new Map();
+      session.turnId = clientUserMessageId; session.unused = false; session.items.clear(); session.streamed = new Map(); session.completed = new Map();
       session.write({ type: 'user', uuid: clientUserMessageId, session_id: threadId, message: { role: 'user', content }, parent_tool_use_id: null });
       emit(session, { type: 'turn-started' });
       return { turnId: session.turnId };
@@ -187,7 +216,10 @@ export function createClaudeAdapter({ command = 'claude', args = [], env = proce
       const session = sessions.get(threadId);
       if (!session) throw error('native-unavailable', 'Claude native history needs its exact workspace binding.');
       let text;
-      try { text = await readFile(historyPath(session.work, threadId), 'utf8'); } catch (cause) { if (cause.code === 'ENOENT') throw error('native-unavailable', 'Claude session history is unavailable.'); throw cause; }
+      try { text = await readFile(historyPath(session.work, threadId), 'utf8'); } catch (cause) {
+        if (cause.code === 'ENOENT' && session.unused) return { data: [], nextCursor: null };
+        if (cause.code === 'ENOENT') throw error('native-unavailable', 'Claude session history is unavailable.'); throw cause;
+      }
       const turns = []; let turn; const counters = new Map();
       for (const line of text.split('\n').filter(Boolean)) {
         const entry = JSON.parse(line);

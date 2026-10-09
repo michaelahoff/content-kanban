@@ -1,0 +1,134 @@
+[
+  {
+    "harness": "2.1.291",
+    "model": "claude-sonnet-5-5",
+    "account": {
+      "apiProvider": "firstParty",
+      "subscriptionType": "Claude Pro"
+    },
+    "retainedDataProtection": false,
+    "pages": 600,
+    "checked": "2026-10-09",
+    "result": "Read both page codes from a two-page PDF document; an unprocessable PDF failed the turn."
+  },
+  {
+    "harness": "2.1.291",
+    "model": "claude-opus-5-5",
+    "account": {
+      "apiProvider": "firstParty",
+      "subscriptionType": "Claude Pro"
+    },
+    "retainedDataProtection": false,
+    "pages": 600,
+    "checked": "2026-10-09",
+    "result": "Read both page codes from a two-page PDF document; an unprocessable PDF failed the turn."
+  },
+  {
+    "harness": "2.1.291",
+    "model": "claude-fable-5-1",
+    "account": {
+      "apiProvider": "firstParty",
+      "subscriptionType": "Claude Pro"
+    },
+    "retainedDataProtection": false,
+    "pages": 600,
+    "checked": "2026-10-09",
+    "result": "Read both page codes from a two-page PDF document; an unprocessable PDF failed the turn."
+  },
+  {
+    "harness": "2.1.291",
+    "model": "claude-haiku-4-5-20251001",
+    "account": {
+      "apiProvider": "firstParty",
+      "subscriptionType": "Claude Pro"
+    },
+    "retainedDataProtection": false,
+    "pages": 100,
+    "checked": "2026-10-09",
+    "result": "Read both page codes from a two-page PDF document; an unprocessable PDF failed the turn."
+  },
+  {
+    "harness": "2.1.291",
+    "model": "claude-sonnet-5",
+    "account": {
+      "apiProvider": "firstParty",
+      "subscriptionType": "Claude Pro"
+    },
+    "retainedDataProtection": false,
+    "pages": 600,
+    "checked": "2026-10-09",
+    "result": "Read both page codes from a two-page PDF document; an unprocessable PDF failed the turn."
+  },
+  {
+    "harness": "2.1.291",
+    "model": "claude-opus-5",
+    "account": {
+      "apiProvider": "firstParty",
+      "subscriptionType": "Claude Pro"
+    },
+    "retainedDataProtection": false,
+    "pages": 600,
+    "checked": "2026-10-09",
+    "result": "Read both page codes from a two-page PDF document; an unprocessable PDF failed the turn."
+  },
+  {
+    "harness": "2.1.291",
+    "model": "claude-fable-5",
+    "account": {
+      "apiProvider": "firstParty",
+      "subscriptionType": "Claude Pro"
+    },
+    "retainedDataProtection": false,
+    "pages": 600,
+    "checked": "2026-10-09",
+    "result": "Read both page codes from a two-page PDF document; an unprocessable PDF failed the turn."
+  },
+  {
+    "harness": "2.1.291",
+    "model": "claude-opus-4-8",
+    "account": {
+      "apiProvider": "firstParty",
+      "subscriptionType": "Claude Pro"
+    },
+    "retainedDataProtection": false,
+    "pages": 600,
+    "checked": "2026-10-09",
+    "result": "Read both page codes from a two-page PDF document; an unprocessable PDF failed the turn."
+  },
+  {
+    "harness": "2.1.291",
+    "model": "claude-opus-4-7",
+    "account": {
+      "apiProvider": "firstParty",
+      "subscriptionType": "Claude Pro"
+    },
+    "retainedDataProtection": false,
+    "pages": 600,
+    "checked": "2026-10-09",
+    "result": "Read both page codes from a two-page PDF document; an unprocessable PDF failed the turn."
+  },
+  {
+    "harness": "2.1.291",
+    "model": "claude-opus-4-6",
+    "account": {
+      "apiProvider": "firstParty",
+      "subscriptionType": "Claude Pro"
+    },
+    "retainedDataProtection": false,
+    "pages": 600,
+    "checked": "2026-10-09",
+    "result": "Read both page codes from a two-page PDF document; an unprocessable PDF failed the turn."
+  },
+  {
+    "harness": "2.1.291",
+    "model": "claude-sonnet-4-6",
+    "account": {
+      "apiProvider": "firstParty",
+      "subscriptionType": "Claude Pro"
+    },
+    "retainedDataProtection": false,
+    "pages": 600,
+    "checked": "2026-10-09",
+    "result": "Read both page codes from a two-page PDF document; an unprocessable PDF failed the turn."
+  }
+]

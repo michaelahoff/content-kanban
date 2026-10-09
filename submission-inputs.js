@@ -11,7 +11,7 @@ export const limits = {
   // Frameboard's reference limit for every native image route.
   imageBytes: maxImageBytes,
   // Claude's documented per-image, per-request image and request size limits.
-  // Images travel base64 encoded, a third larger than their bytes.
+  // Images and PDFs travel base64 encoded, a third larger than their bytes.
   claudeImageBytes: 5 * MiB, claudeImages: 100, claudeRequestBytes: 32 * MiB,
   // No current Codex or Claude model accepts more than a million tokens, and
   // no tokenizer averages more than eight bytes per token: above this the
@@ -22,9 +22,10 @@ export const limits = {
 };
 const megabytes = (bytes) => `${Math.round(bytes / MiB)} MB`;
 
-// Routes with no evidence for the installed harnesses stay unavailable.
-const claudeFileReason = (item) => ({
-  PDF: `Claude PDF delivery is not enabled in Frameboard, and Claude chats have no file tools, so ${item.label} cannot be delivered. Remove it, or send it to Codex.`,
+// Routes with no evidence for the installed harnesses stay unavailable. A
+// Claude model's PDF route comes from its discovery (claude-pdf-gate.js).
+const claudeFileReason = (item, model) => ({
+  PDF: `Claude PDF delivery is not enabled here: ${model?.pdf?.reason ?? 'refresh models in Settings to check this setup.'} Claude chats have no file tools, so ${item.label} cannot be delivered. Remove it, or send it to Codex.`,
   audio: `Claude card chats take no audio input and have no file tools, so ${item.label} cannot be delivered. Remove it, supply a transcript, or send it to Codex.`,
   video: `Claude card chats take no video input and have no file tools, so ${item.label} cannot be delivered. Remove it, supply stills or a transcript, or send it to Codex.`,
   'audio or video': `Claude card chats take no audio or video input and have no file tools, so ${item.label} cannot be delivered. Remove it, supply a transcript, or send it to Codex.`,
@@ -37,7 +38,8 @@ export const noShellTool = 'This Codex setup has its shell tool turned off (feat
 // items: [{ key, label, kind: 'text' | 'image' | 'file', format?, size }] in
 // delivery order. textBytes counts the prompt and card text sent with them.
 // A model that reports its input modalities is held to them; otherwise the
-// provider decides. shellTool is false when the Codex setup cannot read a
+// provider decides. A Claude model sends PDFs as native documents only when
+// its discovered `pdf` route is available. shellTool is false when the Codex setup cannot read a
 // workspace copy.
 export function planInputs(provider, items, { textBytes, model = null, shellTool = true }) {
   const claude = provider === 'claude';
@@ -52,17 +54,21 @@ export function planInputs(provider, items, { textBytes, model = null, shellTool
       else if (claude && item.size > limits.claudeImageBytes) refuse(item, `${item.label} is larger than ${megabytes(limits.claudeImageBytes)}, Claude's image limit.`);
       return { ...item, method: 'image' };
     }
+    if (claude && item.format === 'pdf' && model?.pdf?.available) return { ...item, method: 'document' };
     if (claude && item.format === 'text') refuse(item, `${item.label} is too much text to send inline, and Claude chats have no file tools to read it. Remove it, or send it to Codex.`);
-    else if (claude) refuse(item, claudeFileReason(item), 'capability');
+    else if (claude) refuse(item, claudeFileReason(item, model), 'capability');
     else if (!shellTool) refuse(item, `${noShellTool}, or remove ${item.label}.`, 'capability');
     return { ...item, method: 'copy' };
   });
   const images = inputs.filter((input) => input.method === 'image').length;
   if (claude && images > limits.claudeImages) refuse(null, `Claude accepts up to ${limits.claudeImages} images in one request; this one has ${images}. Remove some references.`);
   const text = textBytes + inputs.filter((input) => input.method === 'text').reduce((sum, input) => sum + input.size, 0);
-  const encoded = text + inputs.filter((input) => input.method === 'image').reduce((sum, input) => sum + Math.ceil(input.size / 3) * 4, 0);
-  if (claude && encoded > limits.claudeRequestBytes) refuse(null, `This request is about ${megabytes(encoded)} once images are encoded, more than Claude's ${megabytes(limits.claudeRequestBytes)} request limit. Remove some references.`);
+  const encoded = text + inputs.filter((input) => ['image', 'document'].includes(input.method)).reduce((sum, input) => sum + Math.ceil(input.size / 3) * 4, 0);
+  if (claude && encoded > limits.claudeRequestBytes) refuse(null, `This request is about ${megabytes(encoded)} once images and PDFs are encoded, more than Claude's ${megabytes(limits.claudeRequestBytes)} request limit. Remove some references.`);
   if (text > limits.certainTextBytes) refuse(null, `This request has ${megabytes(text)} of text, more than any model accepts. Remove some Library text.`);
   else if (text > limits.warnTextBytes) warnings.push(`This request has about ${Math.ceil(text / 4).toLocaleString('en-US')} tokens of text, which may exceed the model's context. Frameboard cannot check this model's limit, so the provider decides.`);
+  // A PDF's pages and tokens cannot be counted without parsing it, which
+  // Frameboard does not do; Claude decides, and may remove a PDF it rejects.
+  if (inputs.some((input) => input.method === 'document')) warnings.push(`Frameboard cannot count PDF pages or estimate their tokens. Claude accepts up to ${model.pdf.pages} pages per request with this model; the provider decides.`);
   return { inputs, problems, warnings };
 }

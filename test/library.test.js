@@ -42,6 +42,7 @@ test('a frozen selection is summarized in order with each folder\'s file count, 
 test('delivery descriptions name the route and the recognized format without claiming comprehension', () => {
   assert.equal(deliveryDescription({ method: 'text' }), 'full text inline');
   assert.equal(deliveryDescription({ method: 'image', format: 'png' }), 'native image');
+  assert.equal(deliveryDescription({ method: 'document', format: 'pdf' }), 'PDF · native Claude document');
   assert.equal(deliveryDescription({ method: 'copy', format: 'pdf' }), 'PDF · workspace copy for Codex tools');
   assert.equal(deliveryDescription({ method: 'copy', format: 'matroska' }), 'Matroska video · workspace copy for Codex tools');
   assert.equal(deliveryDescription({ method: 'copy', format: 'text' }), 'large text · workspace copy for Codex tools');

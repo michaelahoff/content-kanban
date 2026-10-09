@@ -137,16 +137,16 @@ export function createChatService({ store, adapter, adapters = { codex: adapter 
     },
     // Everything one delivery attempt sends besides its text: the card's image
     // references, then verified Library inputs (inline text, and independent
-    // workspace copies rebuilt from the frozen versions). A Library original
-    // that cannot be delivered stops the attempt, recording what happened to
-    // each input.
+    // workspace copies rebuilt from the frozen versions, attached as native
+    // images or Claude PDF documents). A Library original that cannot be
+    // delivered stops the attempt, recording what happened to each input.
     async deliveryInputs(ctx, submission) {
       const library = submission.context.library ?? [];
       const delivery = [...submission.context.images.map((image) => ({ imageId: image.id, filename: image.name, method: 'image' })),
-        ...library.map((file) => ({ versionId: file.versionId, filename: file.filename, method: file.method, ...(file.method === 'copy' ? { format: file.format } : {}) }))];
+        ...library.map((file) => ({ versionId: file.versionId, filename: file.filename, method: file.method, ...(['copy', 'document'].includes(file.method) ? { format: file.format } : {}) }))];
       const stopped = (failed, reason) => delivery.map((entry) => ({ ...entry, status: entry === failed ? 'failed' : 'not-sent', reason }));
-      let images;
-      try { images = await this.references(submission); }
+      let attachments;
+      try { attachments = await this.references(submission); }
       catch (error) { throw Object.assign(error, { delivery: stopped(null, error.message) }); }
       const texts = new Map();
       for (const [index, file] of library.entries()) {
@@ -154,23 +154,27 @@ export function createChatService({ store, adapter, adapters = { codex: adapter 
           if (file.method === 'text') texts.set(file.versionId, await store.library.text(ctx, file.projectId, file.versionId));
           else {
             const copy = await store.library.materialize(ctx, file.projectId, file.versionId, workspace(submission.cardId), file.path);
-            if (file.method === 'image') images.push({ type: 'localImage', path: copy.path });
+            if (file.method === 'image') attachments.push({ type: 'localImage', path: copy.path });
+            if (file.method === 'document') attachments.push({ type: 'localDocument', path: copy.path });
           }
         } catch (error) {
           throw Object.assign(new Error(`${file.filename} version ${file.versionId} could not be delivered: ${error.message} Repair it with its exact original bytes if it is damaged, then Retry.`), { kind: 'input-unavailable',
             delivery: stopped(delivery[submission.context.images.length + index], error.message) });
         }
       }
-      return { texts, images, delivery };
+      return { texts, attachments, delivery };
     },
-    // Immediately before sending: a frozen workspace copy needs the actual
-    // target's shell tool to be read. Without it the attempt stops, naming each
-    // such file, rather than sending its path for nothing to read.
+    // Immediately before sending, each frozen route must still exist on the
+    // actual target: a workspace copy needs Codex's shell tool, and a PDF needs
+    // the Claude model's evidence-backed route. Without it the attempt stops,
+    // naming each such file, rather than sending a path or a subset.
     assertRoutes(submission, discovery, delivery) {
-      if (submission.provider !== 'codex' || hasShellTool(discovery)) return;
-      const stranded = (submission.context.library ?? []).filter((file) => file.method === 'copy');
+      const library = submission.context.library ?? [];
+      const pdf = discovery.models?.find((model) => model.id === submission.model)?.pdf;
+      const [method, reason] = submission.provider === 'codex' ? ['copy', hasShellTool(discovery) ? null : `${noShellTool}, then Retry.`]
+        : ['document', pdf?.available ? null : `Claude PDF delivery is not enabled here: ${pdf?.reason ?? 'this Claude setup reported no PDF route.'} Use the checked setup, then Retry.`];
+      const stranded = reason ? library.filter((file) => file.method === method) : [];
       if (!stranded.length) return;
-      const reason = `${noShellTool}, then Retry.`;
       const names = new Set(stranded.map((file) => file.versionId));
       throw Object.assign(new Error(`${stranded.map((file) => file.filename).join(', ')} could not be delivered. ${reason}`), { kind: 'input-unavailable',
         delivery: delivery.map((entry) => ({ ...entry, status: names.has(entry.versionId) ? 'failed' : 'not-sent', reason })) });

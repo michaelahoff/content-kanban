@@ -210,11 +210,12 @@ test('a folder or member renamed or moved while Send reads it is refused, never 
   assert.equal(store.chats.snapshot(ctx, card.id).submissions.length, 0, 'nothing was queued');
 });
 
-async function claudeFixture(t) {
+async function claudeFixture(t, extra = {}) {
   const home = await mkdtemp(path.join(tmpdir(), 'frameboard-claude-'));
   t.after(() => rm(home, { recursive: true, force: true }));
-  const options = { command: process.execPath, args: [fileURLToPath(new URL('./support/fake-claude.js', import.meta.url))], env: { ...process.env, CLAUDE_CONFIG_DIR: home } };
-  const f = await libraryFixture(t, { claudeAdapter: { ...createClaudeAdapter(options), protectRetainedData: undefined } });
+  const options = { command: process.execPath, args: [fileURLToPath(new URL('./support/fake-claude.js', import.meta.url))], env: { ...process.env, CLAUDE_CONFIG_DIR: home }, ...extra };
+  const claude = { ...createClaudeAdapter(options), protectRetainedData: undefined };
+  const f = await libraryFixture(t, { claudeAdapter: claude });
   const settings = await f.ok('GET', '/api/providers/claude');
   await f.ok('PUT', '/api/providers/claude', { revision: settings.revision, selection: { ...settings.selection, enabled: true } });
   // The exact content blocks Claude Code recorded for the first user turn.
@@ -224,7 +225,7 @@ async function claudeFixture(t) {
     const history = await readFile(path.join(home, 'projects', work.replace(/[^a-zA-Z0-9]/g, '-'), `${binding.threadId}.jsonl`), 'utf8');
     return history.trim().split('\n').map((line) => JSON.parse(line)).find((entry) => entry.type === 'user').message.content;
   };
-  return { ...f, sent };
+  return { ...f, sent, claude };
 }
 
 test('tool-disabled Claude receives the actual Library text and image contents inline', async (t) => {
@@ -259,6 +260,61 @@ test('Claude refuses a tool-only file or an unsupported card image for the whole
   assert.equal(refused.status, 409);
   assert.deepEqual(refused.body.problems.map(({ key }) => key), [`image:${avif.id}`]);
   assert.equal((await f.chat(withImage.id)).submissions.length, 0);
+});
+
+// A passing PDF check recorded for the fixture's Claude Code, Sonnet and account.
+const fixturePdfEvidence = [{ harness: '2.1.291', model: 'claude-fixture-sonnet', account: { apiProvider: 'firstParty', subscriptionType: 'Claude Pro' }, retainedDataProtection: false, pages: 600, checked: '2026-10-08' }];
+// Like real PDFs, a binary marker line follows the header, so it is not UTF-8 text.
+const briefPdf = Buffer.from('%PDF-1.7\n%\xe2\xe3\xcf\xd3\n1 0 obj\n<< /Type /Catalog >>\nendobj\n%%EOF\n', 'latin1');
+
+test('Claude receives a selected PDF as a native document where recorded evidence enables its route, freezing that representation and its delivery', async (t) => {
+  const f = await claudeFixture(t, { pdfEvidence: fixturePdfEvidence }); const card = await f.card();
+  const script = await f.upload('script.md', Buffer.from('Usable text'));
+  const pdf = await f.upload('brief.pdf', briefPdf);
+  const submission = await f.queue(card.id, await f.select(card.id, 'Summarize the brief', [asset(script), asset(pdf)], { provider: 'claude', model: 'sonnet' }));
+  assert.deepEqual(submission.context.library.map(({ filename, method, format, hash }) => ({ filename, method, format, hash })),
+    [{ filename: 'script.md', method: 'text', format: 'utf-8', hash: sha256(Buffer.from('Usable text')) }, { filename: 'brief.pdf', method: 'document', format: 'pdf', hash: sha256(briefPdf) }]);
+  assert.match(submission.context.warnings.join(' '), /cannot count PDF pages/);
+  await waitFor(async () => (await f.chat(card.id)).submissions[0]?.status === 'completed');
+  const content = await f.sent(card);
+  assert.deepEqual(content.map((block) => block.type), ['text', 'document']);
+  assert.ok(content[0].text.includes('Usable text'));
+  assert.deepEqual(Buffer.from(content[1].source.data, 'base64'), briefPdf, 'the exact retained bytes, not a path');
+  assert.ok(!content[0].text.includes('references/library'), 'no bare path is offered in place of the document');
+  const [attempt] = (await f.chat(card.id)).attempts;
+  assert.deepEqual(attempt.delivery.map(({ filename, method, status }) => [filename, method, status]), [['script.md', 'text', 'sent'], ['brief.pdf', 'document', 'sent']]);
+});
+
+test('a PDF Claude removes as unprocessable fails the attempt and is recorded as rejected, never as a completed reply without it', async (t) => {
+  const f = await claudeFixture(t, { pdfEvidence: fixturePdfEvidence }); const card = await f.card();
+  const script = await f.upload('script.md', Buffer.from('Usable text'));
+  const pdf = await f.upload('broken.pdf', Buffer.concat([briefPdf, Buffer.from('unprocessable')]));
+  const submission = await f.queue(card.id, await f.select(card.id, 'Summarize the brief', [asset(script), asset(pdf)], { provider: 'claude', model: 'sonnet' }));
+  const failed = await waitFor(async () => (await f.chat(card.id)).submissions.find((row) => row.id === submission.id && row.status === 'failed'));
+  assert.match(failed.reason, /could not process a PDF/);
+  const delivery = (await f.chat(card.id)).attempts.at(-1).delivery;
+  assert.deepEqual(delivery.map(({ filename, status }) => [filename, status]), [['script.md', 'sent'], ['broken.pdf', 'failed']]);
+  assert.match(delivery[1].reason, /removed it/);
+});
+
+test('an attempt whose Claude PDF route is gone by delivery fails naming the PDF and sends nothing; Retry delivers the frozen PDF once it is back', async (t) => {
+  const evidence = [...fixturePdfEvidence];
+  const f = await claudeFixture(t, { pdfEvidence: evidence }); const card = await f.card();
+  const script = await f.upload('script.md', Buffer.from('Usable text'));
+  const pdf = await f.upload('brief.pdf', briefPdf);
+  const openThread = f.claude.openThread; let open; const gate = new Promise((resolve) => { open = resolve; });
+  f.claude.openThread = async (input) => { await gate; return openThread(input); };
+  const submission = await f.queue(card.id, await f.select(card.id, 'Summarize the brief', [asset(script), asset(pdf)], { provider: 'claude', model: 'sonnet' }));
+  evidence.length = 0; open();
+  const failed = await waitFor(async () => (await f.chat(card.id)).submissions.find((row) => row.id === submission.id && row.status === 'failed'));
+  assert.match(failed.reason, /brief\.pdf/);
+  assert.match(failed.reason, /No passing PDF check is recorded/);
+  assert.deepEqual((await f.chat(card.id)).attempts.at(-1).delivery.map(({ filename, status }) => [filename, status]), [['script.md', 'not-sent'], ['brief.pdf', 'failed']]);
+  evidence.push(...fixturePdfEvidence);
+  await f.ok('POST', `/api/cards/${card.id}/chat/retry`, { submissionId: submission.id });
+  await waitFor(async () => (await f.chat(card.id)).submissions[0]?.status === 'completed');
+  const content = await f.sent(card);
+  assert.deepEqual(Buffer.from(content[1].source.data, 'base64'), briefPdf, 'the first turn Claude received is the retried whole submission');
 });
 
 test('export and restore keep manual Library selections and frozen submissions with their expanded folder membership, and refuse a frozen reference to a missing version', async (t) => {

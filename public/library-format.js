@@ -127,10 +127,12 @@ export function fileFormat(bytes) {
 }
 
 // How a selected file reaches its target, as previews and history describe it.
-// A workspace copy is only made available to Codex's tools.
+// A workspace copy is only made available to Codex's tools; a document is a
+// PDF sent to Claude as its own content block.
 export function deliveryDescription(entry) {
   if (entry.method === 'text') return 'full text inline';
   if (entry.method === 'image') return 'native image';
+  if (entry.method === 'document') return 'PDF · native Claude document';
   const name = entry.format === 'text' ? 'large text' : fileFormats[entry.format]?.name ?? (entry.format ? entry.format.toUpperCase() : null);
   return `${name ? `${name} · ` : ''}workspace copy for Codex tools`;
 }
