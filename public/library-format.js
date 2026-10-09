@@ -2,6 +2,10 @@
 // A filename is the asset's label, never a filesystem path.
 // A selected Library source's identity, such as asset:<id>.
 export const sourceKey = (source) => `${source.kind}:${source.id}`;
+export function parseSourceKey(key) {
+  const [, kind, id] = /^(asset|folder):(.+)$/s.exec(key) ?? [];
+  return kind ? { kind, id } : null;
+}
 const invalid = (message) => { throw Object.assign(new Error(message), { status: 400 }); };
 
 export function libraryFilename(value, noun = 'file') {
@@ -134,3 +138,11 @@ export function deliveryDescription(entry) {
 // file itself, or a folder (by its captured path) that contained it.
 export const selectionPaths = (sources) => sources.map((source) => source.kind === 'folder'
   ? `in ${source.folderPath ? `selected folder ${source.folderPath}` : 'a selected folder'} as ${source.relativePath}` : 'selected directly');
+// A frozen selection in order, each folder with how many files it contributed.
+export function selectionSummary(selections, files) {
+  return selections.map((selection) => {
+    if (selection.kind !== 'folder') return selection.path;
+    const count = files.filter((file) => file.sources.some((source) => source.kind === 'folder' && source.id === selection.id)).length;
+    return `${selection.path} · ${count ? `${count} file${count === 1 ? '' : 's'}` : 'no files'}`;
+  });
+}

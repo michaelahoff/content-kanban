@@ -8,8 +8,9 @@ import { sourceKey } from './public/library-format.js';
 import { planInputs, hasShellTool, noShellTool } from './submission-inputs.js';
 
 const fail = (status, message) => { throw Object.assign(new Error(message), { status }); };
-// What a resolution captures for each file: identity, version, label and every selecting source.
-const membership = (files) => JSON.stringify(files.map(({ assetId, versionId, libraryPath, sources }) => [assetId, versionId, libraryPath, sources]));
+// What a resolution captures: the selections with their paths, and each
+// file's identity, version, label and every selecting source.
+const membershipKey = (files, selections) => JSON.stringify([selections, files.map(({ assetId, versionId, libraryPath, sources }) => [assetId, versionId, libraryPath, sources])]);
 const problemMessage = (problems) => `Not sent. ${problems.map((problem) => `${problem.label}: ${problem.reason}`).join(' ')}`;
 export function createChatService({ store, adapter, adapters = { codex: adapter }, providers, dataDir }) {
   const workspace = (cardId) => path.resolve(dataDir, 'workspaces', cardId);
@@ -17,7 +18,7 @@ export function createChatService({ store, adapter, adapters = { codex: adapter 
     let bytes;
     try { bytes = await readFile(path.join(dataDir, 'images', image.id)); }
     catch (error) { if (error.code === 'ENOENT') fail(409, `The reference ${image.name} is missing. Review the selected image versions.`); throw error; }
-    if (bytes.length > maxImageBytes) fail(409, 'The selected reference exceeds 20 MB.');
+    if (bytes.length > maxImageBytes) throw Object.assign(new Error('The selected reference exceeds 20 MB.'), { status: 409, phase: 'limit' });
     const recorded = store.images.version(image.id)?.hash;
     if (recorded && hash(bytes) !== recorded) fail(409, `The reference ${image.name} is damaged. Its bytes differ from the stored version.`);
     if (image.hash && hash(bytes) !== image.hash) fail(409, `The reference ${image.name} is damaged. Its bytes differ from the frozen version.`);
@@ -53,13 +54,17 @@ export function createChatService({ store, adapter, adapters = { codex: adapter 
       const captured = store.chats.context(ctx, cardId);
       discovery ??= store.providerCatalog(ctx, captured.provider).discovery;
       const models = discovery?.models ?? [];
-      const items = [];
+      const items = []; const imageProblems = [];
       for (const image of captured.context.images) {
-        const bytes = await imageBytes(image);
+        const key = `image:${image.id}`; const label = `${image.labels.join(', ')}: ${image.name}`;
+        let bytes;
+        try { bytes = await imageBytes(image); }
+        catch (error) { if (error.status !== 409) throw error; imageProblems.push({ key, label, phase: error.phase ?? 'integrity', reason: error.message }); continue; }
         image.hash = hash(bytes);
-        items.push({ key: `image:${image.id}`, label: `${image.labels.join(', ')}: ${image.name}`, kind: 'image', format: imageFormat(bytes), size: bytes.length });
+        items.push({ key, label, kind: 'image', format: imageFormat(bytes), size: bytes.length });
       }
-      const { files, problems } = store.library.resolve(ctx, captured.projectId, captured.librarySelections);
+      const resolved = store.library.resolve(ctx, captured.projectId, captured.librarySelections);
+      const { files, selections } = resolved; const problems = [...imageProblems, ...resolved.problems];
       const library = [];
       for (const file of files) {
         const key = sourceKey({ kind: 'asset', id: file.assetId });
@@ -72,6 +77,7 @@ export function createChatService({ store, adapter, adapters = { codex: adapter 
       const textBytes = Buffer.byteLength(captured.prompt) + captured.context.fields.reduce((sum, field) => sum + Buffer.byteLength(String(field.value ?? '')), 0);
       const plan = planInputs(captured.provider, [...items, ...library], { textBytes, model: models.find((model) => model.id === captured.model), shellTool: hasShellTool(discovery) });
       captured.context.library = plan.inputs.slice(items.length).map(({ key, label, ...file }) => ({ ...file, ...(file.method === 'text' ? {} : { path: store.library.copyPath(file) }) }));
+      captured.context.librarySelections = selections;
       captured.context.warnings = plan.warnings;
       captured.problems = [...problems, ...plan.problems];
       return captured;
@@ -110,7 +116,7 @@ export function createChatService({ store, adapter, adapters = { codex: adapter 
       // renamed, moved, added or removed while preflight read it is never sent
       // with stale versions, labels or folder membership.
       const current = store.library.resolve(ctx, captured.projectId, store.chats.context(ctx, cardId).librarySelections);
-      if (current.problems.length || membership(current.files) !== membership(captured.context.library)) fail(409, 'A selected Library file changed while preparing Send. Review and send again.');
+      if (current.problems.length || membershipKey(current.files, current.selections) !== membershipKey(captured.context.library, captured.context.librarySelections)) fail(409, 'A selected Library file changed while preparing Send. Review and send again.');
       return store.chats.queue(ctx, cardId, input, captured, compileConfiguration(settings.selection, discovery, cardTools, captured.provider));
     },
     // A lane run's frozen submission: the playbook's prompt, selections and

@@ -1097,6 +1097,7 @@ These values apply when a card enters this lane.
   await waitFor(`document.querySelector('#chat-exact-preview .chat-library-inputs')?.textContent.includes('full text inline')`);
   await waitFor(`document.querySelector('#chat-exact-preview .chat-library-inputs')?.textContent.includes('workspace copy for Codex tools')`);
   assert.ok(await evaluate(`document.querySelector('#chat-exact-preview').textContent.includes('only with its shell tool')`), 'The preview says how a copy can be read and claims no comprehension.');
+  assert.ok(await evaluate(`document.querySelector('#chat-exact-preview').textContent.includes('Next episode/ · no files')`), 'The preview lists the selection in order, showing that the empty folder adds no files.');
   await snapshot('chat-library-selection');
   await select('#chat-model', 'test-model'); await fill('#chat-prompt', 'Tighten the hook using the script');
   await click('[data-action="chat-send"]');
@@ -1107,12 +1108,18 @@ These values apply when a card enters this lane.
   await waitFor(`document.querySelector('.chat-delivery')?.textContent.includes('script.md · full text inline · sent')`);
   assert.ok(await evaluate(`document.querySelector('.chat-delivery').textContent.includes('opaque.bin · workspace copy for Codex tools · sent')`), 'History names the copy route per attempt.');
   assert.ok(await evaluate(`document.querySelector('.chat-library ol')?.textContent.includes('script.md')`), 'An ordinary message keeps the selection.');
+  assert.ok(await evaluate(`document.querySelector('#chat-transcript').textContent.includes('Next episode/ · no files')`), 'Submitted context keeps the frozen selection, including the empty folder.');
   // Drag a folder from the picker onto the composer: it overlaps the selected script, which is previewed once with both selection paths.
   const thumbnailsFolder = await api('POST', `/api/projects/${chatProject.id}/library/folders`, { name: 'Thumbnails' });
   const libraryListing = await api('GET', `/api/projects/${chatProject.id}/library`);
   await api('PATCH', `/api/projects/${chatProject.id}/library/assets/${libraryListing.assets.find((entry) => entry.filename === 'script.md' && !entry.folderId).id}`, { folderId: thumbnailsFolder.id });
   await click('[data-action="chat-library-add"]');
   await waitFor(`!!document.querySelector('#small-form [data-library-source="folder:${thumbnailsFolder.id}"]')`);
+  // A drag that ends before the picker lifts leaves the picker as it was.
+  await evaluate(`(() => { const entry = document.querySelector('#small-form [data-library-source]'); const dataTransfer = new DataTransfer();
+    for (const type of ['dragstart', 'dragend']) entry.dispatchEvent(new DragEvent(type, { bubbles: true, dataTransfer })); })()`);
+  await pause(60);
+  assert.ok(await evaluate(`document.querySelector('#form-dialog').matches(':modal:not(.lifted)')`), 'A cancelled drag never strands the picker lifted.');
   const dragPoints = await evaluate(`(() => {
     const a = document.querySelector('#small-form [data-library-source="folder:${thumbnailsFolder.id}"]').getBoundingClientRect();
     const zone = document.querySelector('.chat-library'); zone.scrollIntoView({ block: 'center' });

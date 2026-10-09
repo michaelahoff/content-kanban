@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdir, writeFile, chmod, symlink, rm } from 'node:fs/promises';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { fixture, waitFor } from './support/chat-fixture.js';
 
@@ -51,9 +51,12 @@ test('uploads and chat versions share the hashed store; serving and references r
   await tamper(path.join(f.dataDir, 'images', upload.id), Buffer.concat([png, Buffer.from('tampered')]));
   const served = await f.raw(`/images/${upload.id}`);
   assert.equal(served.status, 409); assert.match((await served.json()).error, /damaged/);
-  await f.compose(card.id);
-  const preview = await f.call('POST', `/api/cards/${card.id}/chat/preview`, {});
-  assert.equal(preview.status, 409); assert.match(preview.body.error, /damaged/);
+  const composer = await f.compose(card.id);
+  // Preflight reports the damaged reference with any other problems; Send refuses it.
+  const preview = await f.ok('POST', `/api/cards/${card.id}/chat/preview`, {});
+  assert.deepEqual(preview.problems.map(({ key, phase }) => [key, phase]), [[`image:${upload.id}`, 'integrity']]); assert.match(preview.problems[0].reason, /damaged/);
+  const sent = await f.call('POST', `/api/cards/${card.id}/chat/submissions`, { id: randomUUID(), composerRevision: composer.revision });
+  assert.equal(sent.status, 409); assert.match(sent.body.error, /damaged/);
 });
 
 test('multiple outputs adopt independently and idempotently without filling Display; roles change separately', async (t) => {

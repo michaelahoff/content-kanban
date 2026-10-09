@@ -4,7 +4,7 @@ import { state, locateCard, flushCards, saveStatus, refreshSavedCard } from './s
 import { contextFields } from './chat-context.js';
 import { attemptMarkup, progressState, runningStatuses } from './chat-transcript.js';
 import { formatSize } from './library.js';
-import { comparePaths, deliveryDescription, libraryPaths, selectionPaths, sourceKey } from './library-format.js';
+import { comparePaths, deliveryDescription, libraryPaths, parseSourceKey, selectionPaths, selectionSummary, sourceKey } from './library-format.js';
 
 const chats = new Map();
 // Each project's Library files and folders, for naming manual selections and the picker.
@@ -223,7 +223,7 @@ function pickLibraryFiles(item) {
     ].filter((entry) => !chosen.has(sourceKey(entry.source))).sort((a, b) => comparePaths(a.label, b.label));
     smallForm({ title: 'Add Library files', description: available.length ? 'Check files and folders, or drag one onto the prompt. They are sent as reference material, in the order chosen.' : 'Everything in the Library is already selected, or the Library is empty.',
       fields: `<div class="chat-library-picker">${available.map((entry) => `<label draggable="true" data-library-source="${escape(sourceKey(entry.source))}"><input type="checkbox" name="source" value="${escape(sourceKey(entry.source))}">${escape(entry.label)} <small>${escape(entry.detail)}</small></label>`).join('')}</div>`,
-      submit: 'Add', onSubmit: async (data) => addLibrarySources(item, data.getAll('source').map((key) => available.find((entry) => sourceKey(entry.source) === key).source)) });
+      submit: 'Add', onSubmit: async (data) => addLibrarySources(item, data.getAll('source').map(parseSourceKey)) });
   }, (error) => showError(item, error));
 }
 // Chosen sources join the end of the ordered selection; one already chosen keeps its place.
@@ -238,19 +238,21 @@ function addLibrarySources(item, sources) {
 // picker lifts out of the way during the drag so the composer can take the drop.
 const libraryDragType = 'application/x-frameboard-library-source';
 const liftedPicker = () => document.querySelector('dialog.lifted');
+// Returns the picker to how it was before the drag.
+function restorePicker() {
+  const picker = liftedPicker(); if (!picker) return;
+  picker.classList.remove('lifted'); picker.close(); picker.showModal();
+}
 function dragLibrarySources() {
+  let lifting = null;
   document.addEventListener('dragstart', (event) => {
-    const entry = event.target.closest?.('[data-library-source]'); if (!entry) return;
+    const entry = event.target.closest?.('[data-library-source]'); const picker = entry?.closest('dialog'); if (!picker) return;
     event.dataTransfer.setData(libraryDragType, entry.dataset.librarySource);
     event.dataTransfer.effectAllowed = 'copy';
     // Closing the modal in dragstart itself would cancel the drag.
-    const picker = entry.closest('dialog');
-    setTimeout(() => { if (!picker.open) return; picker.close(); picker.classList.add('lifted'); picker.show(); });
+    lifting = setTimeout(() => { lifting = null; if (!picker.open) return; picker.close(); picker.classList.add('lifted'); picker.show(); });
   });
-  document.addEventListener('dragend', () => {
-    const picker = liftedPicker(); if (!picker) return;
-    picker.classList.remove('lifted'); picker.close(); picker.showModal();
-  });
+  document.addEventListener('dragend', () => { clearTimeout(lifting); lifting = null; restorePicker(); });
   const zone = (event) => event.dataTransfer?.types.includes(libraryDragType) && chats.get(selected)?.composer && event.target.closest?.('#chat-composer');
   document.addEventListener('dragover', (event) => {
     const target = zone(event); if (!target) return;
@@ -260,16 +262,18 @@ function dragLibrarySources() {
   document.addEventListener('drop', (event) => {
     const target = zone(event); if (!target) return;
     event.preventDefault(); target.classList.remove('drag-over');
-    const [kind, id] = event.dataTransfer.getData(libraryDragType).split(/:(.*)/s);
+    const source = parseSourceKey(event.dataTransfer.getData(libraryDragType)); const item = chats.get(selected);
+    // A drop the composer cannot take now leaves the picker open.
+    try { if (source) addLibrarySources(item, [source]); }
+    catch (error) { showError(item, error); restorePicker(); return; }
     const picker = liftedPicker(); picker?.classList.remove('lifted'); picker?.close();
-    const item = chats.get(selected);
-    try { if (['asset', 'folder'].includes(kind) && id) addLibrarySources(item, [{ kind, id }]); }
-    catch (error) { showError(item, error); }
   });
 }
 function libraryContextMarkup(context) {
   const library = context.library ?? [];
-  return `${library.length ? `<ul class="chat-library-inputs">${library.map((file) => `<li><strong>${escape(file.libraryPath ?? file.filename)}</strong> <small>v${file.number} · ${formatSize(file.size)} · ${escape(deliveryDescription(file))}<br><span class="chat-library-sources">${selectionPaths(file.sources).map(escape).join(' · ')}</span><br>Version ${escape(file.versionId)} · SHA-256 ${escape(file.hash)}</small></li>`).join('')}</ul>${library.some((file) => file.method === 'copy') ? '<p class="chat-hint">Codex can read workspace copies only with its shell tool. Frameboard does not extract, render, transcribe or convert them, and sent does not mean a file was read or understood.</p>' : ''}` : ''}${(context.warnings ?? []).map((warning) => `<p class="chat-hint">${escape(warning)}</p>`).join('')}`;
+  // Submissions frozen before the selection itself was captured have no summary.
+  const selected = context.librarySelections?.length ? `<p class="chat-library-selected">Selected: ${selectionSummary(context.librarySelections, library).map(escape).join('; ')}</p>` : '';
+  return `${selected}${library.length ? `<ul class="chat-library-inputs">${library.map((file) => `<li><strong>${escape(file.libraryPath ?? file.filename)}</strong> <small>v${file.number} · ${formatSize(file.size)} · ${escape(deliveryDescription(file))}<br><span class="chat-library-sources">${selectionPaths(file.sources).map(escape).join(' · ')}</span><br>Version ${escape(file.versionId)} · SHA-256 ${escape(file.hash)}</small></li>`).join('')}</ul>${library.some((file) => file.method === 'copy') ? '<p class="chat-hint">Codex can read workspace copies only with its shell tool. Frameboard does not extract, render, transcribe or convert them, and sent does not mean a file was read or understood.</p>' : ''}` : ''}${(context.warnings ?? []).map((warning) => `<p class="chat-hint">${escape(warning)}</p>`).join('')}`;
 }
 const deliveryLabels = { sending: 'sending, not confirmed', sent: 'sent', 'not-sent': 'not sent', uncertain: 'delivery uncertain', failed: 'failed' };
 function deliveryMarkup(attempt) {

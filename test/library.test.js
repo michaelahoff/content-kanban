@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { assetPreview, availableFilename, deliveryDescription, selectionPaths, libraryFilename, previewType, libraryPaths, searchLibrary, folderHolders } from '../public/library-format.js';
+import { assetPreview, availableFilename, deliveryDescription, selectionPaths, selectionSummary, parseSourceKey, libraryFilename, previewType, libraryPaths, searchLibrary, folderHolders } from '../public/library-format.js';
 import { mkdtemp, rm, writeFile, chmod, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -27,6 +27,16 @@ test('selection paths name every source that selected a file, in selection order
     ['selected directly', 'in selected folder Thumbnails/ as refs/logo.png', 'in selected folder Thumbnails/refs/ as logo.png']);
   // Submissions frozen before folder paths were captured still describe the folder source.
   assert.deepEqual(selectionPaths([{ kind: 'folder', id: 'f', relativePath: 'logo.png' }]), ['in a selected folder as logo.png']);
+});
+
+test('a frozen selection is summarized in order with each folder\'s file count, and source keys round-trip', () => {
+  const files = [{ sources: [{ kind: 'asset', id: 'a' }, { kind: 'folder', id: 'f', folderPath: 'Thumbnails/', relativePath: 'logo.png' }] }, { sources: [{ kind: 'folder', id: 'f', folderPath: 'Thumbnails/', relativePath: 'refs/b.png' }] }];
+  assert.deepEqual(selectionSummary([{ kind: 'asset', id: 'a', path: 'Thumbnails/logo.png' }, { kind: 'folder', id: 'f', path: 'Thumbnails/' }, { kind: 'folder', id: 'e', path: 'Next episode/' }], files),
+    ['Thumbnails/logo.png', 'Thumbnails/ · 2 files', 'Next episode/ · no files']);
+  assert.deepEqual(selectionSummary([{ kind: 'folder', id: 'f', path: 'One/' }], [{ sources: [{ kind: 'folder', id: 'f' }] }]), ['One/ · 1 file']);
+  assert.deepEqual(parseSourceKey('folder:0a1b-2c'), { kind: 'folder', id: '0a1b-2c' });
+  assert.equal(parseSourceKey('card:x'), null);
+  assert.equal(parseSourceKey('asset:'), null);
 });
 
 test('delivery descriptions name the route and the recognized format without claiming comprehension', () => {
