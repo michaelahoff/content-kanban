@@ -16,6 +16,7 @@ import { imagesMigration, createImageStore } from './store-images.js';
 import { retainedMigration, foldersMigration, createRetainedMetadata } from './store-retained.js';
 import { createRetainedStorage } from './retained-storage.js';
 import { createLibrary } from './library.js';
+import { savedOutputsMigration, createSavedOutputStore } from './store-saved-outputs.js';
 import { libraryDraftsMigration, createDraftStore } from './store-drafts.js';
 
 export const imageIdPattern = /^[a-f0-9-]{36}\.(png|jpg|webp|gif|avif)$/;
@@ -87,7 +88,13 @@ export function inspectBackupDatabase(filename) {
       .map((row) => ({ outputId: row.id, cardId: row.card_id, attemptId: row.attempt_id, importStatus: row.import_status, imageId: row.image_id,
         savedPath: JSON.parse(row.provenance).native?.savedPath ?? null })) : [];
     for (const output of outputs) if (output.importStatus === 'imported' && !images.has(output.imageId)) throw new Error(`Saved output ${output.outputId} has no retained image version.`);
-    return { schemaVersion: db.prepare('SELECT value FROM meta WHERE key = ?').get('schema_version')?.value, images: [...images.values()], nativeThreads, retained, folders, projects, tables, outputs };
+    // Saved outputs: each saved one is a committed retained output version, so
+    // its payload is bundled and verified with the retained store.
+    const savedOutputs = table('saved_outputs') ? db.prepare('SELECT id, card_id, attempt_id, status, version_id FROM saved_outputs ORDER BY rowid').all()
+      .map((row) => ({ outputId: row.id, cardId: row.card_id, attemptId: row.attempt_id, status: row.status, versionId: row.version_id,
+        path: row.version_id && `retained/versions/${row.version_id}`, sha256: versions.get(row.version_id)?.sha256 ?? null, size: versions.get(row.version_id)?.size ?? null })) : [];
+    for (const output of savedOutputs) if (output.status === 'saved' && versions.get(output.versionId)?.kind !== 'output') throw new Error(`Saved output ${output.outputId} has no retained output version.`);
+    return { schemaVersion: db.prepare('SELECT value FROM meta WHERE key = ?').get('schema_version')?.value, images: [...images.values()], nativeThreads, retained, folders, projects, tables, outputs, savedOutputs };
   } finally { db.close(); }
 }
 
@@ -235,7 +242,7 @@ const migrations = [`
 `, libraryDraftsMigration, `
   -- What each delivery attempt actually did with a submission's inputs.
   ALTER TABLE chat_attempts ADD COLUMN delivery TEXT;
-`, foldersMigration];
+`, foldersMigration, savedOutputsMigration];
 
 // The newest schema this version can open; restore refuses newer backups.
 export const supportedSchemaVersion = migrations.length;
@@ -658,6 +665,8 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
     return { card: requireCard(ctx, cardId), adopted: true };
   }
   const images = createImageStore({ all, get, run, transaction, retainedCard, recordChange, now, adopt: adoptImage, revoked: (attemptId) => chats.revocation(attemptId) });
+  const savedOutputs = createSavedOutputStore({ all, get, run, transaction, retainedCard, requireCard, recordChange, now,
+    retained: () => api.retained, revoked: (attemptId) => chats.revocation(attemptId) });
   const api = {
     owner,
     playbooks,
@@ -665,6 +674,7 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
     chats,
     protection,
     images,
+    savedOutputs,
     close: () => db.close(),
 
     providerConfiguration(ctx, provider = 'codex') {

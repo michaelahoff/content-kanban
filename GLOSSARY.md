@@ -37,7 +37,7 @@ One execution of a lane playbook's instructions for one card, triggered by movin
 _Avoid_: Lane graph run
 
 **Lane result**:
-The block at the end of a lane run's reply that lists field changes, hand-off notes and an optional proposed move. Fields the playbook may edit apply; everything else becomes a card proposal.
+The block at the end of a lane run's reply that lists field changes, hand-off notes, an optional proposed move and any finished documents to keep as saved outputs. Fields the playbook may edit apply; everything else becomes a card proposal.
 
 **Hand-off notes**:
 A card's `notes.md`, read by every lane run and added to by each one, so work carries across lanes and providers.
@@ -71,6 +71,10 @@ A particular retained image used as a reference or produced in a card chat. An e
 **Image output**:
 An image version produced in a card chat, either by native image generation or by an explicitly registered rendered file, kept with its producing provider, creation method and references. Generation and saving it into Frameboard are tracked separately; neither adopts it.
 _Avoid_: Artifact, attachment
+
+**Saved output**:
+An exact retained snapshot of something a card chat produced, kept only by an explicit save: reply text saved with Save as document, or a document a lane result declares with its exact text. It records its card chat, conversation, submission, delivery attempt, actual provider and creation method, and keeps the context that was supplied apart from any derivation the agent declared; what is not known stays unknown. Saving is separate from producing it and from any card effect. A stopped, archived or restored attempt cannot save one, though the user can still save its retained text. Saved outputs outlive the card workspace, the card, fresh context and archive.
+_Avoid_: Artifact, attachment, export
 
 **Project Library**:
 A project's collection of project assets, shown in its Library tab beside the board. Selecting assets for prompts is separate from keeping them in the Library.

@@ -11,12 +11,12 @@ export async function waitFor(fn) {
   while (Date.now() < end) { const value = await fn(); if (value) return value; await new Promise((resolve) => setTimeout(resolve, 10)); }
   assert.fail('Expected behavior did not arrive within five seconds.');
 }
-export async function fixture(t, { providerBackoffMs = 10, streamReplayLimit, claudeAdapter, backupCheckpoint } = {}) {
+export async function fixture(t, { providerBackoffMs = 10, streamReplayLimit, claudeAdapter, backupCheckpoint, retainedCheckpoint } = {}) {
   const dataDir = await mkdtemp(path.join(tmpdir(), 'frameboard-chat-'));
   const codex = new ControlledCodex(dataDir);
   let app;
   async function start() {
-    app = await createApp({ dataDir, codexAdapter: codex, claudeAdapter, providerBackoffMs, streamReplayLimit, backupCheckpoint });
+    app = await createApp({ dataDir, codexAdapter: codex, claudeAdapter, providerBackoffMs, streamReplayLimit, backupCheckpoint, retainedCheckpoint });
     await new Promise((resolve) => app.listen(0, '127.0.0.1', resolve));
   }
   await start();

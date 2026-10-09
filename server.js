@@ -54,6 +54,16 @@ function uploadSignal(req) {
 }
 const rfc5987 = (value) => encodeURIComponent(value).replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
 const disposition = (kind, filename) => `${kind}; filename="${filename.replace(/[^\x20-\x7e]|["\\]/g, '_')}"; filename*=UTF-8''${rfc5987(filename)}`;
+// Streams verified retained bytes, inline as a sandboxed preview or as a
+// download. A change while streaming aborts the response.
+function sendRetained(res, { size, filename, bytes, inline }) {
+  res.writeHead(200, { 'Content-Type': inline ? inline.type : 'application/octet-stream', 'Content-Length': size,
+    'Content-Disposition': disposition(inline ? 'inline' : 'attachment', filename),
+    'Content-Security-Policy': "default-src 'none'; sandbox", 'Cache-Control': 'private, max-age=31536000, immutable' });
+  bytes.once('error', () => res.destroy());
+  res.once('close', () => bytes.destroy());
+  return bytes.pipe(res);
+}
 
 async function body(req, limit) {
   const chunks = [];
@@ -102,14 +112,14 @@ async function json(req, limit) {
   catch (error) { if (error.status) throw error; throw Object.assign(new Error('Invalid JSON.'), { status: 400 }); }
 }
 
-export async function createApp({ dataDir = process.env.DATA_DIR || path.join(root, 'data'), fetch: fetchImpl = globalThis.fetch, onCardEvent, codexAdapter, claudeAdapter, providerBackoffMs, streamReplayLimit, backupCheckpoint } = {}) {
+export async function createApp({ dataDir = process.env.DATA_DIR || path.join(root, 'data'), fetch: fetchImpl = globalThis.fetch, onCardEvent, codexAdapter, claudeAdapter, providerBackoffMs, streamReplayLimit, backupCheckpoint, retainedCheckpoint } = {}) {
   const lock = await lockDataDirectory(dataDir);
   dataDir = lock.dataDir;
   let store; let worker; let stream; let lanes; let maintenance;
   try {
     const imagesDir = path.join(dataDir, 'images');
     await mkdir(imagesDir, { recursive: true });
-    try { store = await openStore({ dataDir, onCardEvent, onCommit: () => { worker?.wake(); lanes?.wake(); stream?.notify(); } }); }
+    try { store = await openStore({ dataDir, onCardEvent, retainedCheckpoint, onCommit: () => { worker?.wake(); lanes?.wake(); stream?.notify(); } }); }
     catch (error) { throw new Error(`Could not load the board in ${dataDir}. Your data has not been changed. ${error.message}`); }
     // Only top-level files in public/ are served, so paths cannot escape it.
     const publicFiles = new Map((await readdir(path.join(root, 'public'))).filter((name) => staticTypes[path.extname(name)]).map((name) => [`/${name}`, name]));
@@ -164,9 +174,10 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
       ['POST', /^\/api\/cards\/([^/]+)\/chat\/proposals\/[^/]+\/preview$/, (ctx, req, id, url) => store.protection.previewProposal(ctx, id, url.pathname.split('/').at(-2))],
       ['POST', /^\/api\/cards\/([^/]+)\/chat\/outputs\/[^/]+\/adopt$/, (ctx, req, id, url) => store.images.adopt(ctx, id, url.pathname.split('/').at(-2))],
       ['POST', /^\/api\/cards\/([^/]+)\/chat\/outputs\/[^/]+\/retry-save$/, (ctx, req, id, url) => worker.retrySave(id, url.pathname.split('/').at(-2))],
+      ['POST', /^\/api\/cards\/([^/]+)\/chat\/saved-outputs$/, async (ctx, req, id) => store.savedOutputs.saveReply(ctx, id, bodyOf(await read(req))), 201],
       ['GET', /^\/api\/chat-activity$/, (ctx) => ({ cursor: store.workspace(ctx).eventCursor, entries: store.chats.indicators(ctx) })],
       ['POST', /^\/api\/cards\/([^/]+)\/chat\/revoke-grants$/, (ctx, req, id) => store.chats.clearGrants(ctx, id)],
-      ['GET', /^\/api\/cards\/([^/]+)\/chat$/, (ctx, req, id) => (worker.flushCard(id), { ...store.chats.snapshot(ctx, id), proposals: store.protection.proposals(ctx, id), outputs: store.images.outputs(ctx, id).map((output) => ({ ...output, available: Boolean(output.imageId) && existsSync(path.join(imagesDir, output.imageId)) })) })],
+      ['GET', /^\/api\/cards\/([^/]+)\/chat$/, (ctx, req, id) => (worker.flushCard(id), { ...store.chats.snapshot(ctx, id), proposals: store.protection.proposals(ctx, id), savedOutputs: store.savedOutputs.list(ctx, id), outputs: store.images.outputs(ctx, id).map((output) => ({ ...output, available: Boolean(output.imageId) && existsSync(path.join(imagesDir, output.imageId)) })) })],
       ['PUT', /^\/api\/cards\/([^/]+)\/chat\/composer$/, async (ctx, req, id) => store.chats.saveComposer(ctx, id, await read(req))],
       ['POST', /^\/api\/cards\/([^/]+)\/chat\/preview$/, (ctx, req, id) => chat.preview(ctx, id)],
       ['POST', /^\/api\/cards\/([^/]+)\/chat\/discover$/, (ctx, req, id) => codexAction(() => chat.discover(ctx, id))],
@@ -307,13 +318,15 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
           let ids;
           try { ids = content.slice(1).map(decodeURIComponent); } catch { return send(res, 404, { error: 'Not found.' }); }
           const { version, filename, written, stream: bytes } = await store.library.read(currentUser(req), ...ids);
-          const inline = url.searchParams.get('inline') === '1' && assetPreview(filename, { written });
-          res.writeHead(200, { 'Content-Type': inline ? inline.type : 'application/octet-stream', 'Content-Length': version.size,
-            'Content-Disposition': disposition(inline ? 'inline' : 'attachment', filename),
-            'Content-Security-Policy': "default-src 'none'; sandbox", 'Cache-Control': 'private, max-age=31536000, immutable' });
-          bytes.once('error', () => res.destroy());
-          res.once('close', () => bytes.destroy());
-          return bytes.pipe(res);
+          return sendRetained(res, { size: version.size, filename, bytes, inline: url.searchParams.get('inline') === '1' && assetPreview(filename, { written }) });
+        }
+        const saved = url.pathname.match(/^\/api\/cards\/([^/]+)\/chat\/saved-outputs\/([^/]+)\/content$/);
+        if (saved && req.method === 'GET') {
+          // Saved outputs stay readable after Stop, archive and card deletion.
+          let ids;
+          try { ids = saved.slice(1).map(decodeURIComponent); } catch { return send(res, 404, { error: 'Not found.' }); }
+          const { output, stream: bytes } = await store.savedOutputs.content(currentUser(req), ...ids);
+          return sendRetained(res, { size: output.size, filename: output.filename, bytes, inline: url.searchParams.get('inline') === '1' && { type: 'text/plain; charset=utf-8' } });
         }
         if (url.pathname === '/api/images' && req.method === 'POST') {
           const type = req.headers['content-type'];
@@ -368,6 +381,7 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
         closing = new Promise((resolve) => close(resolve)).then(async (error) => {
           await stopped;
           await exporting;
+          await worker.drain();
           await chat.drain();
           // An HTTP request already in progress may have rediscovered Codex
           // during shutdown. Finish its filesystem work and stop that process.

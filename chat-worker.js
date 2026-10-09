@@ -30,6 +30,8 @@ export function createChatWorker({ store, adapter, adapters = { codex: adapter }
   // Read-only reconciliation in progress; maintenance waits for it.
   let background = 0;
   const tracked = async (work) => { background++; try { return await work(); } finally { background--; } };
+  // Lane results still saving their documents; shutdown waits for them.
+  const finishing = new Set();
   // Image saves that arrived during maintenance; the output stays pending.
   const deferred = new Map();
   // Native transcript rows keep image provenance, not the base64 payload.
@@ -130,7 +132,13 @@ export function createChatWorker({ store, adapter, adapters = { codex: adapter }
       work.items.set(item.id, item); flush(work);
       if (native.type === 'imageGeneration' && event.type === 'item-completed') capture(work.attempt, work.submission, native, { threadId: work.threadId, turnId: event.turnId ?? work.turnId });
     } else if (event.type === 'turn-completed') {
-      if (event.status === 'completed' && work.submission.lane && live.get(work.submission.cardId) === work) laneResult(work);
+      // A lane result's saves finish while the attempt still holds authority.
+      if (event.status === 'completed' && work.submission.lane && live.get(work.submission.cardId) === work) {
+        const task = laneResult(work).then(() => { if (!closed && live.get(work.submission.cardId) === work) end(work, 'completed'); })
+          .catch((error) => { if (!closed) console.error(error); }).finally(() => finishing.delete(task));
+        finishing.add(task);
+        return;
+      }
       end(work, event.status === 'completed' ? 'completed' : event.status === 'interrupted' ? 'interrupted' : 'failed', failureReason(event.error));
     } else if (event.type === 'input-rejected') {
       work.pdfRemoved = event.reason; deliver(work, work.deliveryStatus ?? 'sent');
@@ -145,18 +153,18 @@ export function createChatWorker({ store, adapter, adapters = { codex: adapter }
   }
   // A completed lane run applies its reply's result block while the attempt
   // still holds card-tool authority, then notes what happened in the chat.
-  function laneResult(work) {
+  async function laneResult(work) {
     flush(work);
     let text;
     try {
       const reply = [...work.items.values()].filter((item) => item.kind === 'agentMessage').map((item) => item.text).join('\n\n');
-      text = applyLaneResult({ store, ctx, attempt: work.attempt, submission: work.submission, text: reply });
+      text = await applyLaneResult({ store, ctx, attempt: work.attempt, submission: work.submission, text: reply });
     } catch (error) {
       text = `The lane result could not be applied: ${error.message}`;
       const run = store.laneRuns.bySubmission(work.submission.id);
       if (run?.status === 'queued') store.laneRuns.update(ctx, run.id, { status: 'failed', reason: text });
     }
-    if (text) store.chats.item(ctx, work.attempt.id, { id: 'lane-result', kind: 'notice', text: `Lane result · ${text}`, completed: true });
+    if (text && !closed) store.chats.item(ctx, work.attempt.id, { id: 'lane-result', kind: 'notice', text: `Lane result · ${text}`, completed: true });
   }
   function pendingRequest(work, request) {
     if (closed || request.turnId !== work.turnId) return;
@@ -368,6 +376,7 @@ export function createChatWorker({ store, adapter, adapters = { codex: adapter }
   async function reconcile() {
     store.chats.invalidateAfterRestart(ctx);
     store.images.interruptedImports(ctx);
+    store.savedOutputs.interrupted(ctx);
     for (const entry of store.chats.unfinished(ctx)) {
       if (closed) return;
       try { await settleFromHistory(entry, true); }
@@ -405,6 +414,7 @@ export function createChatWorker({ store, adapter, adapters = { codex: adapter }
     // A snapshot then includes everything streamed so far, so the next delta's
     // offset continues exactly where the snapshot ends.
     flushCard(cardId) { for (const work of retained) if (work.submission.cardId === cardId) flush(work); },
+    drain: async () => { while (finishing.size) await Promise.allSettled([...finishing]); },
     // No dispatched work, image save or reconciliation is in progress.
     idle: () => !live.size && !importing.size && !background,
     stop(cardId) { const result = store.chats.stop(ctx, cardId); wake(); return result; },

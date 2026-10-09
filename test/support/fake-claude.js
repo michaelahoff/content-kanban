@@ -34,7 +34,7 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
     }
     // A lane run prompt asks for a result block; answer with one.
     const text = prompt.includes('frameboard-result')
-      ? 'Lane fixture reply\n\n```frameboard-result\n{"fields": {"intro": "Fixture intro"}, "notes": "Fixture notes"}\n```'
+      ? `Lane fixture reply\n\n\`\`\`frameboard-result\n${process.env.FAKE_CLAUDE_LANE_RESULT ?? '{"fields": {"intro": "Fixture intro"}, "notes": "Fixture notes"}'}\n\`\`\``
       : `Fixture reply (${message.message.content.map((block) => block.type).join(',')})`;
     const assistant = { id: 'assistant-' + message.uuid, content: [{ type: 'text', text }], stop_reason: 'end_turn' };
     output({ type: 'stream_event', event: { type: 'message_start', message: { id: assistant.id } } });

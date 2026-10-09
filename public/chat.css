@@ -72,6 +72,8 @@
 .chat-output { margin: 0; white-space: normal; }
 .chat-output-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 8px; }
 .chat-output-actions .chat-hint { margin: 0; }
+.chat-saved-outputs { margin: 6px 0 0; padding: 0; list-style: none; font-size: 12px; }
+.chat-saved-outputs li { padding: 6px 0; border-top: 1px solid #3a3145; }
 .chat-output-error { color: #ffbfbc; font-size: 12px; margin: 6px 0; }
 .chat-activity { display: block; color: #a5c9ff; font-size: 10px; margin-top: 7px; }
 .chat-activity.working { animation: chat-working 2s ease-in-out infinite; }

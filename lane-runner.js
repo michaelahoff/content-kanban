@@ -187,15 +187,17 @@ export function createLaneRunner({ store, service, providers, ctx, paused = () =
 }
 
 // Applies the result block of a completed lane run reply, through the same
-// card tools and authority checks as any card chat. Returns a summary line.
-export function applyLaneResult({ store, ctx, attempt, submission, text }) {
+// card tools and authority checks as any card chat, then saves its declared
+// documents while the attempt still holds authority. Each save has its own
+// outcome, separate from the card effects. Returns a summary line.
+export async function applyLaneResult({ store, ctx, attempt, submission, text }) {
   const run = store.laneRuns.bySubmission(submission.id);
   if (!run || run.status !== 'queued') return null;
   const live = store.chats.attempt(attempt.id);
   if (!live || !['dispatching', 'accepted', 'running'].includes(live.status)) throw new Error('This attempt no longer has card-tool authority.');
   const card = store.getCard(ctx, submission.cardId).card;
   const result = parseLaneResult(text, card.template);
-  const outcome = { applied: [], proposed: [], move: null, notes: false, errors: [] };
+  const outcome = { applied: [], proposed: [], move: null, notes: false, outputs: [], errors: [] };
   store.transaction(() => {
     if (!result) outcome.errors.push('The reply had no frameboard-result block, so nothing was applied.');
     else {
@@ -238,12 +240,23 @@ export function applyLaneResult({ store, ctx, attempt, submission, text }) {
       outcome.notes = true;
     } catch (error) { outcome.errors.push(`Hand-off notes could not be saved: ${error.message}`); }
   }
+  const automation = { ...ctx, actor: `automation:${attempt.id}` };
+  for (const [index, output] of (result?.outputs ?? []).entries()) {
+    try {
+      const saved = await store.savedOutputs.saveDocument(automation, submission.cardId, { operationId: `lane:${attempt.id}:${index}`, attemptId: attempt.id,
+        filename: output.filename, text: output.text, creationMethod: 'lane-result', sources: output.sources, requireLive: true });
+      outcome.outputs.push({ filename: saved.filename, status: saved.status, outputId: saved.id, ...(saved.error ? { error: saved.error } : {}) });
+    } catch (error) { outcome.outputs.push({ filename: output.filename, status: 'failed', error: error.message }); }
+  }
+  const saved = outcome.outputs.filter((output) => output.status === 'saved').map((output) => output.filename);
   const labels = (keys) => keys.map((key) => setFields(card.template).find((field) => field.key === key)?.label ?? key).join(', ');
   const summary = [
     outcome.applied.length ? `Applied ${labels(outcome.applied)}.` : '',
     outcome.proposed.length ? `Proposed ${labels(outcome.proposed)} for your review.` : '',
     outcome.move ? `Proposed moving to ${outcome.move}.` : '',
     outcome.notes ? 'Added hand-off notes.' : '',
+    saved.length ? `Saved ${new Intl.ListFormat('en', { type: 'conjunction' }).format(saved)}.` : '',
+    ...outcome.outputs.filter((output) => output.status !== 'saved').map((output) => `${output.filename} was not saved. ${output.error}`),
     ...outcome.errors,
   ].filter(Boolean).join(' ') || 'The result block changed nothing.';
   store.laneRuns.update(ctx, run.id, { status: 'completed', reason: summary, result: outcome });

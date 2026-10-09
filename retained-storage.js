@@ -102,7 +102,9 @@ export async function createRetainedStorage({ dataDir, metadata, checkpoint = as
     current: metadata.current,
     inventory: metadata.inventory,
     remove: metadata.remove,
-    async publish(ctx, descriptor, source, { signal } = {}) {
+    // `authorize` (optional) is the caller's effect fence: it runs before the
+    // bytes are published and inside the commit, and refuses by throwing.
+    async publish(ctx, descriptor, source, { signal, authorize } = {}) {
       return exclusive(`operation:${ctx.workspaceId}:${descriptor.operationId}`, async () => {
         const version = metadata.begin(ctx, descriptor);
         if (version.state === 'committed') return version;
@@ -115,13 +117,14 @@ export async function createRetainedStorage({ dataDir, metadata, checkpoint = as
           metadata.pin(ctx, version.id, measured);
           await checkpoint('staged', { ...version, ...measured });
           signal?.throwIfAborted();
+          authorize?.();
           await publishFile(temporary, target);
           await syncDirectory(payloads); await syncDirectory(staging);
           await checkpoint('bytes-published', { ...version, ...measured });
           metadata.published(ctx, version.id);
           await checkpoint('published', { ...version, ...measured });
           signal?.throwIfAborted();
-          const committed = metadata.commit(ctx, version.id);
+          const committed = metadata.commit(ctx, version.id, authorize);
           // A failure after commit must never undo or misreport a saved sibling.
           await checkpoint('committed', committed);
           return committed;
