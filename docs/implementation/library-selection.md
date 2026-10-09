@@ -1,6 +1,6 @@
 # Library selection for manual prompts
 
-Implements [#56](https://github.com/michaelahoff/content-kanban/issues/56) against the approved [project-assets specification](https://github.com/michaelahoff/content-kanban/blob/f7149d373a8c8284cdd6b046049d6d54a3c35c57/docs/specs/project-assets.md), acceptance cases 4, 6, 15 and 16 for manual card chat prompts. Playbook selections are a later ticket. Folders ([#53](https://github.com/michaelahoff/content-kanban/issues/53), [Library folders](library-folders.md)) added the `folder` source kind. [General-file delivery](general-file-delivery.md) (#58) adds format recognition, the Codex shell-tool check and the copy evidence.
+Implements [#56](https://github.com/michaelahoff/content-kanban/issues/56) against the approved [project-assets specification](https://github.com/michaelahoff/content-kanban/blob/f7149d373a8c8284cdd6b046049d6d54a3c35c57/docs/specs/project-assets.md), acceptance cases 4, 6, 15 and 16 for manual card chat prompts. Playbook selections are a later ticket. Folders ([#53](https://github.com/michaelahoff/content-kanban/issues/53), [Library folders](library-folders.md)) added the `folder` source kind. [General-file delivery](general-file-delivery.md) (#58) adds format recognition, the Codex shell-tool check and the copy evidence. [Folder selection](folder-selection.md) (#57) completes folder provenance, revalidation and drag-and-drop.
 
 ## Selection
 

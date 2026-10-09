@@ -419,11 +419,13 @@ export function createLibrary({ retained, metadata, drafts, project, record }) {
     // The current committed versions named by ordered typed selections: an
     // asset, or a folder expanded recursively over its live files in
     // relative-path order. One entry per asset identity, in first-selected
-    // position, keeps every selection that named it (a folder's with the
-    // file's relative path). An unresolvable source is reported by identity,
-    // never resolved empty or substituted by name; an existing empty folder adds nothing.
+    // position, keeps every selection that named it (a folder's with its
+    // captured path and the file's relative path). An unresolvable source is
+    // reported by identity, never resolved empty or substituted by name; an
+    // existing empty folder adds nothing. Resolved selections are returned in
+    // order with their captured paths.
     resolve(ctx, projectId, selections) {
-      const files = new Map(); const problems = [];
+      const files = new Map(); const problems = []; const resolved = [];
       // Each folder's chain is read once per resolution, however many files share it.
       const chains = new Map();
       const chainOf = (folderId) => { if (!chains.has(folderId)) chains.set(folderId, chain(ctx, folderId)); return chains.get(folderId); };
@@ -444,12 +446,13 @@ export function createLibrary({ retained, metadata, drafts, project, record }) {
           const owned = row && row.project_id === projectId;
           const reason = !owned ? 'It is not a folder in this project’s Library.' : row.removed_at ? 'It was removed from the Library.' : null;
           if (reason) { problems.push({ key, label: owned ? pathOf(row.id) : key, phase: 'resolve', reason }); continue; }
+          resolved.push({ kind: 'folder', id: row.id, path: pathOf(row.id) });
           live ??= metadata.sources(ctx, projectId);
           live.flatMap((asset) => {
             const folders = chainOf(asset.folder_id); const at = folders.findIndex((folder) => folder.id === row.id);
             return at < 0 ? [] : [{ asset, relativePath: labels(folders.slice(at + 1)) + asset.filename }];
           }).sort((a, b) => comparePaths(a.relativePath, b.relativePath))
-            .forEach(({ asset, relativePath }) => include(asset, { kind: 'folder', id: row.id, relativePath }));
+            .forEach(({ asset, relativePath }) => include(asset, { kind: 'folder', id: row.id, folderPath: pathOf(row.id), relativePath }));
           continue;
         }
         const row = selection.kind === 'asset' ? metadata.object(ctx, selection.id) : null;
@@ -458,8 +461,9 @@ export function createLibrary({ retained, metadata, drafts, project, record }) {
           : !row.current_version_id ? 'Its first upload has not finished.' : null;
         if (reason) { problems.push({ key, label: owned ? row.filename : key, phase: 'resolve', reason }); continue; }
         include(row, { kind: selection.kind, id: selection.id });
+        resolved.push({ kind: 'asset', id: row.id, path: pathOf(row.folder_id) + row.filename });
       }
-      return { files: [...files.values()], problems };
+      return { files: [...files.values()], selections: resolved, problems };
     },
     // How a version can be delivered. Sends verify every byte; previews read
     // small files whole but only sample large ones, trusting their last check.
