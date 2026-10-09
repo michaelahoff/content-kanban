@@ -37,6 +37,7 @@ export function createLaneRunner({ store, service, providers, ctx }) {
     if (info.run.status !== 'pending') return null;
     const close = (reason) => { store.laneRuns.update(ctx, run.id, { status: 'cancelled', reason }); return null; };
     if (info.deleted || info.stageDeleted) return close('The card or its lane was deleted before this run started.');
+    if (info.archived) return close('Cancelled because the project was archived.');
     if (info.card.stageId !== run.stageId) return close('The card left the lane before this run started.');
     return info;
   }
@@ -172,8 +173,11 @@ export function applyLaneResult({ store, ctx, attempt, submission, text }) {
       }
     }
   });
+  // Notes are written outside the transaction, so recheck the attempt's
+  // authority immediately before appending them.
   if (result?.notes.trim()) {
-    try {
+    if (store.chats.revocation(attempt.id)) outcome.errors.push('Hand-off notes were not saved: this attempt was stopped or its project archived.');
+    else try {
       const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
       store.playbooks.appendNotes(card.id, `${submission.lane.stageName} · ${stamp} UTC`, result.notes);
       outcome.notes = true;

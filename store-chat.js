@@ -49,6 +49,7 @@ export const recoveryMigration = `
 `;
 
 const active = ['dispatching', 'accepted', 'running', 'interrupt-requested'];
+export const archivedMessage = 'This project is archived. Unarchive it to make changes.';
 const fail = (status, message) => { throw Object.assign(new Error(message), { status }); };
 const check = (value, message) => { if (!value) fail(400, message); };
 const object = (value) => value && typeof value === 'object' && !Array.isArray(value);
@@ -57,15 +58,18 @@ const validId = (value) => typeof value === 'string' && /^[\w-]{1,100}$/.test(va
 const conversationFrom = (row) => ({ id: row.id, cardId: row.card_id, provider: row.provider, model: row.model,
   state: row.state, binding: row.binding ? JSON.parse(row.binding) : null, grants: JSON.parse(row.grants), outsideTurns: JSON.parse(row.outside_turns), createdAt: row.created_at });
 const submissionFrom = (row) => ({ ...JSON.parse(row.frozen), id: row.id, cardId: row.card_id,
-  conversationId: row.conversation_id, status: row.status, reason: row.reason, hold: row.hold, retryAt: row.retry_at, createdAt: row.created_at, completedAt: row.completed_at });
+  conversationId: row.conversation_id, status: row.status, reason: row.reason, hold: row.hold, retryAt: row.retry_at, revoked: row.revoked, createdAt: row.created_at, completedAt: row.completed_at });
 const attemptFrom = (row) => row && ({ id: row.id, submissionId: row.submission_id, cardId: row.card_id,
-  previousAttemptId: row.previous_attempt_id, status: row.status, turnId: row.turn_id, startedAt: row.started_at, completedAt: row.completed_at, error: row.error, cause: row.cause });
+  previousAttemptId: row.previous_attempt_id, status: row.status, turnId: row.turn_id, startedAt: row.started_at, completedAt: row.completed_at, error: row.error, cause: row.cause, revoked: row.revoked });
 
 export function createChatStore({ all, get, run, transaction, retainedCard, requireCard, recordChange, now }) {
   function activity(ctx, cardId, type, data = {}) {
     const card = retainedCard(ctx, cardId);
     recordChange(ctx, 'chat', cardId, type, { projectId: card.project_id, data });
   }
+  // Counts archives of the card's project. Preparation that spans an archive,
+  // even one already undone, must not queue its work.
+  const archiveGeneration = (cardId) => get('SELECT p.archive_generation FROM cards c JOIN projects p ON p.id = c.project_id WHERE c.id = ?', cardId).archive_generation;
   function current(cardId) { return conversationFrom(get("SELECT * FROM chat_conversations WHERE card_id = ? AND state != 'previous'", cardId)); }
   function newConversation(cardId, model, provider = 'codex') {
     const id = randomUUID();
@@ -132,8 +136,10 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
     status(ctx, a.submissionId, value, reason);
     return value;
   }
-  function requestInterruption(ctx, a, reason, cause) {
-    run("UPDATE chat_attempts SET status = 'interrupt-requested', cause = ? WHERE id = ?", cause, a.id);
+  // Stop and archive also revoke the attempt: it can never again change the
+  // card, add notes or save outputs, whatever native events arrive later.
+  function requestInterruption(ctx, a, reason, cause, revoked = null) {
+    run("UPDATE chat_attempts SET status = 'interrupt-requested', cause = ?, revoked = COALESCE(revoked, ?) WHERE id = ?", cause, revoked, a.id);
     invalidateRequests(a.id);
     status(ctx, a.submissionId, 'interrupt-requested', reason);
     return { ...a, status: 'interrupt-requested' };
@@ -141,8 +147,8 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
   // Both dispatch and provider timers consider only unblocked queue heads.
   function queueHeads(ctx) {
     return all(`SELECT s.* FROM chat_submissions s JOIN card_chats h ON h.card_id = s.card_id
-      JOIN cards c ON c.id = s.card_id JOIN chat_conversations v ON v.id = s.conversation_id
-      WHERE h.workspace_id = ? AND c.deleted_at IS NULL AND v.state = 'active' AND s.status IN ('queued', 'waiting')
+      JOIN cards c ON c.id = s.card_id JOIN projects p ON p.id = c.project_id JOIN chat_conversations v ON v.id = s.conversation_id
+      WHERE h.workspace_id = ? AND c.deleted_at IS NULL AND p.archived_at IS NULL AND s.revoked IS NULL AND v.state = 'active' AND s.status IN ('queued', 'waiting')
       AND NOT EXISTS (SELECT 1 FROM chat_submissions earlier WHERE earlier.card_id = s.card_id AND earlier.sequence < s.sequence
         AND earlier.status IN ('queued', 'waiting', 'held', 'dispatching', 'running', 'interrupt-requested', 'uncertain'))
       AND NOT EXISTS (SELECT 1 FROM chat_attempts a WHERE a.card_id = s.card_id AND a.status IN ('dispatching', 'accepted', 'running', 'interrupt-requested'))
@@ -179,7 +185,7 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
       const card = requireCard(ctx, cardId);
       const row = ensure(ctx, cardId);
       const versions = Object.fromEntries(all('SELECT field, version FROM card_field_versions WHERE card_id = ?', cardId).map((row) => [row.field, row.version]));
-      return { cardRevision: card.revision, composerRevision: row.composer_revision, conversationId: current(cardId).id,
+      return { cardRevision: card.revision, composerRevision: row.composer_revision, conversationId: current(cardId).id, archiveGeneration: archiveGeneration(cardId),
         prompt: JSON.parse(row.composer).prompt, provider: JSON.parse(row.composer).provider ?? 'codex', model: JSON.parse(row.composer).model,
         authority: JSON.parse(row.composer).authority, context: selectedContext(card, JSON.parse(row.composer).selections, versions,
           all("SELECT image_id AS id, name, id AS outputId FROM chat_outputs WHERE card_id = ? AND import_status = 'imported'", cardId)) };
@@ -207,6 +213,7 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
       const card = requireCard(ctx, cardId);
       const row = ensure(ctx, cardId);
       check(Number.isInteger(input.composerRevision), 'Send needs the saved composer revision.');
+      if (captured.archiveGeneration !== archiveGeneration(cardId)) fail(409, 'The project was archived while preparing Send, so it was not sent. Review and send again.');
       if (row.composer_revision !== input.composerRevision || captured.composerRevision !== row.composer_revision || captured.cardRevision !== card.revision
         || captured.conversationId !== current(cardId).id) fail(409, 'The card, composer or conversation changed while preparing Send. Review and send again.');
       check(captured.prompt.trim() && captured.model, 'Write a prompt and explicitly choose a model before sending.');
@@ -313,6 +320,12 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
     },
     attempt,
     activeAttempt,
+    // Why an attempt may no longer produce effects, or null. Status alone does
+    // not say this: a late native event can still arrive for a revoked attempt.
+    revocation(id) {
+      const row = get('SELECT a.revoked, p.archived_at FROM chat_attempts a JOIN cards c ON c.id = a.card_id JOIN projects p ON p.id = c.project_id WHERE a.id = ?', id);
+      return row?.revoked ?? (row?.archived_at ? 'archived' : null);
+    },
     bindingConfiguration(conversationId) {
       const conversation = get('SELECT binding FROM chat_conversations WHERE id = ?', conversationId);
       const binding = conversation?.binding && JSON.parse(conversation.binding);
@@ -368,6 +381,11 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
       return transaction(() => {
         const a = attempt(id);
         if (!a || !active.includes(a.status)) return false;
+        // Stop or archive while preparing ends the attempt; there is nothing to hold.
+        if (a.status === 'interrupt-requested') {
+          settleAttempt(ctx, a, 'interrupted', 'Stopped before it was sent.');
+          return true;
+        }
         run("UPDATE chat_attempts SET status = 'held', completed_at = ?, error = ? WHERE id = ?", now(), reason, id);
         invalidateRequests(id);
         run('UPDATE chat_submissions SET hold = ? WHERE id = ?', nativeUnavailable ? 'native-unavailable' : kind, a.submissionId);
@@ -443,7 +461,7 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
       return transaction(() => {
         const a = activeAttempt(cardId);
         if (!a) return null;
-        return requestInterruption(ctx, a, 'Stopped by the user.', 'user');
+        return requestInterruption(ctx, a, 'Stopped by the user.', 'user', 'stopped');
       });
     },
     cancelSubmission(ctx, cardId, id) {
@@ -454,6 +472,7 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
     retry(ctx, cardId, id) {
       requireCard(ctx, cardId);
       const row = requireSubmission(ctx, cardId, id);
+      if (row.revoked === 'archived') fail(409, 'This work was cancelled when its project was archived, so it cannot be retried. Send a new prompt or Run playbook instead.');
       if (!['failed', 'interrupted'].includes(row.status) || row.conversation_id !== current(cardId).id
         || current(cardId).state !== 'active' || activeAttempt(cardId)) fail(409, 'Retry requires a terminal attempt in the current, available conversation. Reconcile uncertainty before retrying.');
       transaction(() => {
@@ -467,6 +486,23 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
         for (const row of all("SELECT id FROM chat_submissions WHERE card_id = ? AND status IN ('queued', 'waiting', 'held')", cardId)) status(ctx, row.id, 'cancelled', reason);
         const a = activeAttempt(cardId);
         if (a) requestInterruption(ctx, a, reason, 'cancelled');
+      });
+    },
+    // Archive revokes more strongly than Stop: queued work is cancelled, active
+    // work is interrupted, and no unfinished attempt or submission can act, be
+    // requeued or be retried again. Pending requests and grants are revoked too.
+    revokeCard(ctx, cardId, reason) {
+      return transaction(() => {
+        run(`UPDATE chat_submissions SET revoked = 'archived' WHERE card_id = ?
+          AND status IN ('queued', 'waiting', 'held', 'dispatching', 'running', 'interrupt-requested', 'uncertain')`, cardId);
+        run(`UPDATE chat_attempts SET revoked = COALESCE(revoked, 'archived') WHERE card_id = ? AND status IN ('dispatching', 'accepted', 'running', 'interrupt-requested', 'uncertain')`, cardId);
+        for (const row of all("SELECT id FROM chat_submissions WHERE card_id = ? AND status IN ('queued', 'waiting', 'held')", cardId)) status(ctx, row.id, 'cancelled', reason);
+        const a = activeAttempt(cardId);
+        if (a && a.status !== 'interrupt-requested') requestInterruption(ctx, a, reason, 'cancelled');
+        if (get("SELECT 1 FROM chat_conversations WHERE card_id = ? AND grants != '[]'", cardId)) {
+          run("UPDATE chat_conversations SET grants = '[]' WHERE card_id = ?", cardId);
+          activity(ctx, cardId, 'grants_revoked');
+        }
       });
     },
     fresh(ctx, cardId, input) {
@@ -518,7 +554,7 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
       return transaction(() => {
         const a = attempt(id);
         if (!a || (!active.includes(a.status) && a.status !== 'uncertain')) return false;
-        if (a.status === 'interrupt-requested' || ['user', 'cancelled'].includes(a.cause)) {
+        if (a.status === 'interrupt-requested' || ['user', 'cancelled'].includes(a.cause) || a.revoked) {
           settleAttempt(ctx, a, 'interrupted', 'Stopped before Codex accepted this prompt.');
           return true;
         }
@@ -588,7 +624,9 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
     // cancellation and resolution are the user's choices, not attention.
     indicators(ctx) {
       const entries = [];
-      for (const row of all('SELECT h.*, c.title, c.project_id, c.deleted_at FROM card_chats h JOIN cards c ON c.id = h.card_id WHERE h.workspace_id = ?', ctx.workspaceId)) {
+      // Archived projects are out of active use; their chats need no attention.
+      for (const row of all(`SELECT h.*, c.title, c.project_id, c.deleted_at FROM card_chats h JOIN cards c ON c.id = h.card_id
+        JOIN projects p ON p.id = c.project_id WHERE h.workspace_id = ? AND p.archived_at IS NULL`, ctx.workspaceId)) {
         const a = activeAttempt(row.card_id);
         const pending = get("SELECT r.id FROM chat_requests r JOIN chat_attempts a ON a.id = r.attempt_id WHERE a.card_id = ? AND r.status = 'pending' LIMIT 1", row.card_id);
         const conversation = current(row.card_id);

@@ -147,6 +147,8 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
       ['POST', /^\/api\/projects$/, async (ctx, req) => store.createProject(ctx, await read(req)), 201],
       ['PATCH', /^\/api\/projects\/([^/]+)$/, async (ctx, req, id) => store.updateProject(ctx, id, await read(req))],
       ['DELETE', /^\/api\/projects\/([^/]+)$/, (ctx, req, id) => (store.deleteProject(ctx, id), { ok: true })],
+      ['POST', /^\/api\/projects\/([^/]+)\/archive$/, (ctx, req, id) => store.archiveProject(ctx, id)],
+      ['POST', /^\/api\/projects\/([^/]+)\/unarchive$/, (ctx, req, id) => store.unarchiveProject(ctx, id)],
       ['POST', /^\/api\/projects\/([^/]+)\/prompt$/, async (ctx, req, id) => ({ cards: store.setProjectPrompt(ctx, id, (await read(req))?.prompt) })],
       ['GET', /^\/api\/projects\/([^/]+)\/cards$/, (ctx, req, id) => ({ cards: store.listCards(ctx, id) })],
       ['POST', /^\/api\/projects\/([^/]+)\/cards$/, async (ctx, req, id) => store.createCard(ctx, id, await read(req)), 201],
@@ -163,12 +165,14 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
       ['GET', /^\/api\/flows\/([^/]+)\/playbooks$/, (ctx, req, id) => ({ ...store.playbooks.list(flowFor(ctx, id).id), stages: flowFor(ctx, id).stages })],
       ['PUT', /^\/api\/flows\/([^/]+)\/playbooks$/, async (ctx, req, id) => {
         const flow = flowFor(ctx, id); const input = bodyOf(await read(req));
+        store.editableFlow(ctx, flow.id);
         const document = store.playbooks.write(flow.id, input.path, input.text, input.baseHash ?? null, { laneIds: flow.stages.map((stage) => stage.id) });
         store.recordPlaybookChange(ctx, flow.id, input.path, 'playbook_saved');
         return { document, stages: flowFor(ctx, id).stages };
       }],
       ['DELETE', /^\/api\/flows\/([^/]+)\/playbooks$/, async (ctx, req, id) => {
         const flow = flowFor(ctx, id); const input = bodyOf(await read(req));
+        store.editableFlow(ctx, flow.id);
         store.playbooks.remove(flow.id, input.path, input.baseHash);
         store.recordPlaybookChange(ctx, flow.id, input.path, 'playbook_deleted');
         return { stages: flowFor(ctx, id).stages };
@@ -178,7 +182,7 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
       ['GET', /^\/api\/cards\/([^/]+)\/lane-runs\/preview$/, (ctx, req, id) => lanes.preview(id)],
       ['GET', /^\/api\/cards\/([^/]+)\/notes$/, (ctx, req, id) => (store.getCard(ctx, id), store.playbooks.notes(id))],
       ['PUT', /^\/api\/cards\/([^/]+)\/notes$/, async (ctx, req, id) => {
-        store.getCard(ctx, id); const input = bodyOf(await read(req));
+        store.editableCard(ctx, id); const input = bodyOf(await read(req));
         const notes = store.playbooks.writeNotes(id, input.text, input.baseHash);
         store.recordNotesChange(ctx, id);
         return notes;

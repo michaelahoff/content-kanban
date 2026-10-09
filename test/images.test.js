@@ -216,19 +216,28 @@ test('registered rendered files become adoptable code-rendered versions; invalid
   assert.equal(adopted.card.imageRoles.original, upload.id);
 });
 
-test('an image completing while Stop is pending or after the turn ends is retained; a missing file is shown unavailable without regeneration', async (t) => {
+test('an image completing after Stop stays in the transcript without becoming a saved output; one after a normal end is retained', async (t) => {
   const f = await fixture(t); const card = await f.card(); f.codex.autoInterrupt = false;
-  await f.queue(card.id, await f.compose(card.id)); const send = await waitFor(() => f.codex.sends[0]);
+  await f.queue(card.id, await f.compose(card.id)); const stopped = await waitFor(() => f.codex.sends[0]);
   await f.ok('POST', `/api/cards/${card.id}/chat/stop`, {});
+  f.codex.image(stopped, { id: 'while-stopping', result: png.toString('base64') });
+  f.codex.finish(stopped, 'interrupted', 'Stopped');
+  f.codex.image(stopped, { id: 'after-stop', result: png.toString('base64') });
+  await f.restart();
+  let chat = await f.chat(card.id);
+  assert.equal(chat.submissions[0].status, 'interrupted');
+  assert.deepEqual(chat.outputs, []);
+  assert.deepEqual(chat.items.filter((item) => item.kind === 'imageGeneration').map((item) => item.nativeId).sort(), ['after-stop', 'while-stopping']);
+
+  await f.queue(card.id, await f.compose(card.id, 'Make another'));
+  const send = await waitFor(() => f.codex.sends[1]);
+  f.codex.finish(send);
   f.codex.image(send, { result: png.toString('base64') });
-  f.codex.finish(send, 'interrupted', 'Stopped');
-  f.codex.image(send, { result: png.toString('base64') });
-  const outputs = await imported(f, card.id, 2);
-  assert.equal((await f.chat(card.id)).submissions[0].status, 'interrupted');
+  const outputs = await imported(f, card.id, 1);
   assert.ok(outputs.every((o) => o.available));
   await rm(path.join(f.dataDir, 'images', outputs[0].imageId));
   const after = (await f.chat(card.id)).outputs;
   assert.equal(after[0].available, false); assert.equal(after[0].importStatus, 'imported'); assert.equal(after[0].hash, outputs[0].hash);
   assert.equal((await f.raw(`/images/${outputs[0].imageId}`)).status, 404);
-  assert.equal(f.codex.sends.length, 1);
+  assert.equal(f.codex.sends.length, 2);
 });

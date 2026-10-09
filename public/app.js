@@ -2,7 +2,7 @@
 import { $, escape, iconButton, imageURL, toast, wordCount, confirmDelete, smallForm } from './ui.js';
 import { retry } from './api.js';
 import { templates, fieldInputId } from './card-template.js';
-import { state, project, locateCard, cardCount, loadWorkspace, loadCards, cardChanged, flushCards, createCard, moveCard, deleteCard, deleteLane, deleteProject, saveStatus, hasUnsavedWork, onStatusChange, useSavedCard, undoLastMove, loadPlaybooks, applyStages } from './state.js';
+import { state, project, locateCard, cardCount, loadWorkspace, loadCards, cardChanged, flushCards, createCard, moveCard, deleteCard, deleteLane, deleteProject, archiveProject, unarchiveProject, saveStatus, hasUnsavedWork, onStatusChange, useSavedCard, undoLastMove, loadPlaybooks, applyStages } from './state.js';
 import { view, selectProject, renderApp, renderBoard, renderStatus, editProject, editLane, editProjectPrompt, toggleCards } from './board.js';
 import { openCard, closeCard, cardPanelOpen, renderImages, copyText, copyTrifecta, fetchYoutube, addImages, originalVideoMarkup, videoLinkMarkup } from './editor.js';
 import { openPlaybooks, playbooksChanged } from './playbook-editor.js';
@@ -21,6 +21,7 @@ dropIndicator.innerHTML = '<span></span>';
 
 function makeCard(laneId) {
   const p = project();
+  if (p?.archivedAt) return toast('Unarchive this project to add cards.');
   const lane = p?.lanes.find((item) => item.id === laneId) || p?.lanes[0];
   if (!lane) return toast('Add a lane first.');
   const card = createCard(lane);
@@ -92,6 +93,26 @@ document.addEventListener('click', (event) => {
       renderApp();
       toast('Project deleted.');
     });
+  }
+  if (action === 'archive-project') {
+    const p = project();
+    smallForm({
+      title: `Archive “${p.name}”?`,
+      description: 'Archiving cancels this project’s queued and pending work and stops running agent work. Its cards, chats, history and saved images are kept and stay readable. You can unarchive it later; cancelled work is not restarted.',
+      submit: 'Archive project',
+      onSubmit: async () => {
+        await archiveProject(p);
+        if (locateCard()?.project === p) closeCard();
+        renderApp();
+        toast('Project archived.');
+      },
+    });
+  }
+  if (action === 'unarchive-project') {
+    const p = project();
+    target.disabled = true;
+    unarchiveProject(p).then(() => { renderApp(); toast('Project unarchived. Cancelled work was not restarted.'); })
+      .catch((error) => { target.disabled = false; toast(error.message); });
   }
   if (action === 'delete-lane') {
     const lane = project().lanes.find((item) => item.id === targetId);
@@ -184,6 +205,7 @@ document.addEventListener('paste', (event) => {
   if (!cardPanelOpen() && event.target.closest('input, textarea, [contenteditable]')) return;
   event.preventDefault();
   let targetId = cardPanelOpen() ? state.cardId : null;
+  if (!targetId && project()?.archivedAt) return;
   if (!targetId) targetId = makeCard(view.pasteLaneId)?.id;
   if (targetId) addImages(files, targetId);
 });
@@ -327,13 +349,20 @@ onStatusChange(renderStatus);
 try {
   await loadWorkspace();
   try { state.projectId = localStorage.getItem('frameboard-project'); } catch { /* Optional preference. */ }
-  if (!project()) state.projectId = state.projects[0]?.id;
+  if (!project()) state.projectId = (state.projects.find((item) => !item.archivedAt) ?? state.projects[0])?.id;
   await loadCards(state.projectId);
   renderApp();
   initializeChats({ openCard, switchProject, renderBoard });
   // Playbook files saved in another tab change lane summaries on the board.
   onActivity((entry) => {
     cardPlaybookActivity(entry);
+    // Another tab archived or unarchived a project.
+    const changed = entry.entity === 'project' && ['archived', 'unarchived'].includes(entry.type) && state.projects.find((item) => item.id === entry.entityId);
+    if (changed && Boolean(changed.archivedAt) !== (entry.type === 'archived')) {
+      changed.archivedAt = entry.type === 'archived' ? entry.createdAt : null;
+      if (changed.archivedAt && locateCard()?.project === changed) closeCard();
+      renderApp();
+    }
     if (entry.entity !== 'flow') return;
     playbooksChanged();
     const p = state.projects.find((item) => item.flowId === entry.entityId);

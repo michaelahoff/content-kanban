@@ -114,7 +114,7 @@ export function createProtectionStore({ all, get, run, transaction, requireCard,
           if (old.tool !== tool || old.arguments !== JSON.stringify(input)) fail(409, 'This tool call identity already has a different payload.');
           return JSON.parse(old.result);
         }
-        if (!['dispatching', 'accepted', 'running'].includes(a.status)) fail(409, 'This attempt no longer has card-tool authority.');
+        if (!['dispatching', 'accepted', 'running'].includes(a.status) || a.revoked) fail(409, 'This attempt no longer has card-tool authority.');
         const card = requireCard(ctx, a.card_id);
         let result;
         if (tool === 'read_card') result = { card, fieldVersions: versions(card.id), placementVersion: card.placementVersion,

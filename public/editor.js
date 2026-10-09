@@ -2,7 +2,7 @@
 import { createTrifectaItem } from './trifecta.js';
 import { $, escape, icon, button, iconButton, imageURL, wordCount, lastEditedMarkup, toast } from './ui.js';
 import { state, locateCard, cardChanged, flushCards, onCardFieldsChange, beginCardEditing, endCardEditing } from './state.js';
-import { renderBoard, renderStatus } from './board.js';
+import { renderBoard, renderStatus, archivedNotice } from './board.js';
 import { request } from './api.js';
 import { templates, fieldInputId } from './card-template.js';
 import { mountChat, unmountChat } from './chat.js';
@@ -100,12 +100,19 @@ export function openCard(targetId) {
     </div>
     <aside class="images-panel" aria-label="Card images"><div class="field-heading"><h2>Images</h2><span id="image-count"></span></div><div id="card-images"></div><label class="image-drop" id="image-drop">${icon('upload')}<strong>Add images</strong><span>Drop, paste or <u>browse files</u></span><input id="image-files" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/avif" multiple aria-label="Upload images"></label><p id="upload-status" class="upload-status" role="status"></p></aside></div>
     <div class="editor-footer">${button('delete-card', 'Delete card', 'trash', 'text-button danger')}${button('copy-trifecta', 'Trifecta copy', 'text', 'button secondary')}<span class="edited-at" data-edited-card="${card.id}">${lastEditedMarkup(card)}</span>${button('close-card', 'Done', 'check', 'button primary')}</div>`;
+  // Cards in an archived project are read-only; the server refuses changes too.
+  cardDialog.classList.toggle('archived', Boolean(p.archivedAt));
+  if (p.archivedAt) {
+    $('.editor-header').insertAdjacentHTML('afterend', `<p class="archived-banner" role="note">${escape(archivedNotice)}</p>`);
+    cardDialog.querySelectorAll('input, textarea').forEach((control) => { control.readOnly = true; });
+    $('#card-lane').disabled = true; $('#image-files').disabled = true;
+  }
   renderImages();
   renderStatus();
   mountCardPlaybook(targetId);
   mountChat(targetId);
   document.body.classList.add('card-panel-open');
-  if (!card.title) $(card.fields.originalVideoUrl ? '#card-title' : '#card-original-video-url').focus();
+  if (!card.title && !p.archivedAt) $(card.fields.originalVideoUrl ? '#card-title' : '#card-original-video-url').focus();
 }
 export function renderImages() {
   const found = locateCard();

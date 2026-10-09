@@ -98,5 +98,12 @@ A card's saved field values, lane and position, gallery membership, and image ro
 A run of consecutive manual saves to one card that forms a single saved card state. Other changes, such as agent edits, lane moves, image adoption or restoration, always form their own saved card states.
 _Avoid_: Autosave, revision
 
+**Archived project**:
+A project taken out of active use. Archiving cancels its queued and pending work, stops running work and revokes its attempts. Its cards, card chats, history, workspaces and saved outputs stay readable but accept no changes until it is unarchived. Unarchiving restores access, not cancelled work.
+_Avoid_: Deleted project
+
+**Revoked attempt**:
+A delivery attempt that Stop or project archive has permanently stripped of authority. Its late native events stay in history, but it can never again change the card, add notes, create proposals or save outputs. A submission revoked by archive also cannot be retried.
+
 **Card restoration**:
 Returning a whole card to an earlier saved card state while preserving intervening activity, conversation history, and image versions.

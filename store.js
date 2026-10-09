@@ -10,7 +10,7 @@ import { templates, defaultTemplate, emptyFields, emptyImageRoles } from './publ
 import { readLegacyBoard } from './legacy-board.js';
 import { createPlaybooks } from './playbooks.js';
 import { parseDocument, playbookSettings, describeSettings } from './public/playbook-format.js';
-import { chatMigration, recoveryMigration, createChatStore } from './store-chat.js';
+import { chatMigration, recoveryMigration, createChatStore, archivedMessage } from './store-chat.js';
 import { protectionMigration, createProtectionStore } from './store-protection.js';
 import { imagesMigration, createImageStore } from './store-images.js';
 import { retainedMigration, createRetainedMetadata } from './store-retained.js';
@@ -183,7 +183,16 @@ const migrations = [`
     reason TEXT NOT NULL DEFAULT '', submission_id TEXT, result TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
   CREATE INDEX lane_runs_by_card ON lane_runs(card_id, created_at);
   CREATE INDEX lane_runs_by_status ON lane_runs(workspace_id, status);
-`, retainedMigration];
+`, retainedMigration, `
+  -- Archive (#49) takes a project out of active use. The revocation columns are
+  -- a persistent effect fence: once set, no restart, unarchive or late native
+  -- callback returns authority to that attempt, or Retry to that submission.
+  ALTER TABLE projects ADD COLUMN archived_at TEXT;
+  ALTER TABLE projects ADD COLUMN archive_generation INTEGER NOT NULL DEFAULT 0;
+  ALTER TABLE chat_attempts ADD COLUMN revoked TEXT;
+  ALTER TABLE chat_submissions ADD COLUMN revoked TEXT;
+  UPDATE chat_attempts SET revoked = 'stopped' WHERE cause = 'user';
+`];
 
 const now = () => new Date().toISOString();
 const fail = (status, message) => { throw Object.assign(new Error(message), { status }); };
@@ -359,7 +368,7 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
   }
 
   function retainedCard(ctx, id) {
-    const row = get('SELECT c.* FROM cards c JOIN projects p ON p.id = c.project_id WHERE c.id = ? AND p.workspace_id = ?', id, ctx.workspaceId);
+    const row = get('SELECT c.*, p.archived_at AS project_archived_at FROM cards c JOIN projects p ON p.id = c.project_id WHERE c.id = ? AND p.workspace_id = ?', id, ctx.workspaceId);
     return row || fail(404, 'This card does not exist.');
   }
   function snapshotFor(row) {
@@ -524,16 +533,20 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
         hasInstructions: Boolean(settings.instructions), errors: settings.errors, summary: describeSettings(settings, defaultTemplate) } };
     });
   }
-  function requireProject(ctx, id) {
-    return get('SELECT * FROM projects WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL', id, ctx.workspaceId) || fail(404, 'This project no longer exists. Reload the page.');
+  // Archived projects stay readable; only reads pass { allowArchived: true }.
+  const checkActive = (row, allowArchived) => { if (row.archived_at && !allowArchived) fail(409, archivedMessage); return row; };
+  function requireProject(ctx, id, { allowArchived = false } = {}) {
+    return checkActive(get('SELECT * FROM projects WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL', id, ctx.workspaceId) || fail(404, 'This project no longer exists. Reload the page.'), allowArchived);
   }
   function requireStage(ctx, id) {
-    const row = get('SELECT s.* FROM stages s JOIN flows f ON f.id = s.flow_id WHERE s.id = ? AND f.workspace_id = ? AND s.deleted_at IS NULL', id, ctx.workspaceId);
-    return row ? stageFrom(row) : fail(404, 'This lane no longer exists. Reload the page.');
+    const row = get(`SELECT s.*, (SELECT archived_at FROM projects WHERE flow_id = s.flow_id) AS archived_at FROM stages s JOIN flows f ON f.id = s.flow_id
+      WHERE s.id = ? AND f.workspace_id = ? AND s.deleted_at IS NULL`, id, ctx.workspaceId);
+    return row ? stageFrom(checkActive(row)) : fail(404, 'This lane no longer exists. Reload the page.');
   }
-  function requireCard(ctx, id) {
-    const row = get('SELECT c.* FROM cards c JOIN projects p ON p.id = c.project_id WHERE c.id = ? AND p.workspace_id = ? AND c.deleted_at IS NULL AND p.deleted_at IS NULL', id, ctx.workspaceId);
-    return row ? withLastMove(cardFrom(row)) : fail(404, 'This card no longer exists. Reload the page.');
+  function requireCard(ctx, id, { allowArchived = false } = {}) {
+    const row = get(`SELECT c.*, p.archived_at FROM cards c JOIN projects p ON p.id = c.project_id
+      WHERE c.id = ? AND p.workspace_id = ? AND c.deleted_at IS NULL AND p.deleted_at IS NULL`, id, ctx.workspaceId);
+    return row ? withLastMove(cardFrom(checkActive(row, allowArchived))) : fail(404, 'This card no longer exists. Reload the page.');
   }
   function withLastMove(card) {
     const move = get('SELECT id, created_at, undone_at FROM card_moves WHERE card_id = ? ORDER BY id DESC LIMIT 1', card.id);
@@ -548,7 +561,8 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
     return rows[previous < 0 ? Math.min(placement.index, rows.length) : previous + 1]?.id ?? null;
   }
   function requireFlow(ctx, id) {
-    return get('SELECT * FROM flows WHERE id = ? AND workspace_id = ?', id, ctx.workspaceId) || fail(404, 'This flow no longer exists. Reload the page.');
+    const row = get('SELECT f.*, (SELECT archived_at FROM projects WHERE flow_id = f.id) AS archived_at FROM flows f WHERE f.id = ? AND f.workspace_id = ?', id, ctx.workspaceId);
+    return checkActive(row || fail(404, 'This flow no longer exists. Reload the page.'));
   }
   const checkId = (id) => check(id === undefined || (typeof id === 'string' && idPattern.test(id)), 'Invalid or duplicate ID.');
 
@@ -598,7 +612,7 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
     recordSavedState(ctx, cardId, 'image_adopted', at);
     return { card: requireCard(ctx, cardId), adopted: true };
   }
-  const images = createImageStore({ all, get, run, transaction, retainedCard, recordChange, now, adopt: adoptImage });
+  const images = createImageStore({ all, get, run, transaction, retainedCard, recordChange, now, adopt: adoptImage, revoked: (attemptId) => chats.revocation(attemptId) });
   const api = {
     owner,
     playbooks,
@@ -657,9 +671,9 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
     workspace(ctx) {
       const workspace = get('SELECT id, name FROM workspaces WHERE id = ?', ctx.workspaceId);
       const user = ctx.userId ? get('SELECT id, name FROM users WHERE id = ?', ctx.userId) : null;
-      const projects = all(`SELECT p.id, p.name, p.flow_id, p.position, (SELECT COUNT(*) FROM cards c WHERE c.project_id = p.id AND c.deleted_at IS NULL) AS card_count
+      const projects = all(`SELECT p.id, p.name, p.flow_id, p.position, p.archived_at, (SELECT COUNT(*) FROM cards c WHERE c.project_id = p.id AND c.deleted_at IS NULL) AS card_count
         FROM projects p WHERE p.workspace_id = ? AND p.deleted_at IS NULL ORDER BY p.position`, ctx.workspaceId)
-        .map((row) => ({ id: row.id, name: row.name, flowId: row.flow_id, position: row.position, cardCount: row.card_count }));
+        .map((row) => ({ id: row.id, name: row.name, flowId: row.flow_id, position: row.position, cardCount: row.card_count, archivedAt: row.archived_at }));
       const flows = all('SELECT id, name FROM flows WHERE workspace_id = ? ORDER BY created_at', ctx.workspaceId).map((row) => ({ ...row, stages: withPlaybooks(row.id, activeStages(row.id)) }));
       const eventCursor = get('SELECT MAX(id) AS cursor FROM activity_log WHERE workspace_id = ?', ctx.workspaceId).cursor ?? 0;
       return { workspace, user, projects, flows, eventCursor };
@@ -679,7 +693,7 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
         run('INSERT INTO projects (id, workspace_id, flow_id, name, position, created_at) VALUES (?, ?, ?, ?, ?, ?)', id, ctx.workspaceId, flowId, name, position, now());
         recordChange(ctx, 'project', id, 'created', { projectId: id, data: { flowId } });
         playbooks.ensure(flowId, { projectName: name, lanes: activeStages(flowId) });
-        return { project: { id, name, flowId, position, cardCount: 0 }, flow: { id: flowId, name, stages: withPlaybooks(flowId, activeStages(flowId)) } };
+        return { project: { id, name, flowId, position, cardCount: 0, archivedAt: null }, flow: { id: flowId, name, stages: withPlaybooks(flowId, activeStages(flowId)) } };
       });
     },
 
@@ -701,6 +715,34 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
         run('UPDATE projects SET deleted_at = ? WHERE id = ?', now(), id);
         recordChange(ctx, 'project', id, 'deleted', { projectId: id });
       });
+    },
+
+    // Archive takes a project out of active use in one commit: pending lane runs
+    // and queued submissions are cancelled, running work is asked to stop (the
+    // worker sends native Stop after this commit), and every unfinished attempt
+    // and submission is revoked for good. Cards, chats and history stay readable.
+    archiveProject(ctx, id) {
+      requireProject(ctx, id);
+      return transaction(() => {
+        const at = now(); const reason = 'Cancelled because the project was archived.';
+        for (const row of all('SELECT id FROM cards WHERE project_id = ? AND deleted_at IS NULL', id)) {
+          chats.revokeCard(ctx, row.id, reason);
+          run("UPDATE lane_runs SET status = 'cancelled', reason = ?, updated_at = ? WHERE card_id = ? AND status = 'pending'", reason, at, row.id);
+        }
+        run('UPDATE projects SET archived_at = ?, archive_generation = archive_generation + 1 WHERE id = ?', at, id);
+        recordChange(ctx, 'project', id, 'archived', { projectId: id, at });
+        return { id, archivedAt: at };
+      });
+    },
+
+    // Unarchive restores access only. Revoked work stays cancelled and revoked.
+    unarchiveProject(ctx, id) {
+      const project = requireProject(ctx, id, { allowArchived: true });
+      if (project.archived_at) transaction(() => {
+        run('UPDATE projects SET archived_at = NULL WHERE id = ?', id);
+        recordChange(ctx, 'project', id, 'unarchived', { projectId: id });
+      });
+      return { id, archivedAt: null };
     },
 
     setProjectPrompt(ctx, projectId, prompt) {
@@ -777,12 +819,12 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
     },
 
     listCards(ctx, projectId) {
-      requireProject(ctx, projectId);
+      requireProject(ctx, projectId, { allowArchived: true });
       return all('SELECT c.* FROM cards c JOIN stages s ON s.id = c.stage_id WHERE c.project_id = ? AND c.deleted_at IS NULL ORDER BY s.position, c.position', projectId).map((row) => withLastMove(cardFrom(row)));
     },
 
     getCard(ctx, id) {
-      const card = requireCard(ctx, id);
+      const card = requireCard(ctx, id, { allowArchived: true });
       return { card, events: all('SELECT * FROM activity_log WHERE workspace_id = ? AND entity = \'card\' AND entity_id = ? AND card_event_id IS NOT NULL ORDER BY card_event_id', ctx.workspaceId, id).map(activityEventFrom) };
     },
 
@@ -996,6 +1038,9 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
       requireFlow(ctx, flowId);
       transaction(() => recordChange(ctx, 'flow', flowId, type, { projectId: get('SELECT id FROM projects WHERE flow_id = ?', flowId)?.id ?? null, data: { path: documentPath } }));
     },
+    // The card must accept changes: it exists and its project is not archived.
+    editableCard: (ctx, id) => requireCard(ctx, id),
+    editableFlow: (ctx, id) => requireFlow(ctx, id),
     recordNotesChange(ctx, cardId) {
       const card = requireCard(ctx, cardId);
       transaction(() => recordChange(ctx, 'card', cardId, 'notes_saved', { projectId: card.projectId }));
@@ -1020,7 +1065,7 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
         const cardRow = get('SELECT * FROM cards WHERE id = ?', runRow.card_id);
         const project = get('SELECT * FROM projects WHERE id = ?', cardRow.project_id);
         const stage = stageFrom(get('SELECT * FROM stages WHERE id = ?', runRow.stage_id));
-        return { run: laneRunFrom(runRow), card: cardFrom(cardRow), deleted: Boolean(cardRow.deleted_at || project.deleted_at),
+        return { run: laneRunFrom(runRow), card: cardFrom(cardRow), deleted: Boolean(cardRow.deleted_at || project.deleted_at), archived: Boolean(project.archived_at),
           stage, stageDeleted: Boolean(get('SELECT deleted_at FROM stages WHERE id = ?', stage.id).deleted_at), project: { id: project.id, name: project.name, flowId: project.flow_id }, stages: activeStages(project.flow_id) };
       },
       place(ctx, cardId) {
@@ -1046,6 +1091,8 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
         return transaction(() => {
           const row = get('SELECT * FROM lane_runs WHERE id = ?', id);
           if (!row) return null;
+          // A cancelled run stays cancelled, whatever its preparation reports later.
+          if (row.status === 'cancelled') return laneRunFrom(row);
           run('UPDATE lane_runs SET status = ?, reason = ?, submission_id = COALESCE(?, submission_id), result = COALESCE(?, result), updated_at = ? WHERE id = ?',
             status, reason, submissionId, result === null ? null : JSON.stringify(result), now(), id);
           if (status !== row.status || reason !== row.reason || result) {

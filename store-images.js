@@ -2,6 +2,7 @@
 // An output is retained with its provenance whether or not its bytes were
 // saved; import, gallery adoption and image roles are separate steps.
 import { randomUUID } from 'node:crypto';
+import { archivedMessage } from './store-chat.js';
 
 export const imagesMigration = `
   CREATE TABLE image_versions (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id),
@@ -20,7 +21,7 @@ export const outputProvenance = (submission, creationMethod, { toolPrompt = null
   configurationId: submission.configuration.id, harness: submission.configuration.harness, toolPrompt, references: submission.context.images, native });
 const versionFrom = (row) => row && ({ id: row.id, hash: row.hash, size: row.size, format: row.format, origin: row.origin, createdAt: row.created_at });
 
-export function createImageStore({ all, get, run, transaction, retainedCard, recordChange, now, adopt }) {
+export function createImageStore({ all, get, run, transaction, retainedCard, recordChange, now, adopt, revoked }) {
   const version = (id) => versionFrom(get('SELECT * FROM image_versions WHERE id = ?', id));
   function outputFrom(row, gallery = null) {
     const image = row.image_id ? version(row.image_id) : null;
@@ -46,12 +47,14 @@ export function createImageStore({ all, get, run, transaction, retainedCard, rec
       return all('SELECT * FROM chat_outputs WHERE card_id = ? ORDER BY created_at, rowid', cardId).map((row) => outputFrom(row, JSON.parse(card.images)));
     },
     // Idempotent by (attempt, native item or tool call): repeated native events
-    // and reconciliation return the existing output.
+    // and reconciliation return the existing output. A revoked attempt (Stop,
+    // archive) registers nothing new; its native item stays in the transcript.
     capture(ctx, attemptId, { nativeId, kind, generationStatus, name, provenance }) {
       return transaction(() => {
         const existing = get('SELECT * FROM chat_outputs WHERE attempt_id = ? AND native_id = ?', attemptId, nativeId);
         if (existing) return outputFrom(existing);
         const a = get('SELECT card_id FROM chat_attempts WHERE id = ?', attemptId);
+        if (revoked(attemptId)) return null;
         const id = randomUUID();
         run(`INSERT INTO chat_outputs (id, card_id, attempt_id, native_id, kind, generation_status, import_status, name, provenance, created_at)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, a.card_id, attemptId, nativeId, kind, generationStatus,
@@ -77,6 +80,8 @@ export function createImageStore({ all, get, run, transaction, retainedCard, rec
       return transaction(() => {
         const current = output(id);
         if (current.importStatus === 'imported') return current;
+        // Bytes are published only while the producing attempt is unrevoked.
+        if (revoked(current.attemptId)) return this.importFailed(ctx, id, 'Not saved: this response was stopped or its project archived before the image was saved.');
         insertVersion(ctx, value, origin);
         run("UPDATE chat_outputs SET import_status = 'imported', image_id = ?, error = '', imported_at = ? WHERE id = ?", value.id, now(), id);
         activity(ctx, current.cardId, 'image_output_imported', { outputId: id, imageId: value.id, hash: value.hash });
@@ -94,7 +99,9 @@ export function createImageStore({ all, get, run, transaction, retainedCard, rec
     },
     // A save-only retry reuses the same output; it never asks for generation.
     beginRetry(ctx, cardId, id) {
-      retainedCard(ctx, cardId);
+      if (retainedCard(ctx, cardId).project_archived_at) fail(409, archivedMessage);
+      const existing = output(id);
+      if (existing?.cardId === cardId && existing.importStatus !== 'imported' && revoked(existing.attemptId)) fail(409, 'This image cannot be saved: its response was stopped or its project archived. Send a new request instead.');
       return transaction(() => {
         const current = output(id);
         if (!current || current.cardId !== cardId) fail(404, 'This image output does not exist.');

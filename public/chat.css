@@ -100,3 +100,5 @@
   .chat-composer { max-height: 65%; }
 }
 @media (max-width: 620px) { #card-dialog.with-chat[open] { width: auto; } }
+/* An archived project's chat history stays readable; it accepts no new work. */
+#card-dialog.archived :is(#chat-composer, [data-action="chat-fresh"]) { display: none; }

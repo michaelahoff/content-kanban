@@ -660,6 +660,24 @@ These values apply when a card enters this lane.
   assert.equal((await state()).projects.length, 1);
   console.log('PASS project creation, isolation, renaming, deletion');
 
+  await click('[data-action="edit-project"]');
+  await click('[data-action="archive-project"]');
+  await click('#small-form [type="submit"]');
+  await waitFor(`document.querySelector('.archived-badge')`);
+  assert.ok(await evaluate(`document.querySelector('.archived-projects [data-action="switch-project"]').classList.contains('active')`), 'The archived project moves to the Archived group');
+  assert.equal(await evaluate(`document.querySelectorAll('#board [data-action="add-card"], #board [data-action="edit-lane"], .header-actions [data-action="add-lane"]').length`), 0, 'An archived board offers no editing actions');
+  assert.equal(await evaluate(`document.querySelector('.card').draggable`), false);
+  await click('[data-action="open-card"]');
+  await waitFor(`document.querySelector('#card-dialog.archived .archived-banner')`);
+  assert.ok(await evaluate(`document.querySelector('#card-title').readOnly && document.querySelector('#card-lane').disabled`), 'Archived cards open read-only');
+  assert.equal(await evaluate(`document.querySelector('#card-dialog [data-action="delete-card"]').checkVisibility()`), false);
+  await snapshot('archived-card');
+  await click('[data-action="close-card"]');
+  await click('[data-action="unarchive-project"]');
+  await waitFor(`!document.querySelector('.archived-badge') && document.querySelector('.header-actions [data-action="add-lane"]')`);
+  assert.equal(await evaluate(`document.querySelectorAll('.archived-projects').length`), 0);
+  console.log('PASS project archive and unarchive');
+
   await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
   assert.ok(await evaluate(`document.documentElement.scrollWidth <= innerWidth`));
   await snapshot('mobile-board');

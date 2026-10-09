@@ -110,6 +110,10 @@
   .heading-row { display: flex; align-items: center; gap: 14px; }
   h1 { font-family: var(--display-font); font-size: 31px; font-weight: 550; letter-spacing: -1px; line-height: 1.25; overflow-wrap: anywhere; }
   .heading-row .icon-button { margin-top: 4px; flex-shrink: 0; }
+  .archived-badge { padding: 3px 9px; border-radius: 999px; background: #24212f; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+  .archived-banner { margin: 0 36px 18px; padding: 10px 14px; border-radius: 6px; background: #1b1c22; color: var(--muted); font-size: 13px; }
+  #card-dialog .archived-banner { margin: 0 0 12px; }
+  .archived-projects .project-link { opacity: .7; }
   .header-actions { display: flex; gap: 9px; flex-shrink: 0; padding-top: 12px; }
   .board-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 20px; margin: 0 36px; border-bottom: 1px solid var(--border); min-height: 52px; }
   .board-tab { display: flex; gap: 8px; align-items: center; align-self: stretch; font-size: 12px; padding: 0 2px; border-bottom: 2px solid var(--accent); }
@@ -264,6 +268,7 @@
   .image-dialog p { text-align: center; font-size: 11px; color: var(--muted); margin-top: 12px; overflow-wrap: anywhere; }
   @keyframes enter { from { opacity: 0; transform: translateY(8px) scale(.99); } to { opacity: 1; transform: none; } }
   @keyframes card-panel-in { from { opacity: 0; transform: perspective(1800px) translateX(64px) rotateY(-11deg); } to { opacity: 1; transform: none; } }
+  #card-dialog.archived :is(.image-drop, .image-flags, [data-action="remove-image"], [data-action="delete-card"], [data-undo-move], #card-playbook button) { display: none; }
 }
 @layer forms {
   .small-dialog { width: 440px; max-width: calc(100vw - 32px); padding: 24px; }

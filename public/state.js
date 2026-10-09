@@ -390,6 +390,16 @@ export function renameProject(p, name) {
   p.name = name;
   enqueue(() => send('PATCH', url('projects', p.id), { name }));
 }
+// Archive and unarchive wait for the server: archiving cancels the project's
+// work there, and the board then shows the project read-only.
+export async function archiveProject(p) {
+  const { archivedAt } = await enqueue(() => send('POST', `${url('projects', p.id)}/archive`, {}), undefined, { rejectOnError: true });
+  p.archivedAt = archivedAt;
+}
+export async function unarchiveProject(p) {
+  const { archivedAt } = await enqueue(() => send('POST', `${url('projects', p.id)}/unarchive`, {}), undefined, { rejectOnError: true });
+  p.archivedAt = archivedAt;
+}
 export function deleteProject(p) {
   p.lanes.forEach((lane) => lane.cards.forEach((card) => { dirty.delete(card.id); conflicts.delete(card.id); }));
   state.projects = state.projects.filter((item) => item.id !== p.id);

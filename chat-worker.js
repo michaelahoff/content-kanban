@@ -51,7 +51,7 @@ export function createChatWorker({ store, adapter, adapters = { codex: adapter }
       provenance: outputProvenance(submission, 'native-image-generation', { toolPrompt: native.revisedPrompt ?? null,
         native: { ...location, itemId: native.id, status: native.status, savedPath: native.savedPath ?? null,
           transparentBackground: native.transparentBackground ?? null, failure: native.failure ?? null } }) });
-    if (output.importStatus === 'pending') void saveOutput(output, native);
+    if (output?.importStatus === 'pending') void saveOutput(output, native);
   }
   function flush(work) {
     if (closed) return;
@@ -176,6 +176,12 @@ export function createChatWorker({ store, adapter, adapters = { codex: adapter }
       return { success: true, contentItems: [{ type: 'inputText', text: JSON.stringify(result) }] };
     } catch (error) { return { success: false, contentItems: [{ type: 'inputText', text: error.message }] }; }
   }
+  // Before sending, a Stop or archive ends the attempt rather than leaving it
+  // waiting for a native interruption that can never come.
+  function stopped(work) {
+    if (store.chats.attempt(work.attempt.id)?.status === 'interrupt-requested') end(work, 'interrupted');
+    else release(work);
+  }
   async function execute(work) {
     try {
       const { submission, attempt } = work;
@@ -209,10 +215,10 @@ export function createChatWorker({ store, adapter, adapters = { codex: adapter }
         if (store.chats.attempt(attempt.id)?.status === 'interrupt-requested') { end(work, 'interrupted'); return; }
         if (outside.length) { store.chats.holdOutside(ctx, attempt.id, outside); release(work); return; }
       }
-      if (store.chats.attempt(attempt.id)?.status !== 'dispatching') { release(work); return; }
+      if (store.chats.attempt(attempt.id)?.status !== 'dispatching') { stopped(work); return; }
       await adapter.assertProtection?.();
       if (closed) return;
-      if (store.chats.attempt(attempt.id)?.status !== 'dispatching') { release(work); return; }
+      if (store.chats.attempt(attempt.id)?.status !== 'dispatching') { stopped(work); return; }
       work.dispatching = true; work.sent = true;
       const started = await adapter.startTurn({ threadId: opened.threadId, model: submission.model,
         fullAccess: store.chats.requestGrants(ctx, submission.cardId).some((grant) => grant.kind === 'full'),
