@@ -20,7 +20,6 @@ dropIndicator.className = 'drop-indicator';
 dropIndicator.setAttribute('aria-hidden', 'true');
 dropIndicator.innerHTML = '<span></span>';
 
-const archivedProject = () => Boolean(project()?.archivedAt);
 function makeCard(laneId) {
   const p = project();
   if (p?.archivedAt) return toast('Unarchive this project to add cards.');
@@ -299,7 +298,7 @@ document.addEventListener('dragover', (event) => {
   if (files) event.preventDefault();
   if (formDialog.open || imageDialog.open) return;
   if (cardPanelOpen() && files) { $('#image-drop').classList.add('drag-over'); return; }
-  if (files && event.target.closest('#library')) { $('[data-library-drop]')?.classList.add('drag-over'); event.dataTransfer.dropEffect = archivedProject() ? 'none' : 'copy'; return; }
+  if (files && event.target.closest('#library')) { $('[data-library-drop]')?.classList.add('drag-over'); event.dataTransfer.dropEffect = project()?.archivedAt ? 'none' : 'copy'; return; }
   const lane = event.target.closest('[data-lane]');
   if (!lane || (!files && !draggedId)) { clearDropTarget(); return; }
   event.preventDefault();

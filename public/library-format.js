@@ -11,15 +11,26 @@ export function libraryFilename(value) {
   return name;
 }
 
+// A leading dot names the file (".env"), not an extension.
+export function splitExtension(name) {
+  const dot = name.lastIndexOf('.');
+  return dot > 0 ? [name.slice(0, dot), name.slice(dot + 1)] : [name, ''];
+}
+
 // Create new keeps the extension: logo.png becomes "logo (1).png".
 export function availableFilename(name, taken) {
   const used = new Set(taken);
   if (!used.has(name)) return name;
-  const dot = name.lastIndexOf('.');
-  const base = dot > 0 ? name.slice(0, dot) : name; const extension = dot > 0 ? name.slice(dot) : '';
+  const [base, extension] = splitExtension(name); const suffix = extension ? `.${extension}` : '';
   let n = 1;
-  while (used.has(`${base} (${n})${extension}`)) n++;
-  return `${base} (${n})${extension}`;
+  while (used.has(`${base} (${n})${suffix}`)) n++;
+  return `${base} (${n})${suffix}`;
+}
+
+// The file holding a name, with the name Create new would use instead.
+export function nameConflict(filename, holders) {
+  const holder = holders.find((entry) => entry.filename === filename);
+  return holder ? { assetId: holder.id, filename, suggested: availableFilename(filename, holders.map((entry) => entry.filename)) } : null;
 }
 
 // Only these types are shown inline: images by the browser, text as plain text.
@@ -28,7 +39,6 @@ const previewTypes = {
   ...Object.fromEntries(['txt', 'md', 'markdown', 'csv', 'tsv', 'json', 'srt', 'vtt', 'yaml', 'yml', 'log'].map((extension) => [extension, ['text', 'text/plain; charset=utf-8']])),
 };
 export function previewType(filename) {
-  const dot = filename.lastIndexOf('.');
-  const found = dot > 0 && previewTypes[filename.slice(dot + 1).toLowerCase()];
+  const found = previewTypes[splitExtension(filename)[1].toLowerCase()];
   return found ? { kind: found[0], type: found[1] } : null;
 }

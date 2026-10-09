@@ -260,7 +260,9 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
         const content = url.pathname.match(/^\/api\/projects\/([^/]+)\/library\/versions\/([^/]+)\/content$/);
         if (content && req.method === 'GET') {
           // Verified before the first byte; a change while streaming aborts the response.
-          const { version, filename, stream: bytes } = await store.library.read(currentUser(req), ...content.slice(1).map(decodeURIComponent));
+          let ids;
+          try { ids = content.slice(1).map(decodeURIComponent); } catch { return send(res, 404, { error: 'Not found.' }); }
+          const { version, filename, stream: bytes } = await store.library.read(currentUser(req), ...ids);
           const inline = url.searchParams.get('inline') === '1' && previewType(filename);
           res.writeHead(200, { 'Content-Type': inline ? inline.type : 'application/octet-stream', 'Content-Length': version.size,
             'Content-Disposition': disposition(inline ? 'inline' : 'attachment', filename),
@@ -306,8 +308,6 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
         res.writeHead(200, { 'Content-Type': type, 'Content-Length': bytes.length });
         res.end(req.method === 'HEAD' ? undefined : bytes);
       } catch (error) {
-        // A refused upload closes the connection instead of reading its remaining bytes.
-        if (!res.headersSent && !req.complete) res.setHeader('Connection', 'close');
         if (!res.headersSent) send(res, error.code === 'ENOENT' ? 404 : error.status || 500, { error: error.status ? error.message : error.code === 'ENOENT' ? 'Not found.' : 'Could not save or load data. Check available disk space and try again.', ...(error.conflict ? { conflict: error.conflict } : {}) });
         else res.end();
         if (!error.status && error.code !== 'ENOENT') console.error(error);

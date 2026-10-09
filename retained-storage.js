@@ -194,6 +194,7 @@ export async function createRetainedStorage({ dataDir, metadata, checkpoint = as
           const measured = await writeBytes(temporary, source, signal);
           if (measured.hash !== version.hash || measured.size !== version.size) fail(409, 'Repair must match the recorded hash and size exactly.');
           signal?.throwIfAborted();
+          metadata.active(ctx, id);
           await publishFile(temporary, payload(id)); await syncDirectory(payloads); await syncDirectory(staging);
           metadata.availability(id, true);
           return metadata.version(ctx, id);

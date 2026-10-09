@@ -337,3 +337,42 @@ test('over HTTP, a damaged version reports unavailable, downloads nothing and re
   assert.deepEqual(Buffer.from(await (await f.raw(`${f.library}/versions/${version.id}/content`)).arrayBuffer()), bytes);
   assert.equal((await f.ok('GET', `${f.library}/assets/${asset.id}`)).versions.length, 1);
 });
+
+test('retrying a saved upload reports that operation’s own version and records nothing new', async (t) => {
+  const f = await fixture(t);
+  const first = await f.upload('cut.mp4', Buffer.from('v1'));
+  const second = await f.upload('cut.mp4', Buffer.from('v2'), { collision: 'replace', assetId: first.asset.id, operationId: 'op-a' });
+  await f.upload('cut.mp4', Buffer.from('v3'), { collision: 'replace', assetId: first.asset.id, operationId: 'op-b' });
+  const activity = () => f.store.activity(f.ctx, { since: 0, limit: 10000 }).filter((entry) => entry.entity === 'asset').length;
+  const before = activity();
+  const again = await f.upload('cut.mp4', Buffer.from('ignored'), { collision: 'replace', assetId: first.asset.id, operationId: 'op-a' });
+  assert.deepEqual([again.outcome, again.version.id, again.version.number], ['replaced', second.version.id, 2]);
+  assert.equal(activity(), before);
+});
+
+test('a refused upload still answers with its reason after a large body, and malformed IDs are not found', async (t) => {
+  const f = await httpFixture(t);
+  await f.upload('big.bin', Buffer.from('first'));
+  const refused = await f.upload('big.bin', Buffer.alloc(32 * 1024 * 1024, 1));
+  assert.equal(refused.status, 409); assert.equal(refused.body.conflict.suggested, 'big (1).bin');
+  assert.equal((await f.raw(`/api/projects/%E0/library/versions/x/content`)).status, 404);
+  assert.equal((await f.raw(`${f.library}/versions/%E0%A4%A/content`)).status, 404);
+});
+
+test('an archive landing during a repair leaves the version unavailable', async (t) => {
+  const f = await fixture(t);
+  const bytes = Buffer.from('exact bytes');
+  const { version } = await f.upload('voice.wav', bytes);
+  const payload = path.join(f.dataDir, 'retained', 'versions', version.id);
+  await chmod(payload, 0o600); await writeFile(payload, 'other bytes');
+  await assert.rejects(f.library.verify(f.ctx, f.projectId, version.id));
+  let release;
+  const slow = Readable.from((async function* () { yield bytes.subarray(0, 5); await new Promise((resolve) => { release = resolve; }); yield bytes.subarray(5); })());
+  const pending = f.library.repair(f.ctx, f.projectId, version.id, slow);
+  while (!release) await new Promise((resolve) => setImmediate(resolve));
+  f.store.archiveProject(f.ctx, f.projectId);
+  release();
+  await assert.rejects(pending, (error) => error.status === 409 && /archived/i.test(error.message));
+  f.store.unarchiveProject(f.ctx, f.projectId);
+  assert.equal(f.library.asset(f.ctx, f.projectId, version.objectId ?? f.library.list(f.ctx, f.projectId).assets[0].id).current.available, false);
+});

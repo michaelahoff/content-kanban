@@ -2,7 +2,7 @@
 // retained versions, and resolve name collisions explicitly.
 import { $, escape, icon, button, iconButton, toast, smallForm, id } from './ui.js';
 import { request } from './api.js';
-import { availableFilename, libraryFilename, previewType } from './library-format.js';
+import { libraryFilename, nameConflict, previewType, splitExtension } from './library-format.js';
 import { project } from './state.js';
 
 const dialog = $('#library-dialog');
@@ -19,7 +19,7 @@ export function formatSize(size) {
   return unit ? `${value.toFixed(value < 10 ? 1 : 0)} ${units[unit]}` : `${size} ${size === 1 ? 'byte' : 'bytes'}`;
 }
 const savedAt = (value) => new Date(value).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
-const extension = (filename) => { const dot = filename.lastIndexOf('.'); return dot > 0 ? filename.slice(dot + 1).slice(0, 5).toUpperCase() : 'FILE'; };
+const extension = (filename) => splitExtension(filename)[1].slice(0, 5).toUpperCase() || 'FILE';
 const archived = () => Boolean(project()?.archivedAt);
 
 async function load() {
@@ -108,13 +108,9 @@ function chooseCollision(conflict, holder) {
   });
 }
 
-const conflictFor = (filename) => {
-  const holder = library.assets.find((asset) => asset.filename === filename);
-  return holder && { assetId: holder.id, filename, suggested: availableFilename(filename, library.assets.map((asset) => asset.filename)) };
-};
 async function upload(entry) {
   // Asking before sending avoids streaming a large file only to be refused.
-  let conflict = !entry.collision && conflictFor(entry.filename);
+  let conflict = !entry.collision && nameConflict(entry.filename, library.assets);
   for (;;) {
     if (conflict) {
       entry.status = 'waiting'; paint();
@@ -137,7 +133,20 @@ async function upload(entry) {
     return;
   }
 }
+// One file at a time; each keeps its own success or failure.
 let uploading = Promise.resolve();
+const enqueue = (entries) => {
+  uploading = uploading.then(async () => {
+    for (const entry of entries.filter((item) => item.status === 'waiting')) {
+      if (library.projectId !== entry.projectId) { entry.status = 'cancelled'; continue; }
+      await load();
+      await upload(entry);
+      await load();
+      paint();
+    }
+  });
+  return uploading;
+};
 export function uploadLibraryFiles(files) {
   if (archived()) return toast('Unarchive this project to upload files.');
   const projectId = library.projectId;
@@ -148,17 +157,7 @@ export function uploadLibraryFiles(files) {
   });
   library.uploads.push(...entries);
   paint();
-  // One file at a time; each keeps its own success or failure.
-  uploading = uploading.then(async () => {
-    await load();
-    for (const entry of entries.filter((item) => item.status === 'waiting')) {
-      if (library.projectId !== projectId) { entry.status = 'cancelled'; continue; }
-      await upload(entry);
-      await load();
-      paint();
-    }
-  });
-  return uploading;
+  return enqueue(entries);
 }
 
 async function preview(asset) {
@@ -209,7 +208,7 @@ document.addEventListener('click', async (event) => {
   if (action === 'library-clear-uploads') { library.uploads = library.uploads.filter((entry) => ['waiting', 'uploading'].includes(entry.status)); paint(); }
   if (action === 'library-retry-upload') {
     const entry = library.uploads.find((item) => item.id === target.dataset.id);
-    if (entry) { entry.status = 'waiting'; paint(); uploading = uploading.then(async () => { await upload(entry); await load(); paint(); }); }
+    if (entry) { entry.status = 'waiting'; paint(); void enqueue([entry]); }
   }
   if (action === 'library-verify') {
     target.disabled = true;
@@ -228,7 +227,7 @@ document.addEventListener('change', async (event) => {
     target.value = '';
     dialog.close();
     library.uploads.push(entry); paint();
-    uploading = uploading.then(async () => { await upload(entry); await load(); paint(); });
+    void enqueue([entry]);
   }
   if (target.dataset.repair && target.files[0]) {
     try {

@@ -1,6 +1,7 @@
 // The project Library: uploaded files with stable asset identities and
 // immutable versions. Bytes live in retained storage; names are labels.
-import { availableFilename, libraryFilename } from './public/library-format.js';
+import { libraryFilename, nameConflict } from './public/library-format.js';
+import { libraryKinds } from './store-retained.js';
 
 const fail = (status, message, extra = {}) => { throw Object.assign(new Error(message), { status, ...extra }); };
 
@@ -16,7 +17,7 @@ export function createLibrary({ retained, metadata, project, record }) {
   function owned(ctx, projectId, versionId) {
     const version = metadata.version(ctx, versionId);
     const source = version && metadata.object(ctx, version.objectId);
-    if (!source || source.project_id !== projectId || !['asset', 'document'].includes(source.kind) || version.state !== 'committed') fail(404, 'This Library file version does not exist.');
+    if (!source || source.project_id !== projectId || !libraryKinds.includes(source.kind) || version.state !== 'committed') fail(404, 'This Library file version does not exist.');
     return { version, source };
   }
 
@@ -34,7 +35,7 @@ export function createLibrary({ retained, metadata, project, record }) {
       if (![null, 'create', 'replace'].includes(collision)) fail(400, 'Choose Create new or Replace for a name collision.');
       const taken = metadata.names(ctx, projectId);
       const holder = taken.find((entry) => entry.filename === filename);
-      const conflict = holder ? { assetId: holder.id, filename, suggested: availableFilename(filename, taken.map((entry) => entry.filename)) } : null;
+      const conflict = nameConflict(filename, taken);
       // A retry repeats its operation's original choice exactly; a saved
       // operation is reported again without reading new bytes.
       const prior = metadata.operation(ctx, input.operationId);
@@ -52,17 +53,18 @@ export function createLibrary({ retained, metadata, project, record }) {
         if (holder && collision !== 'create') fail(409, `A file named ${filename} already exists.`, { conflict });
         descriptor = { filename: conflict?.suggested ?? filename };
       }
+      const outcome = descriptor.objectId ? 'replaced' : 'created';
+      if (prior?.state === 'committed') return { outcome, asset: assetFrom(ctx, metadata.object(ctx, prior.objectId)), version: numberedVersion(ctx, prior) };
       const version = await retained.publish(ctx, { operationId: input.operationId, projectId, kind: 'asset', ...descriptor,
         provenance: { method: 'upload', requestedFilename: filename, collision } }, source, { signal });
       const asset = assetFrom(ctx, metadata.object(ctx, version.objectId));
-      const outcome = descriptor.objectId ? 'replaced' : 'created';
       record(ctx, outcome === 'replaced' ? 'asset_replaced' : 'asset_uploaded', asset.id, projectId, { versionId: version.id, filename: asset.filename });
-      return { outcome, asset, version: asset.current };
+      return { outcome, asset, version: numberedVersion(ctx, version) };
     },
     asset(ctx, projectId, assetId) {
       project(ctx, projectId, { allowArchived: true });
       const row = metadata.object(ctx, assetId);
-      if (!row || row.project_id !== projectId || !['asset', 'document'].includes(row.kind) || row.removed_at || !row.current_version_id) fail(404, 'This Library file does not exist.');
+      if (!row || row.project_id !== projectId || !libraryKinds.includes(row.kind) || row.removed_at || !row.current_version_id) fail(404, 'This Library file does not exist.');
       const versions = numbered(metadata.history(ctx, row.id)).map((version) => ({ ...version, current: version.id === row.current_version_id }));
       return { ...assetFrom(ctx, row), versions: versions.reverse() };
     },
