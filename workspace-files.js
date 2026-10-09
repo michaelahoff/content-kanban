@@ -45,8 +45,10 @@ export async function openWorkspaceFile(root, relative, { expected = null } = {}
     const before = await handle.stat();
     if (!before.isFile()) fail(400, `${relative} is not a regular file.`);
     if (before.nlink !== 1) fail(403, `${relative} has other hard links, so it cannot be saved.`);
-    // A directory swapped for a link after the walk above cannot redirect it.
-    if (await realpath(parent) !== parent) fail(403, `${relative} changed while it was being opened.`);
+    // A directory swapped for a link around the open cannot redirect it: the
+    // opened descriptor must be the file now at that path, under unlinked parents.
+    const now = await lstat(filename).catch(() => null);
+    if (await realpath(parent) !== parent || !now || now.dev !== before.dev || now.ino !== before.ino) fail(403, `${relative} changed while it was being opened.`);
     const changed = `${relative} has changed since it was first saved, so its original bytes are gone. Nothing was saved. Save the current file as a new output.`;
     if (expected && before.size !== expected.size) fail(409, changed);
     const head = Buffer.alloc(Math.min(32, before.size));

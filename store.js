@@ -90,9 +90,15 @@ export function inspectBackupDatabase(filename) {
     for (const output of outputs) if (output.importStatus === 'imported' && !images.has(output.imageId)) throw new Error(`Saved output ${output.outputId} has no retained image version.`);
     // Saved outputs: each saved one is a committed retained output version, so
     // its payload is bundled and verified with the retained store.
-    const savedOutputs = table('saved_outputs') ? db.prepare('SELECT id, card_id, attempt_id, status, version_id FROM saved_outputs ORDER BY rowid').all()
-      .map((row) => ({ outputId: row.id, cardId: row.card_id, attemptId: row.attempt_id, status: row.status, versionId: row.version_id,
-        path: row.version_id && `retained/versions/${row.version_id}`, sha256: versions.get(row.version_id)?.sha256 ?? null, size: versions.get(row.version_id)?.size ?? null })) : [];
+    // A workspace file's kind, path and creation method are listed too;
+    // documents list none, as in bundles from before file outputs.
+    const savedOutputs = table('saved_outputs') ? db.prepare('SELECT id, card_id, attempt_id, status, version_id, provenance FROM saved_outputs ORDER BY rowid').all()
+      .map((row) => {
+        const { kind, file, creationMethod } = JSON.parse(row.provenance);
+        return { outputId: row.id, cardId: row.card_id, attemptId: row.attempt_id, status: row.status, versionId: row.version_id,
+          path: row.version_id && `retained/versions/${row.version_id}`, sha256: versions.get(row.version_id)?.sha256 ?? null, size: versions.get(row.version_id)?.size ?? null,
+          ...(file ? { source: { kind, path: file.path, creationMethod } } : {}) };
+      }) : [];
     for (const output of savedOutputs) if (output.status === 'saved' && versions.get(output.versionId)?.kind !== 'output') throw new Error(`Saved output ${output.outputId} has no retained output version.`);
     return { schemaVersion: db.prepare('SELECT value FROM meta WHERE key = ?').get('schema_version')?.value, images: [...images.values()], nativeThreads, retained, folders, projects, tables, outputs, savedOutputs };
   } finally { db.close(); }

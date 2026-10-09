@@ -614,16 +614,16 @@ These values apply when a card enters this lane.
   await click('#small-form button[type="submit"]');
   await waitFor(`document.querySelectorAll('.chat-saved-outputs li').length === 2 && document.querySelector('.chat-saved-outputs').textContent.includes('lane-reply.md')`);
   console.log('PASS lane result documents and Save as document appear beside the run with downloads');
-  // Save file keeps one named workspace file the response wrote.
+  // Save output keeps one named workspace file the response wrote.
   const renders = path.join(temporary, 'data', 'workspaces', entryCardId, 'renders');
   await mkdir(renders, { recursive: true });
   await writeFile(path.join(renders, 'frame.bin'), Buffer.from([0, 1, 2, 255]));
   await evaluate(`[...document.querySelectorAll('[data-action="chat-save-file"]')].at(-1).click()`);
-  await waitFor(`document.querySelector('#form-dialog').open && document.querySelector('#form-heading')?.textContent === 'Save file from the workspace'`);
+  await waitFor(`document.querySelector('#form-dialog').open && document.querySelector('#form-heading')?.textContent === 'Save output from the workspace'`);
   await fill('#chat-file-path', 'renders/frame.bin');
   await click('#small-form button[type="submit"]');
   await waitFor(`[...document.querySelectorAll('.chat-saved-outputs li')].some((li) => li.textContent.includes('frame.bin') && li.textContent.includes('Saved by you from the workspace') && li.querySelector('a[download]'))`);
-  console.log('PASS Save file keeps a named workspace file beside its response');
+  console.log('PASS Save output keeps a named workspace file beside its response');
   await snapshot('lane-run-result');
   // A conflicting notes draft survives switching cards, then can be resolved.
   await fill('#lane-notes', 'My conflicting hand-off');

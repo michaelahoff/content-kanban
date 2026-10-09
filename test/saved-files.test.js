@@ -60,8 +60,8 @@ test('a Codex lane run saves the finished workspace files it declares, with exac
     'Only declared files are saved; a filename defaults to the path’s last part');
   const [thumbnail, project] = chat.savedOutputs;
   assert.equal(thumbnail.creationMethod, 'lane-result');
-  assert.equal(thumbnail.kind, 'rendered-image', 'A rendered image is recorded as rendered, not native generation');
-  assert.deepEqual(thumbnail.file, { path: 'out/thumbnail.png', format: 'png' });
+  assert.equal(thumbnail.kind, 'image', 'An image saved from the workspace is not native generation');
+  assert.deepEqual(thumbnail.file, { path: 'out/thumbnail.png', format: 'png', namedBy: 'agent' });
   assert.equal(project.kind, 'file');
   assert.equal(thumbnail.provider, 'codex');
   assert.equal(thumbnail.hash, sha(png));
@@ -170,8 +170,9 @@ test('Save output keeps a finished workspace file the user names, once, and only
   const saved = await saveFile(f, card.id, { operation: 'frame', attempt: attempt.id, path: 'out/frame.png', filename: 'frame-final.png' });
   assert.equal(saved.status, 201, JSON.stringify(saved.body));
   assert.equal(saved.body.status, 'saved');
-  assert.equal(saved.body.creationMethod, 'user-save');
-  assert.equal(saved.body.kind, 'rendered-image');
+  assert.equal(saved.body.creationMethod, 'workspace-save');
+  assert.equal(saved.body.kind, 'image');
+  assert.equal(saved.body.file.namedBy, 'user', 'Frameboard records that the user credited this response');
   assert.equal(saved.body.attemptId, attempt.id);
   assert.deepEqual(saved.body.derivation, { declared: false });
   assert.equal(saved.body.hash, sha(png));
@@ -203,7 +204,7 @@ test('a failed file save retries only its originally verified bytes, never a lat
   const [output] = (await f.chat(card.id)).savedOutputs;
   assert.equal(output.status, 'failed');
   assert.equal((await bytesOf(f, card.id, output.id)).status, 409, 'A failed save never claims retained bytes');
-  const retry = () => f.call('POST', `/api/cards/${card.id}/chat/saved-outputs/${output.id}/retry`, {});
+  const retry = () => f.call('POST', `/api/cards/${card.id}/chat/saved-outputs/${output.id}/retry-save`, {});
 
   // The path now holds different bytes: retrying refuses them.
   await workspaceFile(f, card.id, 'cut.mov', Buffer.from('a different cut'));
@@ -231,7 +232,7 @@ test('a failed file save retries only its originally verified bytes, never a lat
   assert.equal(unverified.status, 409);
   const early = (await f.chat(card.id)).savedOutputs.find((entry) => entry.filename === 'early.bin');
   assert.equal(early.status, 'failed');
-  const refused = await f.call('POST', `/api/cards/${card.id}/chat/saved-outputs/${early.id}/retry`, {});
+  const refused = await f.call('POST', `/api/cards/${card.id}/chat/saved-outputs/${early.id}/retry-save`, {});
   assert.equal(refused.status, 409);
   assert.match(refused.body.error, /never verified/);
 });
@@ -257,12 +258,29 @@ test('a lane file save stopped mid-save stays failed and its registration cannot
   assert.match(run.reason, /render\.png was not saved\. This response was stopped/);
   assert.equal((await f.ok('GET', `/api/cards/${card.id}`)).card.fields.intro, 'Applied intro');
 
-  const retry = await f.call('POST', `/api/cards/${card.id}/chat/saved-outputs/${output.id}/retry`, {});
+  const retry = await f.call('POST', `/api/cards/${card.id}/chat/saved-outputs/${output.id}/retry-save`, {});
   assert.equal(retry.status, 409, 'Stop cannot be undone by retrying the agent’s registration');
   assert.equal((await f.chat(card.id)).savedOutputs[0].status, 'failed');
   const saved = await saveFile(f, card.id, { operation: 'mine', attempt: output.attemptId, path: 'render.png' });
   assert.equal(saved.status, 201, JSON.stringify(saved.body));
-  assert.equal(saved.body.creationMethod, 'user-save');
+  assert.equal(saved.body.creationMethod, 'workspace-save');
+});
+
+test('a lane file save that failed cannot be retried once its run ends; the user saves the file instead', async (t) => {
+  let failOnce = true;
+  const f = await fixture(t, { retainedCheckpoint: async (boundary, version) => { if (boundary === 'staged' && version.filename === 'cut.mov' && failOnce) { failOnce = false; throw new Error('disk trouble'); } } });
+  const { card } = await laneCard(f);
+  const run = await laneRun(f, card, { fields: { intro: 'Applied intro' }, outputs: [{ path: 'cut.mov' }] }, { 'cut.mov': opaque });
+  assert.match(run.reason, /cut\.mov was not saved\. Saving failed: disk trouble/);
+  const [output] = (await f.chat(card.id)).savedOutputs;
+  assert.equal(output.status, 'failed');
+  const retry = await f.call('POST', `/api/cards/${card.id}/chat/saved-outputs/${output.id}/retry-save`, {});
+  assert.equal(retry.status, 409, 'The ended run cannot publish through its old registration');
+  assert.match(retry.body.error, /no longer has authority.*Save output/);
+  assert.equal((await f.chat(card.id)).savedOutputs[0].status, 'failed');
+  const saved = await saveFile(f, card.id, { operation: 'mine', attempt: output.attemptId, path: 'cut.mov' });
+  assert.equal(saved.status, 201, JSON.stringify(saved.body));
+  assert.deepEqual((await bytesOf(f, card.id, saved.body.id)).bytes, opaque);
 });
 
 test('a saved file survives workspace deletion, archive and card deletion, is refused while archived, and restores from a verified backup', async (t) => {
@@ -297,6 +315,7 @@ test('a saved file survives workspace deletion, archive and card deletion, is re
   const manifest = JSON.parse(await readFile(path.join(backupDir, 'manifest.json'), 'utf8'));
   const entry = manifest.inventory.savedOutputs.find((output) => output.outputId === saved.id);
   assert.equal(entry.sha256, sha(large));
+  assert.deepEqual(entry.source, { kind: 'file', path: 'render/master.bin', creationMethod: 'workspace-save' }, 'The inventory names each file output’s source');
   assert.ok(manifest.files.some((file) => file.path === entry.path && file.sha256 === entry.sha256));
   const dataDir = path.join(root, 'restored');
   await restoreBackup({ backupDir, dataDir, codexHome: path.join(root, 'native') });

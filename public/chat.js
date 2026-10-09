@@ -276,18 +276,19 @@ function deliveryMarkup(attempt) {
 }
 // Saved outputs beside the work that produced them: retained snapshots,
 // downloadable even after Stop, archive or the card's deletion. A Codex
-// response's finished workspace files are saved only when explicitly named.
+// response's finished workspace files are saved only when explicitly named,
+// and only from a response that could write files.
 function savedOutputsMarkup(cardId, outputs, attempt, submission) {
-  const method = { 'transcript-save': 'Saved from a reply', 'lane-result': 'Saved by the lane result', 'user-save': 'Saved by you from the workspace' };
-  const kind = { 'rendered-image': 'Rendered image', file: 'File' };
-  const saveFile = submission.provider !== 'claude' && attempt.turnId && !runningStatuses.has(attempt.status)
-    ? `<button class="button small secondary" data-action="chat-save-file" data-id="${escape(attempt.id)}">Save file…</button>` : '';
+  const method = { 'transcript-save': 'Saved from a reply', 'lane-result': 'Saved by the lane result', 'workspace-save': 'Saved by you from the workspace' };
+  const kind = { image: 'Image', file: 'File' };
+  const saveFile = submission.configuration?.nativeOptions?.sandbox === 'workspace-write' && attempt.turnId && !runningStatuses.has(attempt.status)
+    ? `<button class="button small secondary" data-action="chat-save-file" data-id="${escape(attempt.id)}">Save output…</button>` : '';
   if (!outputs.length) return saveFile ? `<div class="chat-saved-outputs">${saveFile}</div>` : '';
   return `<ul class="chat-saved-outputs" aria-label="Saved outputs">${outputs.map((output) => {
     const content = url(cardId, `saved-outputs/${encodeURIComponent(output.id)}/content`);
     const origin = output.file ? ` · ${kind[output.kind] ?? 'File'} from ${escape(output.file.path)}` : '';
     if (output.status === 'saved') return `<li><strong>${escape(output.filename)}</strong> · ${method[output.creationMethod] ?? 'Saved'}${origin}${output.derivation?.declared ? ` · from ${output.derivation.sources.length ? escape(output.derivation.sources.map((source) => source.label).join(', ')) : 'no supplied inputs'}` : ''}<span class="chat-output-actions"><a class="button small secondary" href="${content}?inline=1" target="_blank" rel="noopener">View</a><a class="button small secondary" href="${content}" download>Download</a></span></li>`;
-    if (output.status === 'failed') return `<li class="chat-output-error">${escape(output.filename)}${origin} was not saved. ${escape(output.error)}${output.file ? ` <button class="button small secondary" data-action="chat-retry-saved-output" data-id="${escape(output.id)}">Retry saving</button>` : ''}</li>`;
+    if (output.status === 'failed') return `<li class="chat-output-error">${escape(output.filename)}${origin} was not saved. ${escape(output.error)}${output.creationMethod === 'workspace-save' ? ` <button class="button small secondary" data-action="chat-retry-saved-output" data-id="${escape(output.id)}">Retry saving</button>` : ''}</li>`;
     return `<li class="chat-hint">Saving ${escape(output.filename)}…</li>`;
   }).join('')}</ul>${saveFile}`;
 }
@@ -307,7 +308,7 @@ function saveAsDocument(item, sequence, text) {
 // filename reuse one operation, so a lost response saves it once.
 function saveWorkspaceFile(item, attemptId) {
   const operations = new Map();
-  smallForm({ title: 'Save file from the workspace', fields: `<label class="form-label" for="chat-file-path">Path in the card workspace</label><input class="form-input" id="chat-file-path" name="path" placeholder="renders/thumbnail.png" required maxlength="4000" autocomplete="off"><label class="form-label" for="chat-file-name">Filename (optional)</label><input class="form-input" id="chat-file-name" name="filename" maxlength="255" autocomplete="off"><p class="chat-hint">Keeps the file's exact current bytes with this response. Later changes to the workspace do not change it. It does not change the card, its gallery or the Library.</p>`, submit: 'Save file', onSubmit: async (data) => {
+  smallForm({ title: 'Save output from the workspace', fields: `<label class="form-label" for="chat-file-path">Path in the card workspace</label><input class="form-input" id="chat-file-path" name="path" placeholder="renders/thumbnail.png" required maxlength="4000" autocomplete="off"><label class="form-label" for="chat-file-name">Filename (optional)</label><input class="form-input" id="chat-file-name" name="filename" maxlength="255" autocomplete="off"><p class="chat-hint">Keeps the file's exact current bytes with this response. Later changes to the workspace do not change it. It does not change the card, its gallery or the Library.</p>`, submit: 'Save output', onSubmit: async (data) => {
     const input = { path: String(data.get('path')).trim(), filename: String(data.get('filename')).trim() || undefined };
     const key = JSON.stringify(input);
     if (!operations.has(key)) operations.set(key, crypto.randomUUID());
@@ -699,7 +700,7 @@ export function initializeChats(callbacks) {
       if (action === 'chat-adopt') { const result = await send('POST', url(item.id, `outputs/${target.dataset.id}/adopt`), {}); refreshSavedCard(result.card); await refresh(item); toast(result.adopted ? 'Added to gallery. Choose roles in the editor.' : 'Already in the gallery.'); }
       if (action === 'chat-retry-save') { await send('POST', url(item.id, `outputs/${target.dataset.id}/retry-save`), {}); await refresh(item); }
       if (action === 'chat-save-file') saveWorkspaceFile(item, target.dataset.id);
-      if (action === 'chat-retry-saved-output') { try { await send('POST', url(item.id, `saved-outputs/${target.dataset.id}/retry`), {}); toast('File saved.'); } finally { await refresh(item); } }
+      if (action === 'chat-retry-saved-output') { try { await send('POST', url(item.id, `saved-outputs/${target.dataset.id}/retry-save`), {}); toast('File saved.'); } finally { await refresh(item); } }
       if (action === 'chat-edit-image') {
         // Edit adds this exact version; existing selections stay visible and removable.
         editableComposer(item);
