@@ -49,6 +49,9 @@ export const recoveryMigration = `
 `;
 
 const active = ['dispatching', 'accepted', 'running', 'interrupt-requested'];
+// SQL lists: submissions not yet settled, and attempts that may still act.
+const unfinishedSubmissions = "('queued', 'waiting', 'held', 'dispatching', 'running', 'interrupt-requested', 'uncertain')";
+const unsettledAttempts = "('dispatching', 'accepted', 'running', 'interrupt-requested', 'uncertain')";
 export const archivedMessage = 'This project is archived. Unarchive it to make changes.';
 const restoredRetryMessage = 'This work was restored from a backup, so it cannot be retried. Send a new prompt or Run playbook instead.';
 const restoredHoldReason = 'Restored from a backup and held. It is not sent again: review its retained output, then cancel it and send new work.';
@@ -153,7 +156,7 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
       JOIN cards c ON c.id = s.card_id JOIN projects p ON p.id = c.project_id JOIN chat_conversations v ON v.id = s.conversation_id
       WHERE h.workspace_id = ? AND c.deleted_at IS NULL AND p.archived_at IS NULL AND s.revoked IS NULL AND v.state = 'active' AND s.status IN ('queued', 'waiting')
       AND NOT EXISTS (SELECT 1 FROM chat_submissions earlier WHERE earlier.card_id = s.card_id AND earlier.sequence < s.sequence
-        AND earlier.status IN ('queued', 'waiting', 'held', 'dispatching', 'running', 'interrupt-requested', 'uncertain'))
+        AND earlier.status IN ${unfinishedSubmissions})
       AND NOT EXISTS (SELECT 1 FROM chat_attempts a WHERE a.card_id = s.card_id AND a.status IN ('dispatching', 'accepted', 'running', 'interrupt-requested'))
       ORDER BY s.sequence`, ctx.workspaceId);
   }
@@ -269,7 +272,7 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
       ensure(ctx, cardId);
       const conversation = current(cardId);
       const used = Boolean(conversation.binding || get('SELECT id FROM chat_submissions WHERE conversation_id = ? LIMIT 1', conversation.id));
-      const busy = Boolean(activeAttempt(cardId) || get("SELECT id FROM chat_submissions WHERE conversation_id = ? AND status IN ('queued', 'waiting', 'held', 'dispatching', 'running', 'interrupt-requested', 'uncertain') LIMIT 1", conversation.id));
+      const busy = Boolean(activeAttempt(cardId) || get(`SELECT id FROM chat_submissions WHERE conversation_id = ? AND status IN ${unfinishedSubmissions} LIMIT 1`, conversation.id));
       return { id: conversation.id, provider: conversation.provider, state: conversation.state, used, busy, composer: JSON.parse(get('SELECT composer FROM card_chats WHERE card_id = ?', cardId).composer) };
     },
     cancelQueued(ctx, submissionId, reason) {
@@ -498,8 +501,8 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
     revokeCard(ctx, cardId, reason) {
       return transaction(() => {
         run(`UPDATE chat_submissions SET revoked = 'archived' WHERE card_id = ?
-          AND status IN ('queued', 'waiting', 'held', 'dispatching', 'running', 'interrupt-requested', 'uncertain')`, cardId);
-        run(`UPDATE chat_attempts SET revoked = COALESCE(revoked, 'archived') WHERE card_id = ? AND status IN ('dispatching', 'accepted', 'running', 'interrupt-requested', 'uncertain')`, cardId);
+          AND status IN ${unfinishedSubmissions}`, cardId);
+        run(`UPDATE chat_attempts SET revoked = COALESCE(revoked, 'archived') WHERE card_id = ? AND status IN ${unsettledAttempts}`, cardId);
         for (const row of all("SELECT id FROM chat_submissions WHERE card_id = ? AND status IN ('queued', 'waiting', 'held')", cardId)) status(ctx, row.id, 'cancelled', reason);
         const a = activeAttempt(cardId);
         if (a && a.status !== 'interrupt-requested') requestInterruption(ctx, a, reason, 'cancelled');
@@ -534,7 +537,7 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
     },
     unfinished(ctx) {
       return all(`SELECT a.* FROM chat_attempts a JOIN card_chats h ON h.card_id = a.card_id
-        WHERE h.workspace_id = ? AND a.status IN ('dispatching', 'accepted', 'running', 'interrupt-requested', 'uncertain')`, ctx.workspaceId)
+        WHERE h.workspace_id = ? AND a.status IN ${unsettledAttempts}`, ctx.workspaceId)
         .map((row) => ({ attempt: attemptFrom(row), submission: submissionFrom(get('SELECT * FROM chat_submissions WHERE id = ?', row.submission_id)),
           conversation: conversationFrom(get('SELECT v.* FROM chat_conversations v JOIN chat_submissions s ON s.conversation_id = v.id WHERE s.id = ?', row.submission_id)) }));
     },
@@ -544,38 +547,40 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
       });
     },
     // The recovery hold of a restored workspace, applied once before any worker
-    // wakes. The old runtime's attempts lose all effect authority, approvals and
-    // grants lapse, bound conversations are not resumed, and no earlier
-    // submission can be retried. Unfinished work in
-    // active projects is held for review; archived or deleted work stays
-    // cancelled. Retained transcripts and outputs are only kept for inspection.
+    // wakes. The old runtime's unsettled attempts lose all effect authority,
+    // approvals and grants lapse, bound conversations are not resumed, and no
+    // earlier submission can be retried. Unfinished work in active projects is
+    // held for review; archived or deleted work stays cancelled. Retained
+    // transcripts and outputs stay as they were, for inspection only.
     holdRestored(ctx) {
-      const unfinished = "('queued', 'waiting', 'held', 'dispatching', 'running', 'interrupt-requested', 'uncertain')";
       const closed = `(SELECT c.id FROM cards c JOIN projects p ON p.id = c.project_id WHERE c.deleted_at IS NOT NULL OR p.deleted_at IS NOT NULL OR p.archived_at IS NOT NULL)`;
       return transaction(() => {
-        const at = now();
-        const held = all(`SELECT id, card_id, revoked FROM chat_submissions WHERE status IN ${unfinished}`);
-        run(`UPDATE chat_attempts SET status = 'interrupted', completed_at = ?, error = ?, cause = CASE WHEN revoked IS NULL THEN 'restored' ELSE COALESCE(cause, 'cancelled') END
-          WHERE status IN ('dispatching', 'accepted', 'running', 'interrupt-requested', 'uncertain')`, at, 'Restored from a backup. This attempt ended with the old workspace; nothing was resent.');
-        run("UPDATE chat_attempts SET revoked = 'restored' WHERE revoked IS NULL");
+        const at = now(); let held = 0;
+        const unfinished = all(`SELECT id, card_id, revoked FROM chat_submissions WHERE status IN ${unfinishedSubmissions}`);
+        // Settled attempts keep their outcome, and an explicit save of an
+        // output they already returned stays possible.
+        run(`UPDATE chat_attempts SET status = 'interrupted', completed_at = ?, error = ?, revoked = COALESCE(revoked, 'restored'),
+          cause = CASE WHEN revoked IS NULL THEN 'restored' ELSE COALESCE(cause, 'cancelled') END WHERE status IN ${unsettledAttempts}`,
+        at, 'Restored from a backup. This attempt ended with the old workspace; nothing was resent.');
         run("UPDATE chat_requests SET status = 'invalidated' WHERE status = 'pending'");
         run("UPDATE chat_conversations SET grants = '[]' WHERE grants != '[]'");
         // A binding names the old workspace and native index, so exact native
         // resumption is not promised: new work continues in fresh context.
         run("UPDATE chat_conversations SET state = 'native-unavailable' WHERE state = 'active' AND binding IS NOT NULL");
-        for (const row of held) {
+        for (const row of unfinished) {
           if (row.revoked || get(`SELECT 1 FROM cards WHERE id = ? AND id IN ${closed}`, row.card_id)) {
             status(ctx, row.id, 'cancelled', 'Cancelled before the backup was restored.');
             continue;
           }
           run("UPDATE chat_submissions SET hold = 'restored', retry_at = NULL WHERE id = ?", row.id);
           status(ctx, row.id, 'held', restoredHoldReason);
+          held++;
         }
         run("UPDATE chat_submissions SET revoked = 'restored' WHERE revoked IS NULL AND status != 'completed'");
         // Lane runs never apply a result here. A cancelled card's runs close.
         run(`UPDATE lane_runs SET status = 'cancelled', reason = 'Cancelled before the backup was restored.', updated_at = ? WHERE status IN ('pending', 'queued') AND card_id IN ${closed}`, at);
         run("UPDATE lane_runs SET status = 'held', reason = ?, updated_at = ? WHERE status IN ('pending', 'queued')", restoredRunReason, at);
-        return { held: held.length };
+        return { held };
       });
     },
     // Settles an unfinished or uncertain attempt from read-only native evidence.

@@ -205,6 +205,15 @@ test('restore round-trips the complete identity, hash and relationship inventory
   assert.deepEqual(inventory.projects, manifest.inventory.projects);
   assert.deepEqual(inventory.retained, manifest.inventory.retained);
   assert.deepEqual(inventory.images.map((image) => ({ ...image, path: `images/${image.id}` })), manifest.inventory.images);
+  assert.deepEqual(inventory.outputs.map(({ outputId, cardId, attemptId, importStatus }) => ({ outputId, cardId, attemptId, importStatus })),
+    manifest.inventory.outputs.map(({ outputId, cardId, attemptId, importStatus }) => ({ outputId, cardId, attemptId, importStatus })));
+
+  // A restored workspace exported before it was ever opened restores again.
+  const again = await createBackup({ dataDir, output: path.join(f.root, 'backups'), codexHome: path.join(f.root, 'native') });
+  await restoreBackup({ backupDir: again.backupDir, dataDir: path.join(f.root, 'restored-again'), codexHome: path.join(f.root, 'native') });
+  const twice = await openStore({ dataDir: path.join(f.root, 'restored-again') });
+  assert.equal(twice.activity({ ...twice.owner }, { since: 0, limit: 10000 }).filter((entry) => entry.type === 'restored').length, 1);
+  twice.close();
 
   const store = await openStore({ dataDir }); t.after(() => store.close());
   const ctx = { ...store.owner, actor: `user:${store.owner.userId}` };
@@ -291,6 +300,18 @@ test('a damaged database, linked bundle directory or unsupported manifest is ref
   await rm(path.join(linked, 'workspaces', card.id), { recursive: true });
   await symlink(outside, path.join(linked, 'workspaces', card.id));
   await assert.rejects(restore(linked), /Linked directory refused/);
+
+  const inventory = await fresh();
+  const inventoryPath = path.join(inventory, 'manifest.json'); const recorded = JSON.parse(await readFile(inventoryPath, 'utf8'));
+  recorded.inventory.projects[0].archivedAt = '2026-01-01T00:00:00.000Z';
+  await writeFile(inventoryPath, JSON.stringify(recorded));
+  await assert.rejects(restore(inventory), /inventory does not match/);
+
+  // A destination reached through a link may not land inside the backup.
+  const inside = await fresh();
+  await symlink(inside, path.join(f.root, 'via-link'));
+  await assert.rejects(restoreBackup({ backupDir: inside, dataDir: path.join(f.root, 'via-link', 'restored'), codexHome: path.join(f.root, 'native') }), /outside the backup folder/);
+  await rm(path.join(f.root, 'via-link'));
 
   const unsupported = await fresh();
   const manifestPath = path.join(unsupported, 'manifest.json');

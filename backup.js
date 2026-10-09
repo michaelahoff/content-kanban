@@ -1,10 +1,11 @@
 // Complete workspace export and restore. Every payload is streamed through
 // SHA-256 with a fixed buffer, so file size never determines memory use.
-import { mkdir, readdir, rename, rm, lstat, realpath, open, chmod } from 'node:fs/promises';
+import { mkdir, readdir, rename, rm, lstat, realpath, open, chmod, link } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 import { imageFormat, maxImageBytes } from './image-files.js';
 import { imageIdPattern, snapshotDatabase, inspectBackupDatabase, markRestored, supportedSchemaVersion } from './store.js';
 import { holdExclusiveLock } from './data-lock.js';
@@ -295,6 +296,14 @@ async function verifyBackupFile(root, entry) {
   if (!sameBytes(await hashFile(root, entry.path), entry)) fail(`Backup hash mismatch: ${entry.path}`);
 }
 
+// Compares the manifest's inventory with the staged database's own.
+function sameInventory(recorded, { projects, tables, retained, images, outputs }) {
+  const output = ({ outputId, cardId, attemptId, importStatus, path }) => ({ outputId, cardId, attemptId, importStatus, path });
+  return isDeepStrictEqual(recorded?.projects, projects) && isDeepStrictEqual(recorded?.tables, tables) && isDeepStrictEqual(recorded?.retained, retained)
+    && isDeepStrictEqual(recorded?.images, images.map((image) => ({ ...image, path: `images/${image.id}` })))
+    && isDeepStrictEqual(recorded?.outputs?.map(output), outputs.map((value) => output({ ...value, path: value.importStatus === 'imported' ? `images/${value.imageId}` : null })));
+}
+
 const restoreDiskFull = 'Not enough disk space to restore the backup. Nothing was activated and existing data is unchanged. Free space at the restore location and try again.';
 
 // Restores a whole workspace into a new or empty directory. Everything is
@@ -308,7 +317,6 @@ export async function restoreBackup(options) {
 
 async function restoreWorkspace({ backupDir, dataDir, codexHome, checkpoint = async () => {} }) {
   backupDir = await realpath(backupDir); dataDir = path.resolve(dataDir);
-  if (dataDir === backupDir || dataDir.startsWith(backupDir + path.sep) || backupDir.startsWith(dataDir + path.sep)) fail('Choose a restore location outside the backup folder.');
   let manifest;
   try { manifest = JSON.parse(await readManifest(backupDir)); } catch { fail('Unsupported backup manifest.'); }
   if (manifest.format !== 'frameboard-backup' || ![1, 2].includes(manifest.version) || !Array.isArray(manifest.files) || !Array.isArray(manifest.directories)) fail('Unsupported backup manifest.');
@@ -330,8 +338,9 @@ async function restoreWorkspace({ backupDir, dataDir, codexHome, checkpoint = as
   const existing = await optional(dataDir);
   const emptyDestination = 'Restore needs a new or empty app data directory. Existing app data will not be overwritten.';
   if (existing && (!existing.isDirectory() || (await readdir(dataDir)).length)) fail(emptyDestination);
-  const parent = path.dirname(dataDir);
-  await mkdir(parent, { recursive: true, mode: 0o700 });
+  await mkdir(path.dirname(dataDir), { recursive: true, mode: 0o700 });
+  const parent = await realpath(path.dirname(dataDir)); dataDir = path.join(parent, path.basename(dataDir));
+  if (dataDir === backupDir || dataDir.startsWith(backupDir + path.sep) || backupDir.startsWith(dataDir + path.sep)) fail('Choose a restore location outside the backup folder.');
   await reclaimAbandonedStaging(parent);
   const { staging, release } = await claimStaging(parent, `${new Date().toISOString().replaceAll(':', '-')}-${randomUUID().slice(0, 8)}`);
   const nativeRoot = path.resolve(codexHome); const nativeCopied = []; const nativeSkipped = [];
@@ -346,10 +355,12 @@ async function restoreWorkspace({ backupDir, dataDir, codexHome, checkpoint = as
     await checkpoint('verifying');
     const database = path.join(staging, 'frameboard.db');
     let inspected;
-    try { inspected = inspectBackupDatabase(database); } catch (error) { fail(/damaged|invalid|Conflicting/i.test(error.message) ? error.message : `The backup database is damaged or unsupported: ${error.message}`); }
+    try { inspected = inspectBackupDatabase(database); } catch (error) { fail(`The backup database is damaged or unsupported: ${error.message}`); }
     const { schemaVersion, images, nativeThreads: threads, retained } = inspected;
     if (!(Number(schemaVersion) >= 1)) fail('The backup database is damaged or unsupported: it has no schema version.');
     if (Number(schemaVersion) > supportedSchemaVersion) fail('This backup was saved by a newer version of Frameboard. Update Frameboard, then restore it.');
+    // The relationship inventory recorded at export must describe this database.
+    if (manifest.version === 2 && !sameInventory(manifest.inventory, inspected)) fail('The backup inventory does not match its database. The backup was changed after export.');
     for (const image of images) {
       const entry = entries.get(`images/${image.id}`);
       if (!entry) fail(`Missing image: ${image.id}`);
@@ -379,13 +390,15 @@ async function restoreWorkspace({ backupDir, dataDir, codexHome, checkpoint = as
         await mkdir(directory, { mode: 0o700 }).catch((error) => { if (error.code !== 'EEXIST') throw error; });
         if (!(await lstat(directory)).isDirectory() || await realpath(directory) !== directory) fail(`Linked native restore directory refused: ${relative}`);
       }
+      // A verified temporary copy is linked into place, so a crash can leave
+      // only a dot-named temporary file, never a truncated native file.
+      const temporary = path.join(path.dirname(relative), `.${path.basename(relative)}.frameboard-restore-${randomUUID()}`);
       try {
-        // copyInto removes a partial file it created; a completed copy that
-        // differs from the manifest is removed here.
-        const copied = await copyInto(backupDir, entry.path, nativeRoot, relative);
+        if (!sameBytes(await copyInto(backupDir, entry.path, nativeRoot, temporary), entry)) fail(`Backup hash mismatch: ${entry.path}`);
+        await link(path.join(nativeRoot, temporary), path.join(nativeRoot, relative));
         nativeCopied.push(relative);
-        if (!sameBytes(copied, entry)) fail(`Backup hash mismatch: ${entry.path}`);
       } catch (error) { if (error.code !== 'EEXIST') throw error; nativeSkipped.push(relative); }
+      finally { await rm(path.join(nativeRoot, temporary), { force: true }); }
     }
     await checkpoint('activating');
     // Renaming onto anything but a missing or still-empty directory fails, so

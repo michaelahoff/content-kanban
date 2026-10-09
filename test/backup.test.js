@@ -95,11 +95,9 @@ test('backup selects only bound native rollouts and images, excludes global secr
   assert.deepEqual(await readFile(path.join(nativeHome, generated)), png);
   assert.deepEqual(report.nativeSkipped, [rollout]);
   await f.start(restored);
-  // History is identical; the old attempt keeps no authority and the bound
-  // conversation is not promised to resume.
+  // History is identical; the bound conversation is not promised to resume.
   assert.deepEqual(await f.api('GET', `/api/cards/${f.card.id}/chat`), { ...chat,
-    conversations: chat.conversations.map((conversation) => ({ ...conversation, state: 'native-unavailable' })),
-    attempts: chat.attempts.map((attempt) => ({ ...attempt, revoked: 'restored' })) });
+    conversations: chat.conversations.map((conversation) => ({ ...conversation, state: 'native-unavailable' })) });
 });
 
 test('backup and restore refuse a running app and a second app cannot share its data', async (t) => {

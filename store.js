@@ -30,7 +30,8 @@ export function snapshotDatabase(filename, destination) {
 // the recovery hold in one commit, before the app creates any worker.
 export function markRestored(filename, details) {
   const db = new DatabaseSync(filename);
-  try { db.prepare("INSERT INTO meta (key, value) VALUES ('restore_recovery', ?)").run(JSON.stringify(details)); }
+  // A restored workspace exported before it was ever opened still carries a marker.
+  try { db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('restore_recovery', ?)").run(JSON.stringify(details)); }
   finally { db.close(); }
 }
 
@@ -516,8 +517,8 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
   try {
     if (!schemaVersion()) await initialize();
     const version = schemaVersion();
-    if (version > migrations.length) throw new Error('This data was saved by a newer version of Frameboard.');
-    if (version < migrations.length) transaction(() => {
+    if (version > supportedSchemaVersion) throw new Error('This data was saved by a newer version of Frameboard.');
+    if (version < supportedSchemaVersion) transaction(() => {
       for (const sql of migrations.slice(version)) db.exec(sql);
       recordMissingBaselines();
       run("UPDATE meta SET value = ? WHERE key = 'schema_version'", String(migrations.length));
