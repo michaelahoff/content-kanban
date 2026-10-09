@@ -191,18 +191,6 @@ test('replacing a storage directory with a link cannot redirect publication or r
   assert.deepEqual(await readdir(f.workspace), []);
 });
 
-test('legacy backup refuses to omit committed retained payloads and preserves the last complete backup', async (t) => {
-  const { createBackup } = await import('../backup.js');
-  const f = await fixture(t);
-  const output = await mkdtemp(path.join(tmpdir(), 'frameboard-retained-backup-'));
-  t.after(() => rm(output, { recursive: true, force: true }));
-  const options = { dataDir: f.dataDir, output, codexHome: path.join(f.dataDir, 'absent-native') };
-  const good = await createBackup(options);
-  await f.retained.publish(f.ctx, f.descriptor('retained'), Buffer.from('abc'));
-  await assert.rejects(createBackup(options), /retained.*export.*not.*available/i);
-  assert.deepEqual(await readdir(output), [path.basename(good.backupDir)]);
-});
-
 test('retrying a successful independent copy does not read an unavailable source or duplicate the copy', async (t) => {
   const f = await fixture(t);
   const original = await f.retained.publish(f.ctx, f.descriptor('original'), Buffer.from('abc'));

@@ -6,7 +6,7 @@ import { submissionText } from './public/chat-context.js';
 
 const providerName = (provider) => (provider === 'claude' ? 'Claude' : 'Codex');
 
-export function createLaneRunner({ store, service, providers, ctx }) {
+export function createLaneRunner({ store, service, providers, ctx, paused = () => false }) {
   let draining = false; let again = false; let closed = false; let scheduled = null;
   const waitingForChat = new Set();
 
@@ -96,13 +96,15 @@ export function createLaneRunner({ store, service, providers, ctx }) {
   }
 
   async function drain() {
+    // Maintenance holds pending runs; they start when it ends.
+    if (paused()) return;
     if (draining) { again = true; return; }
     draining = true;
     try {
       do {
         again = false;
         for (const run of store.laneRuns.pending(ctx)) {
-          if (closed) return;
+          if (closed || paused()) return;
           try { await start(run); } catch (error) { if (!closed) store.laneRuns.update(ctx, run.id, { status: 'failed', reason: error.message }); }
         }
       } while (again && !closed);
@@ -118,6 +120,7 @@ export function createLaneRunner({ store, service, providers, ctx }) {
       scheduled.unref?.();
     },
     close() { closed = true; clearTimeout(scheduled); },
+    idle: () => !draining,
     // The prompt the card's current lane would send now.
     async preview(cardId) {
       const { card, stage, project, stages } = store.laneRuns.place(ctx, cardId);

@@ -13,7 +13,9 @@
     "backup": "node --disable-warning=ExperimentalWarning scripts/backup.mjs create",
     "restore": "node --disable-warning=ExperimentalWarning scripts/backup.mjs restore",
     "test:retained-large": "node --disable-warning=ExperimentalWarning scripts/retained-storage-large.mjs",
-    "test:retained-disk-full": "unshare --user --map-root-user --mount node --disable-warning=ExperimentalWarning scripts/retained-storage-disk-full.mjs"
+    "test:retained-disk-full": "unshare --user --map-root-user --mount node --disable-warning=ExperimentalWarning scripts/retained-storage-disk-full.mjs",
+    "test:backup-large": "node --disable-warning=ExperimentalWarning scripts/backup-large.mjs",
+    "test:backup-disk-full": "unshare --user --map-root-user --mount node --disable-warning=ExperimentalWarning scripts/backup-disk-full.mjs"
   },
   "engines": { "node": ">=22.13" }
 }

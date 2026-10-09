@@ -21,7 +21,7 @@ Publication records staging, streams/hashes complete bytes, flushes the file, pi
 
 Startup removes owned incomplete staging/repair files and tracked noncommitted payloads, marking those operations retryable. It never collects committed versions by reference count, visibility, supersession or availability. Unknown files are left alone. Required originals are verified on use; a workspace edit cannot change them through a shared inode. Matching repair atomically replaces the bytes and restores availability without rewriting frozen historical identities.
 
-Legacy backup format 1 does not yet include retained payloads. Export and restore explicitly refuse databases containing committed retained versions, rather than certify an incomplete bundle. Normal legacy backups remain supported. The subsequent complete-export stage must replace that guard with streamed inventory/verification of every retained payload.
+Backup format 2 ([complete workspace export](workspace-export.md), #50) replaced the earlier refusal: every committed version, including superseded, removed and unavailable ones, is required coverage, streamed, checked against its recorded hash and size, and inventoried in the manifest. `retained/staging/` is temporary and excluded.
 
 ## Acceptance evidence
 

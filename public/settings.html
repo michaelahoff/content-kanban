@@ -19,6 +19,14 @@
       <p>This list is saved globally and reused in every chat, including after restarting Frameboard. Refresh here when your installed models change.</p>
       <div id="models" aria-live="polite">Loading saved models…</div>
     </section>
+    <section class="model-catalog" aria-labelledby="backup-heading">
+      <div class="settings-heading"><h2 id="backup-heading">Export workspace</h2></div>
+      <p>Creates a complete, verified backup folder: the database and settings, every project (including archived ones), images, retained file versions, card workspaces and notes, playbooks and bound Codex conversation files. Changes and new work pause while it runs; running replies finish first or you can stop them. Global credentials and configuration, unrelated native conversations and external service data are not included.</p>
+      <form id="backup-form"><label for="backup-output">Backup folder</label><input id="backup-output" type="text" spellcheck="false" autocomplete="off">
+        <button id="backup-start" class="button secondary" type="submit">Export workspace</button>
+        <button id="backup-cancel" class="button secondary" type="button" hidden>Cancel export</button></form>
+      <p id="backup-status" role="status" aria-live="polite"></p>
+    </section>
   </main>
 </body>
 </html>

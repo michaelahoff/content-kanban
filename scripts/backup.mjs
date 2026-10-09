@@ -14,7 +14,10 @@ try {
     throw new Error('Usage: node scripts/backup.mjs create [--data-dir data] [--output backups] [--codex-home home]\n       node scripts/backup.mjs restore --backup folder [--data-dir data] [--codex-home home]');
   }
   const options = { dataDir: values['data-dir'], output: values.output, backupDir: values.backup, codexHome: values['codex-home'] };
-  const lock = await lockDataDirectory(options.dataDir);
+  const lock = await lockDataDirectory(options.dataDir).catch((error) => {
+    if (positionals[0] === 'create' && /Stop Frameboard/.test(error.message)) error.message += ' While it is running, use Settings → Export workspace instead.';
+    throw error;
+  });
   try {
     options.dataDir = lock.dataDir;
     const result = await (positionals[0] === 'create' ? createBackup(options) : restoreBackup(options));

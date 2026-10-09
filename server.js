@@ -14,6 +14,9 @@ import { createLaneRunner } from './lane-runner.js';
 import { createEventStream } from './event-stream.js';
 import { imageFormat, storeImage, verifiedImage, maxImageBytes } from './image-files.js';
 import { lockDataDirectory } from './data-lock.js';
+import { createBackup } from './backup.js';
+import { createMaintenance, maintenanceMessage } from './maintenance.js';
+import { homedir } from 'node:os';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const imageTypes = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif', 'image/avif': 'avif' };
@@ -70,10 +73,10 @@ async function json(req, limit) {
   catch (error) { if (error.status) throw error; throw Object.assign(new Error('Invalid JSON.'), { status: 400 }); }
 }
 
-export async function createApp({ dataDir = process.env.DATA_DIR || path.join(root, 'data'), fetch: fetchImpl = globalThis.fetch, onCardEvent, codexAdapter, claudeAdapter, providerBackoffMs, streamReplayLimit } = {}) {
+export async function createApp({ dataDir = process.env.DATA_DIR || path.join(root, 'data'), fetch: fetchImpl = globalThis.fetch, onCardEvent, codexAdapter, claudeAdapter, providerBackoffMs, streamReplayLimit, backupCheckpoint } = {}) {
   const lock = await lockDataDirectory(dataDir);
   dataDir = lock.dataDir;
-  let store; let worker; let stream; let lanes;
+  let store; let worker; let stream; let lanes; let maintenance;
   try {
     const imagesDir = path.join(dataDir, 'images');
     await mkdir(imagesDir, { recursive: true });
@@ -96,9 +99,20 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
     const providers = createProviderService({ store, adapters });
     const chat = createChatService({ store, adapter: codex, adapters, providers, dataDir });
     stream = createEventStream({ store, replayLimit: streamReplayLimit });
-    worker = createChatWorker({ store, adapter: codex, adapters, service: chat, ctx: currentUser(), providerBackoffMs,
+    const paused = () => Boolean(maintenance?.active);
+    worker = createChatWorker({ store, adapter: codex, adapters, service: chat, ctx: currentUser(), providerBackoffMs, paused,
       onDelta: (delta) => stream.delta(currentUser().workspaceId, delta) });
-    lanes = createLaneRunner({ store, service: chat, providers, ctx: currentUser() });
+    lanes = createLaneRunner({ store, service: chat, providers, ctx: currentUser(), paused });
+    // Native files are collected from the home the harness reports in use.
+    const codexHome = async () => {
+      try { return (await codex.discover({})).harness.codexHome; }
+      catch { return process.env.CODEX_HOME || path.join(homedir(), '.codex'); }
+    };
+    maintenance = createMaintenance({ store, ctx: currentUser(), worker, lanes, dataDir, codexHome,
+      settle: async () => { await chat.drain(); await providers.drain(); },
+      exportBackup: (options) => createBackup({ ...options, checkpoint: backupCheckpoint }) });
+    // Running work may finish during maintenance: Stop and request answers stay available.
+    const duringMaintenance = (pathname) => pathname.startsWith('/api/maintenance') || /^\/api\/cards\/[^/]+\/chat\/(stop|answer)$/.test(pathname);
     lanes.wake();
     const flowFor = (ctx, flowId) => {
       const flow = store.workspace(ctx).flows.find((entry) => entry.id === flowId);
@@ -187,6 +201,9 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
         store.recordNotesChange(ctx, id);
         return notes;
       }],
+      ['GET', /^\/api\/maintenance$/, () => maintenance.status()],
+      ['POST', /^\/api\/maintenance\/export$/, async (ctx, req) => maintenance.start(await read(req)), 202],
+      ['POST', /^\/api\/maintenance\/cancel$/, () => maintenance.cancel()],
       ['GET', /^\/api\/events$/, (ctx, req, id, url) => ({ events: store.events(ctx, { since: Math.max(0, Number.parseInt(url.searchParams.get('since'), 10) || 0) }) })],
     ];
     const server = http.createServer(async (req, res) => {
@@ -198,6 +215,11 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
         if (!/^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/.test(host)) return send(res, 403, { error: 'Use localhost to access this board.' });
         if (req.headers.origin && req.headers.origin !== `http://${host}`) return send(res, 403, { error: 'Cross-origin requests are not allowed.' });
         const url = new URL(req.url, `http://${host}`);
+        if (url.pathname.startsWith('/api/') && !['GET', 'HEAD'].includes(req.method) && !duringMaintenance(url.pathname)) {
+          if (maintenance.active) return send(res, 503, { error: maintenanceMessage });
+          // Maintenance drains writes that started before it began.
+          res.once('close', maintenance.track());
+        }
         if (url.pathname === '/api/stream' && req.method === 'GET') {
           const cursor = req.headers['last-event-id'] ?? url.searchParams.get('since');
           assert(cursor === null || /^\d{1,15}$/.test(cursor), 'Invalid stream cursor.');
@@ -257,10 +279,12 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
     let closing;
     server.close = (callback) => {
       if (!closing) {
+        const exporting = maintenance.close();
         worker.close(); lanes.close(); stream.close();
         const stopped = Promise.all([codex.close(), claude.close()]).catch((error) => console.error(error));
         closing = new Promise((resolve) => close(resolve)).then(async (error) => {
           await stopped;
+          await exporting;
           await chat.drain();
           // An HTTP request already in progress may have rediscovered Codex
           // during shutdown. Finish its filesystem work and stop that process.

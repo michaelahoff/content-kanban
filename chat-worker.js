@@ -20,7 +20,7 @@ export function failureReason(error) {
 // was refused before acceptance.
 const overloaded = (error) => error.code === -32001;
 
-export function createChatWorker({ store, adapter, adapters = { codex: adapter }, service, ctx, providerBackoffMs = 2000, providerWaitLimit = 6, onDelta = () => {} }) {
+export function createChatWorker({ store, adapter, adapters = { codex: adapter }, service, ctx, providerBackoffMs = 2000, providerWaitLimit = 6, onDelta = () => {}, paused = () => false }) {
   const live = new Map();
   let retryTimer = null;
   const retained = new Set();
@@ -248,7 +248,8 @@ export function createChatWorker({ store, adapter, adapters = { codex: adapter }
       scheduled = false;
       if (closed) return;
       for (const work of live.values()) if (store.chats.attempt(work.attempt.id)?.status === 'interrupt-requested') void interrupt(work);
-      for (const submission of store.chats.ready(ctx)) {
+      // Maintenance holds new dispatch; queued work stays queued until it ends.
+      if (!paused()) for (const submission of store.chats.ready(ctx)) {
         if (live.has(submission.cardId)) continue;
         const claimed = store.chats.claim(ctx, submission.id);
         if (!claimed) continue;
@@ -375,6 +376,8 @@ export function createChatWorker({ store, adapter, adapters = { codex: adapter }
     // A snapshot then includes everything streamed so far, so the next delta's
     // offset continues exactly where the snapshot ends.
     flushCard(cardId) { for (const work of retained) if (work.submission.cardId === cardId) flush(work); },
+    // No dispatched work or image save is in progress.
+    idle: () => !live.size && !importing.size,
     stop(cardId) { const result = store.chats.stop(ctx, cardId); wake(); return result; },
     answer(cardId, requestId, response) {
       const pending = requests.get(requestId);

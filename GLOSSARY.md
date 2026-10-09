@@ -75,6 +75,13 @@ _Avoid_: Artifact, attachment
 **Card workspace**:
 The working files associated with a particular card's agent work.
 
+**Maintenance**:
+The pause while a workspace export runs. New changes and dispatch are refused, running work finishes or is explicitly stopped, and queued work waits. Maintenance never cancels queued work or archives projects.
+
+**Workspace export**:
+A complete, verified backup folder of every retained app store, published atomically or not at all.
+_Avoid_: Snapshot, dump
+
 **Retained data**:
 The authoritative bytes Frameboard keeps: original assets, saved outputs, frozen submission history, and the database and authority metadata. Native agents can read retained data but never write it. It is distinct from an image's Original role, and from card workspaces and hand-off notes, which agents may change.
 _Avoid_: protected files, app storage

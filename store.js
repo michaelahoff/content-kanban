@@ -45,9 +45,27 @@ export function inspectBackupDatabase(filename) {
     for (const row of db.prepare('SELECT frozen FROM chat_submissions').all()) include(JSON.parse(row.frozen).context.images);
     const nativeThreads = [...new Set(db.prepare("SELECT binding FROM chat_conversations WHERE provider = 'codex' AND binding IS NOT NULL").all()
       .map((row) => JSON.parse(row.binding).threadId).filter((id) => /^[a-f0-9-]{36}$/.test(id)))];
-    return { schemaVersion: db.prepare('SELECT value FROM meta WHERE key = ?').get('schema_version')?.value, images: [...images.values()], nativeThreads,
-      retainedCount: db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'retained_versions'").get()
-        ? db.prepare("SELECT count(*) AS count FROM retained_versions WHERE state = 'committed'").get().count : 0 };
+    const table = (name) => Boolean(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
+    // Every committed version is required, including superseded, removed and
+    // unavailable ones; unfinished publications are not retained content.
+    const retained = table('retained_versions') ? db.prepare(`SELECT v.id, v.object_id, o.project_id, o.kind, v.filename, v.hash, v.size, v.base_version_id,
+      o.current_version_id = v.id AS current, o.removed_at IS NOT NULL AS removed FROM retained_versions v JOIN retained_objects o ON o.id = v.object_id
+      WHERE v.state = 'committed' ORDER BY v.rowid`).all().map((row) => ({ versionId: row.id, objectId: row.object_id, projectId: row.project_id, kind: row.kind,
+      filename: row.filename, path: `retained/versions/${row.id}`, size: row.size, sha256: row.hash, current: Boolean(row.current), removed: Boolean(row.removed),
+      baseVersionId: row.base_version_id })) : [];
+    for (const version of retained) if (!/^[a-f0-9-]{36}$/.test(version.versionId) || !/^[a-f0-9]{64}$/.test(version.sha256 ?? '') || !Number.isSafeInteger(version.size)) throw new Error('The database contains an invalid retained version.');
+    const archived = db.prepare("SELECT name FROM pragma_table_info('projects') WHERE name = 'archived_at'").get() ? 'archived_at' : 'NULL';
+    const projects = db.prepare(`SELECT id, name, flow_id, ${archived} AS archived_at, deleted_at FROM projects ORDER BY position, rowid`).all()
+      .map((row) => ({ id: row.id, name: row.name, flowId: row.flow_id, archivedAt: row.archived_at, deletedAt: row.deleted_at }));
+    // Row counts let a restore compare complete store coverage, not just files.
+    const tables = Object.fromEntries(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all()
+      .map(({ name }) => [name, db.prepare(`SELECT count(*) AS count FROM "${name.replaceAll('"', '""')}"`).get().count]));
+    // Saved outputs are retained image versions; unsaved ones only name a native file.
+    const outputs = table('chat_outputs') ? db.prepare('SELECT id, card_id, attempt_id, import_status, image_id, provenance FROM chat_outputs ORDER BY rowid').all()
+      .map((row) => ({ outputId: row.id, cardId: row.card_id, attemptId: row.attempt_id, importStatus: row.import_status, imageId: row.image_id,
+        savedPath: JSON.parse(row.provenance).native?.savedPath ?? null })) : [];
+    for (const output of outputs) if (output.importStatus === 'imported' && !images.has(output.imageId)) throw new Error(`Saved output ${output.outputId} has no retained image version.`);
+    return { schemaVersion: db.prepare('SELECT value FROM meta WHERE key = ?').get('schema_version')?.value, images: [...images.values()], nativeThreads, retained, projects, tables, outputs };
   } finally { db.close(); }
 }
 
