@@ -811,14 +811,17 @@ test('a dropped folder path reuses live folders, steps around a file holding its
   assert.equal(leaf.name, 'Deep');
   assert.equal(f.library.ensureFolders(f.ctx, f.projectId, { parentId: null, names: ['Thumbnails', 'refs', 'Deep'] }).id, leaf.id, 'a retry finds the same folders');
   assert.equal(f.library.list(f.ctx, f.projectId).folders.length, 3);
+  // Folder names have no extension: "v1.2" steps aside as "v1.2 (1)".
+  await f.upload('v1.2', Buffer.from('a file'));
+  assert.equal(f.library.ensureFolders(f.ctx, f.projectId, { parentId: null, names: ['v1.2'] }).name, 'v1.2 (1)');
   assert.throws(() => f.library.ensureFolders(f.ctx, f.projectId, { parentId: null, names: [] }), (error) => error.status === 400);
   assert.throws(() => f.library.ensureFolders(f.ctx, f.projectId, { parentId: null, names: ['ok', '..'] }), (error) => error.status === 400);
-  assert.equal(f.library.list(f.ctx, f.projectId).folders.length, 3, 'an invalid path creates nothing');
+  assert.equal(f.library.list(f.ctx, f.projectId).folders.length, 4, 'an invalid path creates nothing');
   f.store.archiveProject(f.ctx, f.projectId);
   assert.throws(() => f.library.ensureFolders(f.ctx, f.projectId, { parentId: null, names: ['New'] }), (error) => error.status === 409 && /archived/i.test(error.message));
   for (const attempt of [() => f.library.createFolder(f.ctx, f.projectId, { name: 'New' }), () => f.library.updateFolder(f.ctx, f.projectId, existing.id, { name: 'Renamed' }),
     () => f.library.removeFolder(f.ctx, f.projectId, existing.id)]) assert.throws(attempt, (error) => error.status === 409 && /archived/i.test(error.message));
-  assert.equal(f.library.list(f.ctx, f.projectId).folders.length, 3, 'archived Libraries stay readable');
+  assert.equal(f.library.list(f.ctx, f.projectId).folders.length, 4, 'archived Libraries stay readable');
 });
 
 test('over HTTP, folders nest, uploads land in a folder, and rename, move and removal keep identities and versions', async (t) => {
@@ -906,4 +909,49 @@ test('export and restore carry nested folders, locations and removals, and the m
   manifest.inventory.folders.find((folder) => folder.id === refs.id).name = 'renamed';
   await writeFile(manifestFile, JSON.stringify(manifest));
   await assert.rejects(restoreBackup({ backupDir, dataDir: path.join(root, 'tampered'), codexHome: path.join(root, 'native') }), /inventory does not match/);
+});
+
+test('a retried upload follows its own saved outcome and its file’s current location, not the folder it started in', async (t) => {
+  const f = await fixture(t);
+  const drafts = f.library.createFolder(f.ctx, f.projectId, { name: 'Drafts' });
+  const saved = await f.upload('cut.mp4', Buffer.from('cut'), { folderId: drafts.id, operationId: 'saved-1' });
+  const moving = await f.upload('take.wav', Buffer.from('v1'), { folderId: drafts.id });
+  const broken = Readable.from((async function* () { yield Buffer.from('partial'); throw new Error('upload disconnected'); })());
+  await assert.rejects(f.upload('take.wav', broken, { folderId: drafts.id, collision: 'replace', assetId: moving.asset.id, operationId: 'replace-1' }), /disconnected/);
+  f.library.updateAsset(f.ctx, f.projectId, moving.asset.id, { folderId: null });
+  f.library.updateAsset(f.ctx, f.projectId, saved.asset.id, { folderId: null });
+  f.library.removeFolder(f.ctx, f.projectId, drafts.id);
+
+  // The response was lost: the saved upload is reported again although its folder is gone.
+  const again = await f.upload('cut.mp4', Buffer.from('ignored'), { folderId: drafts.id, operationId: 'saved-1' });
+  assert.deepEqual([again.outcome, again.version.id], ['created', saved.version.id]);
+  // The interrupted replacement finishes on the moved file.
+  const replaced = await f.upload('take.wav', Buffer.from('v2'), { folderId: drafts.id, collision: 'replace', assetId: moving.asset.id, operationId: 'replace-1' });
+  assert.deepEqual([replaced.asset.id, replaced.asset.folderId, replaced.version.number], [moving.asset.id, null, 2]);
+
+  // A first upload whose folder is removed mid-stream says so.
+  const later = f.library.createFolder(f.ctx, f.projectId, { name: 'Later' });
+  let release;
+  const slow = Readable.from((async function* () { yield Buffer.from('half'); await new Promise((resolve) => { release = resolve; }); yield Buffer.from('rest'); })());
+  const pending = f.upload('late.png', slow, { folderId: later.id });
+  while (!release) await new Promise((resolve) => setImmediate(resolve));
+  f.library.removeFolder(f.ctx, f.projectId, later.id);
+  release();
+  await assert.rejects(pending, (error) => error.status === 409 && /removed/.test(error.message));
+});
+
+test('a new document saves at the Library root, where a subfolder also holds its name, and then moves like any file', async (t) => {
+  const f = await fixture(t);
+  f.library.createFolder(f.ctx, f.projectId, { name: 'guide.md' });
+  const scripts = f.library.createFolder(f.ctx, f.projectId, { name: 'Scripts' });
+  const draft = await f.library.createDraft(f.ctx, f.projectId, { filename: 'guide.md', text: '# Guide' });
+  await assert.rejects(f.library.saveDraft(f.ctx, f.projectId, draft.id, { revision: draft.revision, operationId: 'doc-1' }),
+    (error) => error.status === 409 && error.conflict.suggested === 'guide (1).md' && !error.conflict.assetId);
+  const saved = await f.library.saveDraft(f.ctx, f.projectId, draft.id, { revision: draft.revision, operationId: 'doc-2', collision: 'create', folderId: scripts.id });
+  assert.deepEqual([saved.asset.filename, saved.asset.folderId], ['guide (1).md', null], 'a requested folder is ignored: documents save at the root');
+  const moved = f.library.updateAsset(f.ctx, f.projectId, saved.asset.id, { folderId: scripts.id });
+  assert.equal(moved.folderId, scripts.id);
+  const edit = await f.library.createDraft(f.ctx, f.projectId, { assetId: saved.asset.id });
+  const v2 = await f.library.saveDraft(f.ctx, f.projectId, edit.id, { revision: (await f.library.writeDraft(f.ctx, f.projectId, edit.id, { text: '# Guide v2', revision: edit.revision })).revision, operationId: 'doc-3' });
+  assert.deepEqual([v2.asset.id, v2.asset.folderId, v2.version.number], [saved.asset.id, scripts.id, 2], 'a later save keeps the moved file in place');
 });

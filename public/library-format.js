@@ -18,11 +18,12 @@ export function splitExtension(name) {
   return dot > 0 ? [name.slice(0, dot), name.slice(dot + 1)] : [name, ''];
 }
 
-// Create new keeps the extension: logo.png becomes "logo (1).png".
-export function availableFilename(name, taken) {
+// Create new keeps the extension: logo.png becomes "logo (1).png". Folder
+// names have none: "v1.2" becomes "v1.2 (1)".
+export function availableFilename(name, taken, { extension: keepExtension = true } = {}) {
   const used = new Set(taken);
   if (!used.has(name)) return name;
-  const [base, extension] = splitExtension(name); const suffix = extension ? `.${extension}` : '';
+  const [base, extension] = keepExtension ? splitExtension(name) : [name, '']; const suffix = extension ? `.${extension}` : '';
   let n = 1;
   while (used.has(`${base} (${n})${suffix}`)) n++;
   return `${base} (${n})${suffix}`;

@@ -60,12 +60,13 @@ export function inspectBackupDatabase(filename) {
     // Every committed version is required, including superseded, removed and
     // unavailable ones; unfinished publications are not retained content.
     // Library locations exist from the folders migration; older databases have none.
-    const folders = table('library_folders') ? db.prepare('SELECT id, project_id, parent_id, name, removed_at FROM library_folders ORDER BY rowid').all()
+    const foldered = table('library_folders');
+    const folders = foldered ? db.prepare('SELECT id, project_id, parent_id, name, removed_at FROM library_folders ORDER BY rowid').all()
       .map((row) => ({ id: row.id, projectId: row.project_id, parentId: row.parent_id, name: row.name, removed: row.removed_at !== null })) : [];
     const retained = table('retained_versions') ? db.prepare(`SELECT v.id, v.object_id, o.project_id, o.kind, o.filename AS label, v.filename, v.hash, v.size, v.base_version_id,
-      o.current_version_id = v.id AS current, o.removed_at IS NOT NULL AS removed${table('library_folders') ? ', o.folder_id' : ''} FROM retained_versions v JOIN retained_objects o ON o.id = v.object_id
+      o.current_version_id = v.id AS current, o.removed_at IS NOT NULL AS removed${foldered ? ', o.folder_id' : ''} FROM retained_versions v JOIN retained_objects o ON o.id = v.object_id
       WHERE v.state = 'committed' ORDER BY v.rowid`).all().map((row) => ({ versionId: row.id, objectId: row.object_id, projectId: row.project_id, kind: row.kind,
-      label: row.label, ...(Object.hasOwn(row, 'folder_id') ? { folderId: row.folder_id } : {}), filename: row.filename, path: `retained/versions/${row.id}`, size: row.size, sha256: row.hash,
+      label: row.label, ...(foldered ? { folderId: row.folder_id } : {}), filename: row.filename, path: `retained/versions/${row.id}`, size: row.size, sha256: row.hash,
       current: Boolean(row.current), removed: Boolean(row.removed), baseVersionId: row.base_version_id })) : [];
     for (const version of retained) if (!/^[a-f0-9-]{36}$/.test(version.versionId) || !/^[a-f0-9]{64}$/.test(version.sha256 ?? '') || !Number.isSafeInteger(version.size)) throw new Error('The database contains an invalid retained version.');
     const archived = db.prepare("SELECT name FROM pragma_table_info('projects') WHERE name = 'archived_at'").get() ? 'archived_at' : 'NULL';

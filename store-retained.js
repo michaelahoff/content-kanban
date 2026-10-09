@@ -74,14 +74,16 @@ export function createRetainedMetadata({ all, get, run, transaction, now }) {
     // progress, which then never commit. Earlier removals keep their time.
     removeFolder(ctx, id) {
       const at = now();
-      const tree = 'WITH RECURSIVE tree(id) AS (SELECT ? UNION ALL SELECT f.id FROM library_folders f JOIN tree ON f.parent_id = tree.id)';
-      run(`${tree} UPDATE library_folders SET removed_at = ? WHERE id IN tree AND removed_at IS NULL`, id, at);
-      return run(`${tree} UPDATE retained_objects SET removed_at = ? WHERE folder_id IN tree AND ${librarySource} AND removed_at IS NULL`, id, at).changes;
+      const tree = `WITH RECURSIVE tree(id) AS (SELECT id FROM library_folders WHERE id = ? AND workspace_id = ?
+        UNION ALL SELECT f.id FROM library_folders f JOIN tree ON f.parent_id = tree.id WHERE f.workspace_id = ?)`;
+      const scope = [id, ctx.workspaceId, ctx.workspaceId];
+      run(`${tree} UPDATE library_folders SET removed_at = ? WHERE id IN tree AND removed_at IS NULL`, ...scope, at);
+      return run(`${tree} UPDATE retained_objects SET removed_at = ? WHERE folder_id IN tree AND workspace_id = ? AND ${librarySource} AND removed_at IS NULL`, ...scope, at, ctx.workspaceId).changes;
     },
     createFolder(ctx, { projectId, parentId, name }) {
       const id = randomUUID();
       run('INSERT INTO library_folders (id, workspace_id, project_id, parent_id, name, created_at) VALUES (?, ?, ?, ?, ?, ?)', id, ctx.workspaceId, projectId, parentId, name, now());
-      return get('SELECT * FROM library_folders WHERE id = ?', id);
+      return get('SELECT * FROM library_folders WHERE id = ? AND workspace_id = ?', id, ctx.workspaceId);
     },
     active,
     current(ctx, id) { const row = object(ctx, id); return row.removed_at ? null : version(ctx, row.current_version_id); },
@@ -119,7 +121,8 @@ export function createRetainedMetadata({ all, get, run, transaction, now }) {
       return transaction(() => {
         const row = get('SELECT * FROM retained_versions WHERE id = ? AND workspace_id = ?', id, ctx.workspaceId);
         const source = object(ctx, row.object_id);
-        if (source.removed_at || source.current_version_id !== row.base_version_id) fail(409, 'The current retained version changed during publication.');
+        if (source.removed_at) fail(409, `${source.filename} or its folder was removed during the upload. Nothing was saved.`);
+        if (source.current_version_id !== row.base_version_id) fail(409, 'The current retained version changed during publication.');
         active(ctx, id);
         if (row.state !== 'published' || !row.hash || row.size === null) fail(409, 'Publication is incomplete.');
         run("UPDATE retained_versions SET state = 'committed', available = 1, error = '', committed_at = ? WHERE id = ?", now(), id);
