@@ -57,7 +57,7 @@ One try at delivering a submission to a native agent. Retrying a failed submissi
 _Avoid_: Run, retry
 
 **Submitted card context**:
-The card content and image versions captured for a particular chat submission. It remains the record of what was sent even when the card changes afterward.
+The card content, image versions and selected Library file versions captured for a particular chat submission. It remains the record of what was sent even when the card changes afterward.
 
 **Card proposal**:
 A suggested change to a card that awaits the user's acceptance.
@@ -74,6 +74,9 @@ _Avoid_: Artifact, attachment
 
 **Project Library**:
 A project's collection of project assets, shown in its Library tab beside the board. Selecting assets for prompts is separate from keeping them in the Library.
+
+**Library selection**:
+The ordered project assets a user explicitly chose for a card chat's manual prompts. It names sources, not versions: each Send captures their current versions. It persists across ordinary messages and is cleared by fresh context. Selected files are reference material; choosing one does not tell the agent to follow it.
 
 **Project asset**:
 An uploaded file or explicitly saved document with a stable identity owned by exactly one project. Its filename is a label, not a path; matching names or bytes never merge two assets. Uploading over a taken name requires choosing Create new, Replace or Cancel.

@@ -83,6 +83,26 @@ export function createLibrary({ retained, metadata, project, record }) {
       record(ctx, 'asset_repaired', version.objectId, projectId, { versionId: version.id });
       return numberedVersion(ctx, version);
     },
+    // The current committed versions named by ordered typed selections, one per
+    // asset identity in first-selected position with every selection that named
+    // it. An unresolvable source is reported by identity, never resolved empty.
+    resolve(ctx, projectId, selections) {
+      const files = new Map(); const problems = [];
+      for (const selection of selections) {
+        const key = `${selection.kind}:${selection.id}`;
+        const row = selection.kind === 'asset' ? metadata.object(ctx, selection.id) : null;
+        const owned = row && row.project_id === projectId && libraryKinds.includes(row.kind);
+        const reason = !owned ? 'It is not a file in this project’s Library.' : row.removed_at ? 'It was removed from the Library.'
+          : !row.current_version_id ? 'Its first upload has not finished.' : null;
+        if (reason) { problems.push({ key, label: owned ? row.filename : key, phase: 'resolve', reason }); continue; }
+        if (!files.has(row.id)) {
+          const version = numberedVersion(ctx, metadata.version(ctx, row.current_version_id));
+          files.set(row.id, { assetId: row.id, versionId: version.id, number: version.number, filename: row.filename, hash: version.hash, size: version.size, sources: [] });
+        }
+        files.get(row.id).sources.push({ kind: selection.kind, id: selection.id });
+      }
+      return { files: [...files.values()], problems };
+    },
     async read(ctx, projectId, versionId) {
       project(ctx, projectId, { allowArchived: true });
       const { version, source } = owned(ctx, projectId, versionId);

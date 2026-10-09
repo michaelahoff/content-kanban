@@ -308,7 +308,7 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
         res.writeHead(200, { 'Content-Type': type, 'Content-Length': bytes.length });
         res.end(req.method === 'HEAD' ? undefined : bytes);
       } catch (error) {
-        if (!res.headersSent) send(res, error.code === 'ENOENT' ? 404 : error.status || 500, { error: error.status ? error.message : error.code === 'ENOENT' ? 'Not found.' : 'Could not save or load data. Check available disk space and try again.', ...(error.conflict ? { conflict: error.conflict } : {}) });
+        if (!res.headersSent) send(res, error.code === 'ENOENT' ? 404 : error.status || 500, { error: error.status ? error.message : error.code === 'ENOENT' ? 'Not found.' : 'Could not save or load data. Check available disk space and try again.', ...(error.conflict ? { conflict: error.conflict } : {}), ...(error.problems ? { problems: error.problems } : {}) });
         else res.end();
         if (!error.status && error.code !== 'ENOENT') console.error(error);
       }
