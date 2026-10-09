@@ -223,6 +223,7 @@ export function createChatWorker({ store, adapter, adapters = { codex: adapter }
       if (closed) return;
       const recheck = queuedConfigurationDecision(submission.configuration, store.providerConfiguration(ctx, submission.provider).selection, actualDiscovery);
       if (recheck.status !== 'ready') { store.chats.hold(ctx, attempt.id, recheck.reason); release(work); return; }
+      service.assertRoutes(submission, actualDiscovery, inputs.delivery);
       if (work.conversation.binding?.threadId) {
         const outside = await outsideTurns(work.conversation.id, opened.threadId, adapter);
         if (closed) return;

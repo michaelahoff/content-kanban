@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { planInputs } from '../submission-inputs.js';
+import { planInputs, fileFormat } from '../submission-inputs.js';
 
 const MiB = 1024 * 1024;
 const script = { key: 'asset:script', label: 'script.md', kind: 'text', size: 12000 };
@@ -80,4 +80,39 @@ test('text too large to inline names its size, not missing file tools', () => {
   assert.equal(plan.problems[0].phase, 'limit');
   assert.match(plan.problems[0].reason, /too much text/);
   assert.deepEqual(planInputs('codex', [transcript], { textBytes: 0 }).inputs.map((input) => input.method), ['copy']);
+});
+
+test('a Codex setup without its shell tool has no route for a file and refuses it by name, keeping text and images usable', () => {
+  const plan = planInputs('codex', [script, logo, video], { textBytes: 0, fileTools: false });
+  assert.deepEqual(plan.problems.map(({ key, phase }) => ({ key, phase })), [{ key: 'asset:video', phase: 'capability' }]);
+  assert.match(plan.problems[0].reason, /shell tool/);
+  assert.deepEqual(planInputs('codex', [script, logo], { textBytes: 0, fileTools: false }).problems, []);
+});
+
+test('PDFs, audio, video, archives and fonts are recognized by their signatures, never by filename', () => {
+  const at = (offset, text, size = 64) => { const bytes = Buffer.alloc(size); bytes.write(text, offset, 'latin1'); return bytes; };
+  assert.equal(fileFormat(Buffer.from('%PDF-1.7\n')), 'pdf');
+  assert.equal(fileFormat(at(0, 'RIFF\0\0\0\0WAVE')), 'wav');
+  assert.equal(fileFormat(at(0, 'ID3')), 'mp3');
+  assert.equal(fileFormat(at(4, 'ftypisom')), 'mp4');
+  assert.equal(fileFormat(at(4, 'ftypM4A ')), 'm4a');
+  assert.equal(fileFormat(at(4, 'ftypqt  ')), 'mov');
+  assert.equal(fileFormat(Buffer.from([0x1a, 0x45, 0xdf, 0xa3, 0, 0])), 'matroska');
+  assert.equal(fileFormat(Buffer.from('PK\x03\x04', 'latin1')), 'zip');
+  assert.equal(fileFormat(Buffer.from([0x1f, 0x8b, 8, 0])), 'gzip');
+  assert.equal(fileFormat(Buffer.from('wOF2\x00\x01', 'latin1')), 'woff2');
+  assert.equal(fileFormat(Buffer.from([0, 1, 0, 0, 0, 12])), 'ttf');
+  assert.equal(fileFormat(Buffer.from([0, 1, 2, 3, 255])), null);
+});
+
+test('Claude names the unproven PDF, audio and video routes; Codex gets a tool copy, never a modality input', () => {
+  const pdf = { key: 'asset:brief', label: 'brief.pdf', kind: 'file', format: 'pdf', size: 1000 };
+  const audio = { key: 'asset:vo', label: 'vo.wav', kind: 'file', format: 'wav', size: 1000 };
+  const film = { ...video, format: 'mp4' };
+  const plan = planInputs('claude', [pdf, audio, film], { textBytes: 0 });
+  assert.deepEqual(plan.problems.map(({ key, phase }) => ({ key, phase })), [pdf, audio, film].map(({ key }) => ({ key, phase: 'capability' })));
+  assert.match(plan.problems[0].reason, /PDF/);
+  assert.match(plan.problems[1].reason, /audio/);
+  assert.match(plan.problems[2].reason, /video/);
+  assert.deepEqual(planInputs('codex', [pdf, audio, film], { textBytes: 0 }).inputs.map((input) => input.method), ['copy', 'copy', 'copy']);
 });

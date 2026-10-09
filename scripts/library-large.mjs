@@ -1,9 +1,12 @@
 // Manual bounded-memory acceptance: npm run test:library-large.
 // Streams a multi-GiB opaque file through the Library's HTTP upload and
-// download, then a complete export and restore. Requires about 7 GiB free.
+// download, a Codex Send that delivers it as an independent workspace copy,
+// then a complete export and restore. Requires about 11 GiB free.
+// The Codex boundary is the test peer: no native harness or account is used.
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { mkdtemp, rm } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
@@ -11,6 +14,7 @@ import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
 import { createApp } from '../server.js';
 import { createBackup, restoreBackup } from '../backup.js';
+import { ControlledCodex } from '../test/support/controlled-codex.js';
 
 const size = 2 * 1024 ** 3 + 65537;
 const chunk = Buffer.alloc(64 * 1024);
@@ -23,7 +27,17 @@ const expected = createHash('sha256'); for await (const bytes of original()) exp
 const hash = expected.digest('hex');
 const filename = 'raw capture — take 3.mkv';
 const root = await mkdtemp(path.join(tmpdir(), 'frameboard-library-large-'));
-const listen = async (dataDir) => { const app = await createApp({ dataDir }); await new Promise((resolve) => app.listen(0, '127.0.0.1', resolve)); return app; };
+const codex = new ControlledCodex(path.join(root, 'native'));
+const listen = async (dataDir) => { const app = await createApp({ dataDir, codexAdapter: codex }); await new Promise((resolve) => app.listen(0, '127.0.0.1', resolve)); return app; };
+const api = async (app, method, url, body) => {
+  const response = await fetch(`http://127.0.0.1:${app.address().port}${url}`, { method, headers: { 'Content-Type': 'application/json' }, body: body && JSON.stringify(body) });
+  const value = await response.json(); assert.ok(response.ok, JSON.stringify(value)); return value;
+};
+const fileDigest = async (filename) => {
+  const digest = createHash('sha256'); let read = 0;
+  for await (const bytes of createReadStream(filename)) { digest.update(bytes); read += bytes.length; }
+  return { sha256: digest.digest('hex'), size: read };
+};
 const close = (app) => new Promise((resolve) => app.close(resolve));
 async function download(app, url) {
   const response = await fetch(`http://127.0.0.1:${app.address().port}${url}`);
@@ -49,6 +63,18 @@ try {
   assert.deepEqual([uploaded.body.version.hash, uploaded.body.version.size], [hash, size]);
   const url = `/api/projects/${project.id}/library/versions/${uploaded.body.version.id}/content`;
   assert.deepEqual(await download(app, url), { sha256: hash, size });
+  // Send verifies every byte, then delivery streams an independent copy.
+  const workspace = await api(app, 'GET', '/api/workspace');
+  const stageId = workspace.flows.find((flow) => flow.id === project.flowId).stages[0].id;
+  const card = await api(app, 'POST', `/api/projects/${project.id}/cards`, { stageId, title: 'Large file card' });
+  const { composer } = await api(app, 'GET', `/api/cards/${card.id}/chat`);
+  const saved = await api(app, 'PUT', `/api/cards/${card.id}/chat/composer`, { ...composer, prompt: 'Review the capture', model: 'test-model',
+    selections: { ...composer.selections, library: [{ kind: 'asset', id: uploaded.body.asset.id }] } });
+  const submission = await api(app, 'POST', `/api/cards/${card.id}/chat/submissions`, { id: randomUUID(), composerRevision: saved.revision });
+  assert.deepEqual(submission.context.library.map((file) => [file.method, file.hash, file.size]), [['copy', hash, size]]);
+  while (!codex.sends.length) await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.deepEqual(await fileDigest(path.join(root, 'data', 'workspaces', card.id, submission.context.library[0].path)), { sha256: hash, size });
+  codex.finish(codex.sends[0]);
   await close(app); app = null;
   const { backupDir } = await createBackup({ dataDir: path.join(root, 'data'), output: path.join(root, 'backups'), codexHome: path.join(root, 'native') });
   await rm(path.join(root, 'data'), { recursive: true, force: true });
@@ -58,5 +84,5 @@ try {
   assert.deepEqual(await download(app, url), { sha256: hash, size });
   assert.ok(process.resourceUsage().maxRSS < 256 * 1024, 'Peak RSS must remain under 256 MiB for a multi-GiB file.');
   console.log(JSON.stringify({ size, sha256: hash, maxRssMiB: process.resourceUsage().maxRSS / 1024,
-    verified: ['http-upload', 'http-download', 'export', 'restore', 'restored-download'] }));
+    verified: ['http-upload', 'http-download', 'send-materialization', 'export', 'restore', 'restored-download'] }));
 } finally { if (app) await close(app); await rm(root, { recursive: true, force: true }); }

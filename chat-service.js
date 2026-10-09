@@ -45,11 +45,12 @@ export function createChatService({ store, adapter, adapters = { codex: adapter 
     // preview: the card images and selected Library files as one union, checked
     // for existence, ownership, byte integrity and the target's capabilities and
     // known limits. Problems are reported by source; nothing is silently dropped.
-    // Send verifies every byte against the model it discovered; a preview
-    // samples large files and uses the saved model catalog.
-    async preview(ctx, cardId, { verify = false, models } = {}) {
+    // Send verifies every byte against the model and tools it discovered; a
+    // preview samples large files and uses the saved provider catalog.
+    async preview(ctx, cardId, { verify = false, discovery } = {}) {
       const captured = store.chats.context(ctx, cardId);
-      models ??= store.providerCatalog(ctx, captured.provider).discovery?.models ?? [];
+      discovery ??= store.providerCatalog(ctx, captured.provider).discovery;
+      const models = discovery?.models ?? [];
       const items = [];
       for (const image of captured.context.images) {
         const bytes = await imageBytes(image);
@@ -67,7 +68,7 @@ export function createChatService({ store, adapter, adapters = { codex: adapter 
         }
       }
       const textBytes = Buffer.byteLength(captured.prompt) + captured.context.fields.reduce((sum, field) => sum + Buffer.byteLength(String(field.value ?? '')), 0);
-      const plan = planInputs(captured.provider, [...items, ...library], { textBytes, model: models.find((model) => model.id === captured.model) });
+      const plan = planInputs(captured.provider, [...items, ...library], { textBytes, model: models.find((model) => model.id === captured.model), fileTools: discovery?.tools?.shell !== false });
       captured.context.library = plan.inputs.slice(items.length).map(({ key, label, ...file }) => ({ ...file, ...(file.method === 'text' ? {} : { path: store.library.copyPath(file) }) }));
       captured.context.warnings = plan.warnings;
       captured.problems = [...problems, ...plan.problems];
@@ -97,7 +98,7 @@ export function createChatService({ store, adapter, adapters = { codex: adapter 
       providers?.assertEnabled(ctx, start.provider);
       const settings = store.providerConfiguration(ctx, start.provider);
       const { discovery } = await this.discover(ctx, cardId);
-      const captured = await this.preview(ctx, cardId, { verify: true, models: discovery.models });
+      const captured = await this.preview(ctx, cardId, { verify: true, discovery });
       if (captured.archiveGeneration !== start.archiveGeneration) fail(409, 'The project was archived while preparing Send, so it was not sent. Review and send again.');
       if (['composerRevision', 'cardRevision', 'conversationId'].some((key) => captured[key] !== start[key])) fail(409, 'The card, composer or conversation changed while preparing Send. Review and send again.');
       if (!discovery.models.some((model) => model.id === captured.model)) fail(400, 'Choose an available model in Settings.');
@@ -133,7 +134,7 @@ export function createChatService({ store, adapter, adapters = { codex: adapter 
     async deliveryInputs(ctx, submission) {
       const library = submission.context.library ?? [];
       const delivery = [...submission.context.images.map((image) => ({ imageId: image.id, filename: image.name, method: 'image' })),
-        ...library.map((file) => ({ versionId: file.versionId, filename: file.filename, method: file.method }))];
+        ...library.map((file) => ({ versionId: file.versionId, filename: file.filename, method: file.method, ...(file.method === 'copy' ? { format: file.format } : {}) }))];
       const stopped = (failed, reason) => delivery.map((entry) => ({ ...entry, status: entry === failed ? 'failed' : 'not-sent', reason }));
       let images;
       try { images = await this.references(submission); }
@@ -152,6 +153,18 @@ export function createChatService({ store, adapter, adapters = { codex: adapter 
         }
       }
       return { texts, images, delivery };
+    },
+    // Immediately before sending: a frozen workspace copy needs the actual
+    // target's shell tool to be read. Without it the attempt stops, naming each
+    // such file, rather than sending its path for nothing to read.
+    assertRoutes(submission, discovery, delivery) {
+      if (submission.provider !== 'codex' || discovery.tools?.shell !== false) return;
+      const stranded = (submission.context.library ?? []).filter((file) => file.method === 'copy');
+      if (!stranded.length) return;
+      const reason = 'This Codex setup now has its shell tool turned off (features.shell_tool), so it has no tool to read workspace copies. Turn the shell tool on, then Retry.';
+      const names = new Set(stranded.map((file) => file.versionId));
+      throw Object.assign(new Error(`${stranded.map((file) => file.filename).join(', ')} could not be delivered. ${reason}`), { kind: 'input-unavailable',
+        delivery: delivery.map((entry) => ({ ...entry, status: names.has(entry.versionId) ? 'failed' : 'not-sent', reason })) });
     },
     async references(submission) {
       const directory = path.join(workspace(submission.cardId), 'references');

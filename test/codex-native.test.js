@@ -11,6 +11,7 @@ import { createResponsesFixture } from './support/responses-fixture.js';
 import { installedCodexSchema } from './support/json-schema.js';
 import { createApp } from '../server.js';
 import { randomUUID } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 
 const enabled = process.env.FRAMEBOARD_NATIVE_TEST === '1';
 const schema = enabled ? installedCodexSchema() : null;
@@ -184,6 +185,69 @@ test('installed native: a crash mid-stream is reconciled read-only after restart
     assert.equal(f.peer.requests.filter((request) => request.serialized.includes('RECOVERY_STALLED_PROMPT')).length >= 1, true);
     assert.ok(!f.peer.requests.slice(sentBefore).some((request) => request.serialized.split('RECOVERY_STALLED_PROMPT').length > 2), 'The stalled prompt was never resent as a new user message.');
   } finally { if (app.listening) await close(); await adapter.close(); }
+});
+
+test('installed native: protected Codex reads a Library archive through its shell tool from a rebuilt independent copy; a setup without the shell tool is refused', { skip: !enabled, timeout: 90000 }, async (t) => {
+  const f = await nativeFixture(t, { protected: true });
+  const boundary = { ...f.adapter, openThread: (options) => f.adapter.openThread({ ...options, modelProvider: 'fb_fixture' }) };
+  const app = await createApp({ dataDir: f.dataDir, codexAdapter: boundary });
+  await new Promise((resolve) => app.listen(0, '127.0.0.1', resolve));
+  t.after(() => app.listening && new Promise((resolve) => app.close(resolve)));
+  const base = `http://127.0.0.1:${app.address().port}`;
+  async function call(method, pathname, body) {
+    const response = await fetch(`${base}${pathname}`, { method, headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
+    return { status: response.status, body: await response.json() };
+  }
+  const ok = async (...args) => { const result = await call(...args); assert.ok(result.status < 300, JSON.stringify(result.body)); return result.body; };
+  // A real tar archive whose member only a tool that understands tar can read.
+  const source = await mkdtemp(path.join(tmpdir(), 'frameboard-archive-'));
+  t.after(() => rm(source, { recursive: true, force: true }));
+  await mkdir(path.join(source, 'episode'));
+  await writeFile(path.join(source, 'episode', 'notes.txt'), 'TAR_MEMBER_SENTINEL');
+  execFileSync('tar', ['-cf', path.join(source, 'episode.tar'), '-C', source, 'episode']);
+  const archive = await readFile(path.join(source, 'episode.tar'));
+  const workspace = await ok('GET', '/api/workspace'); const project = workspace.projects[0];
+  const stageId = workspace.flows.find((flow) => flow.id === project.flowId).stages[0].id;
+  const uploaded = await (await fetch(`${base}/api/projects/${project.id}/library/uploads?${new URLSearchParams({ filename: 'episode.tar', operation: randomUUID() })}`, { method: 'POST', body: archive })).json();
+  const original = path.join(f.dataDir, 'retained', 'versions', uploaded.version.id);
+  async function send(cardId, command) {
+    const { composer } = await ok('GET', `/api/cards/${cardId}/chat`);
+    const saved = await ok('PUT', `/api/cards/${cardId}/chat/composer`, { ...composer, prompt: 'List the archive', model: 'gpt-6-luna', selections: { ...composer.selections, library: [{ kind: 'asset', id: uploaded.asset.id }] } });
+    if (command) f.peer.respond({ functionCall: { name: 'exec_command', arguments: { cmd: command, yield_time_ms: 2000 } } });
+    return call('POST', `/api/cards/${cardId}/chat/submissions`, { id: randomUUID(), composerRevision: saved.revision });
+  }
+  async function completed(cardId, id) {
+    for (let i = 0; i < 300; i++) {
+      const chat = await ok('GET', `/api/cards/${cardId}/chat`);
+      const row = chat.submissions.find((entry) => entry.id === id);
+      if (row.status === 'completed') return chat;
+      assert.ok(!['held', 'failed', 'uncertain'].includes(row.status), JSON.stringify(row));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.fail('The installed native Library turn did not complete.');
+  }
+  const card = await ok('POST', `/api/projects/${project.id}/cards`, { stageId, title: 'Archive card' });
+  const copy = `references/library/${uploaded.version.id}.tar`;
+  const first = await send(card.id, `tar -xOf ${copy} episode/notes.txt; chmod u+w ${copy}; printf TAMPERED > ${copy}; printf corrupted > '${original}'`);
+  assert.equal(first.status, 201, JSON.stringify(first.body));
+  assert.deepEqual(first.body.context.library.map(({ method, format, path: where }) => [method, format, where]), [['copy', null, copy]]);
+  const chat = await completed(card.id, first.body.id);
+  const outputs = JSON.stringify(f.peer.requests.flatMap((request) => request.toolOutputs));
+  assert.match(outputs, /TAR_MEMBER_SENTINEL/, 'Codex extracted the archive member with its shell tool');
+  assert.deepEqual(chat.attempts[0].delivery.map(({ method, status }) => [method, status]), [['copy', 'sent']]);
+  assert.deepEqual(await readFile(original), archive, 'the protected original is untouched');
+  assert.equal(await readFile(path.join(f.dataDir, 'workspaces', card.id, copy), 'utf8'), 'TAMPERED', 'the agent could only change its workspace copy');
+  const second = await send(card.id, `sha256sum ${copy}`);
+  await completed(card.id, second.body.id);
+  assert.match(JSON.stringify(f.peer.requests.flatMap((request) => request.toolOutputs)), new RegExp(uploaded.version.hash), 'the next delivery rebuilt the exact copy from the original');
+  assert.ok(f.peer.requests.every((request) => !request.authorization));
+
+  await f.adapter.close();
+  await writeFile(path.join(f.home, 'config.toml'), `${await readFile(path.join(f.home, 'config.toml'), 'utf8')}[features]\nshell_tool = false\n`);
+  const refused = await send(card.id);
+  assert.equal(refused.status, 409, JSON.stringify(refused.body));
+  assert.deepEqual(refused.body.problems.map(({ key, phase }) => [key, phase]), [[`asset:${uploaded.asset.id}`, 'capability']]);
+  assert.match(refused.body.problems[0].reason, /shell tool/);
 });
 
 async function waitForFile(filename, timeoutMs = 10000) {

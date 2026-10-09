@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 import { availableFilename, comparePaths, libraryFilename, nameConflict, splitExtension, sourceKey } from './public/library-format.js';
 import { libraryKinds } from './store-retained.js';
 import { imageFormat } from './image-files.js';
-import { rasterFormats, limits } from './submission-inputs.js';
+import { rasterFormats, limits, fileFormat } from './submission-inputs.js';
 
 const fail = (status, message, extra = {}) => { throw Object.assign(new Error(message), { status, ...extra }); };
 // Library text larger than any request can hold is delivered as a file.
@@ -17,13 +17,15 @@ async function collect(stream, limit = Infinity) {
   return Buffer.concat(chunks);
 }
 // A supported raster image, UTF-8 text without NUL bytes, or any other file.
-// A large file whose start reads as text is a file of format text.
+// A recognized file format (a PDF, say) stays a file even when it reads as
+// text. A large file whose start reads as text is a file of format text.
 function classify(bytes, size) {
-  const format = imageFormat(bytes);
+  const format = imageFormat(bytes) ?? fileFormat(bytes);
   if (rasterFormats.includes(format)) return { kind: 'image', format };
+  if (format) return { kind: 'file', format };
   const readable = !bytes.includes(0) && (() => { try { utf8().decode(bytes, { stream: size > textProbeBytes }); return true; } catch { return false; } })();
   if (readable && size <= textProbeBytes) return { kind: 'text', format: 'utf-8' };
-  return { kind: 'file', format: format ?? (readable ? 'text' : null) };
+  return { kind: 'file', format: readable ? 'text' : null };
 }
 // Workspace copies are named by version, never by the filename label.
 const copyPath = (file) => {

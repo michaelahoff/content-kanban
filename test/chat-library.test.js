@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile, rm, mkdtemp, writeFile } from 'node:fs/promises';
+import { readFile, rm, mkdtemp, writeFile, chmod, symlink, lstat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -214,6 +214,7 @@ test('Claude refuses a tool-only file or an unsupported card image for the whole
   let refused = await f.call('POST', `/api/cards/${card.id}/chat/submissions`, { id: randomUUID(), composerRevision: (await f.chat(card.id)).composer.revision });
   assert.equal(refused.status, 409);
   assert.deepEqual(refused.body.problems.map(({ key, phase }) => ({ key, phase })), [{ key: `asset:${pdf.asset.id}`, phase: 'capability' }]);
+  assert.match(refused.body.problems[0].reason, /PDF delivery is not enabled/);
   const avif = { id: '00000009-0000-4000-8000-000000000000.avif', name: 'portrait.avif' };
   await writeFile(path.join(f.dataDir, 'images', avif.id), Buffer.concat([Buffer.from([0, 0, 0, 28]), Buffer.from('ftypavif'), Buffer.alloc(20)]));
   const withImage = await f.card({ images: [avif], imageRoles: { original: avif.id } });
@@ -411,4 +412,86 @@ test('a selected folder sends its files recursively in path order with their pro
   assert.equal(refused.status, 409);
   assert.deepEqual(refused.body.problems.map(({ key, label, phase }) => ({ key, label, phase })), [
     { key: `asset:${note.asset.id}`, label: 'note.md', phase: 'resolve' }, { key: `folder:${thumbnails.id}`, label: 'Thumbnails/', phase: 'resolve' }]);
+});
+
+test('a Codex setup with its shell tool off refuses a tool-only file by name and still sends text and images', async (t) => {
+  const f = await libraryFixture(t); const card = await f.card();
+  const script = await f.upload('script.md', Buffer.from('Script'));
+  const archive = await f.upload('fonts.zip', Buffer.from('PK\x03\x04archive', 'latin1'));
+  const discover = f.codex.discover.bind(f.codex);
+  f.codex.discover = async (input) => ({ ...await discover(input), tools: { shell: false } });
+  const composer = await f.select(card.id, 'Use them', [asset(script), asset(archive)]);
+  const refused = await f.call('POST', `/api/cards/${card.id}/chat/submissions`, { id: randomUUID(), composerRevision: composer.revision });
+  assert.equal(refused.status, 409);
+  assert.deepEqual(refused.body.problems.map(({ key, phase }) => ({ key, phase })), [{ key: `asset:${archive.asset.id}`, phase: 'capability' }]);
+  assert.match(refused.body.problems[0].reason, /shell tool/);
+  assert.equal((await f.chat(card.id)).submissions.length, 0);
+  assert.equal((await f.queue(card.id, await f.select(card.id, 'Use the script', [asset(script)]))).context.library[0].method, 'text');
+});
+
+test('an attempt whose Codex target lost its shell tool after queueing fails naming each tool-only file; Retry delivers once it is back', async (t) => {
+  const f = await libraryFixture(t); const card = await f.card();
+  const script = await f.upload('script.md', Buffer.from('Script'));
+  const archive = await f.upload('fonts.zip', Buffer.from('PK\x03\x04archive', 'latin1'));
+  const discover = f.codex.discover.bind(f.codex);
+  let open; f.codex.openGate = new Promise((resolve) => { open = resolve; });
+  const submission = await f.queue(card.id, await f.select(card.id, 'Use them', [asset(script), asset(archive)]));
+  f.codex.discover = async (input) => ({ ...await discover(input), tools: { shell: false } });
+  open();
+  const failed = await waitFor(async () => (await f.chat(card.id)).submissions.find((row) => row.id === submission.id && row.status === 'failed'));
+  assert.match(failed.reason, /fonts\.zip/);
+  assert.match(failed.reason, /shell tool/);
+  assert.equal(f.codex.sends.length, 0, 'nothing is sent while a selected file has no route');
+  assert.deepEqual((await f.chat(card.id)).attempts.at(-1).delivery.map(({ filename, status }) => [filename, status]), [['script.md', 'not-sent'], ['fonts.zip', 'failed']]);
+  f.codex.discover = discover;
+  await f.ok('POST', `/api/cards/${card.id}/chat/retry`, { submissionId: submission.id });
+  assert.ok((await waitFor(() => f.codex.sends[0])).input[0].text.includes(submission.context.library[1].path));
+});
+
+test('a tampered, replaced or deleted workspace copy is rebuilt from the frozen original before each delivery and never alters it', async (t) => {
+  const f = await libraryFixture(t); const card = await f.card();
+  const bytes = Buffer.from([0x50, 0x4b, 3, 4, 0, 255, 7, 9]);
+  const archive = await f.upload('fonts.zip', bytes);
+  const submission = await f.queue(card.id, await f.select(card.id, 'Use the fonts', [asset(archive)]));
+  const copy = path.join(f.dataDir, 'workspaces', card.id, submission.context.library[0].path);
+  const elsewhere = path.join(f.dataDir, 'workspaces', card.id, 'elsewhere.bin');
+  await writeFile(elsewhere, 'OTHER');
+  const tamper = [
+    async () => { await chmod(copy, 0o644); await writeFile(copy, 'TAMPERED'); },
+    async () => { await rm(copy); await symlink(elsewhere, copy); },
+    () => rm(copy),
+  ];
+  for (const [index, change] of tamper.entries()) {
+    const send = await waitFor(() => f.codex.sends[index]);
+    assert.deepEqual(await readFile(copy), bytes);
+    f.codex.finish(send, 'failed', 'Provider failed');
+    await waitFor(async () => (await f.chat(card.id)).submissions[0].status === 'failed');
+    await change();
+    await f.ok('POST', `/api/cards/${card.id}/chat/retry`, { submissionId: submission.id });
+  }
+  await waitFor(() => f.codex.sends[tamper.length]);
+  const info = await lstat(copy);
+  assert.ok(info.isFile() && info.nlink === 1, 'an independent regular file, never a link');
+  assert.equal(info.mode & 0o222, 0, 'delivered read-only');
+  assert.deepEqual(await readFile(copy), bytes);
+  assert.equal(await readFile(elsewhere, 'utf8'), 'OTHER');
+  assert.equal((await f.ok('POST', `/api/projects/${f.projectId}/library/versions/${archive.version.id}/verify`, {})).hash, sha256(bytes), 'the retained original is untouched');
+});
+
+test('text that is not valid UTF-8 is never decoded lossily: Codex reads an exact copy and Claude refuses it', async (t) => {
+  const f = await claudeFixture(t);
+  const latin1 = Buffer.from('Caf\xe9 au lait, na\xefve r\xe9sum\xe9\n', 'latin1');
+  const script = await f.upload('notes-latin1.txt', latin1);
+  const card = await f.card();
+  const submission = await f.queue(card.id, await f.select(card.id, 'Use the notes', [asset(script)]));
+  assert.deepEqual(submission.context.library.map(({ method, format }) => [method, format]), [['copy', null]]);
+  const send = await waitFor(() => f.codex.sends[0]);
+  assert.ok(!send.input[0].text.includes('Caf'), 'no decoded text is sent inline');
+  assert.ok(!send.input[0].text.includes('�'));
+  assert.deepEqual(await readFile(path.join(f.dataDir, 'workspaces', card.id, submission.context.library[0].path)), latin1);
+  const other = await f.card();
+  const composer = await f.select(other.id, 'Use the notes', [asset(script)], { provider: 'claude', model: 'sonnet' });
+  const refused = await f.call('POST', `/api/cards/${other.id}/chat/submissions`, { id: randomUUID(), composerRevision: composer.revision });
+  assert.equal(refused.status, 409);
+  assert.deepEqual(refused.body.problems.map(({ key, phase }) => ({ key, phase })), [{ key: `asset:${script.asset.id}`, phase: 'capability' }]);
 });

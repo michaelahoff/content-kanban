@@ -88,3 +88,18 @@ export function previewType(filename) {
 // A version saved from the document editor is UTF-8 text whatever the file is
 // named; uploaded bytes go by extension.
 export const assetPreview = (filename, version) => version?.written ? { kind: 'text', type: 'text/plain; charset=utf-8' } : previewType(filename);
+
+// How a selected file reaches its target, as previews and history describe it.
+// A workspace copy is only made available to Codex's tools: naming its format
+// claims nothing about whether a model or tool can interpret it.
+const formatNames = {
+  text: 'large text', pdf: 'PDF', zip: 'ZIP archive', gzip: 'gzip archive', '7z': '7z archive', rar: 'RAR archive',
+  wav: 'WAV audio', mp3: 'MP3 audio', flac: 'FLAC audio', ogg: 'Ogg media', m4a: 'M4A audio', mov: 'QuickTime video', mp4: 'MP4 video',
+  matroska: 'Matroska video', woff2: 'WOFF2 font', woff: 'WOFF font', otf: 'OpenType font', ttf: 'TrueType font',
+};
+export function deliveryDescription(entry) {
+  if (entry.method === 'text') return 'full text inline';
+  if (entry.method === 'image') return 'native image';
+  const name = formatNames[entry.format] ?? (entry.format ? entry.format.toUpperCase() : null);
+  return `${name ? `${name} · ` : ''}workspace copy for Codex tools`;
+}

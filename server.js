@@ -175,7 +175,7 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
       ['GET', /^\/api\/models$/, (ctx) => providers.catalog(ctx)],
       ['POST', /^\/api\/models\/refresh$/, (ctx) => providers.catalog(ctx, { refresh: true })],
       ['GET', /^\/api\/providers\/(codex|claude)$/, (ctx, req, provider) => ({ ...store.providerConfiguration(ctx, provider), running: adapters[provider].running,
-        ...store.providerCatalog(ctx, provider), mandatoryBehavior: provider === 'codex' ? mandatoryBehavior : ['Claude uses your installed Claude Code authentication and native conversation history. Card chats support text and image references; native tools are disabled.'], discoveryRequired: false })],
+        ...store.providerCatalog(ctx, provider), mandatoryBehavior: provider === 'codex' ? mandatoryBehavior : ['Claude uses your installed Claude Code authentication and native conversation history. Card chats support full text and PNG, JPEG, GIF and WebP image references. Native tools are disabled, so other Library files, including PDFs, audio and video, cannot be sent to Claude.'], discoveryRequired: false })],
       ['PUT', /^\/api\/providers\/(codex|claude)$/, async (ctx, req, provider) => store.saveProviderConfiguration(ctx, await read(req), provider)],
       ['POST', /^\/api\/providers\/(codex|claude)\/discover$/, (ctx, req, provider) => codexAction(() => providers.refresh(ctx, provider))],
       ['GET', /^\/api\/workspace$/, (ctx) => store.workspace(ctx)],
