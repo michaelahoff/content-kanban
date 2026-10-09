@@ -16,7 +16,7 @@ import { imagesMigration, createImageStore } from './store-images.js';
 import { retainedMigration, foldersMigration, createRetainedMetadata } from './store-retained.js';
 import { createRetainedStorage } from './retained-storage.js';
 import { createLibrary } from './library.js';
-import { savedOutputsMigration, createOutputStore } from './store-outputs.js';
+import { savedOutputsMigration, createSavedOutputStore } from './store-saved-outputs.js';
 import { libraryDraftsMigration, createDraftStore } from './store-drafts.js';
 
 export const imageIdPattern = /^[a-f0-9-]{36}\.(png|jpg|webp|gif|avif)$/;
@@ -665,8 +665,8 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
     return { card: requireCard(ctx, cardId), adopted: true };
   }
   const images = createImageStore({ all, get, run, transaction, retainedCard, recordChange, now, adopt: adoptImage, revoked: (attemptId) => chats.revocation(attemptId) });
-  const outputs = createOutputStore({ all, get, run, transaction, retainedCard, requireCard, recordChange, now,
-    retained: () => api.retained, revocation: (attemptId) => chats.revocation(attemptId) });
+  const savedOutputs = createSavedOutputStore({ all, get, run, transaction, retainedCard, requireCard, recordChange, now,
+    retained: () => api.retained, revoked: (attemptId) => chats.revocation(attemptId) });
   const api = {
     owner,
     playbooks,
@@ -674,7 +674,7 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
     chats,
     protection,
     images,
-    outputs,
+    savedOutputs,
     close: () => db.close(),
 
     providerConfiguration(ctx, provider = 'codex') {

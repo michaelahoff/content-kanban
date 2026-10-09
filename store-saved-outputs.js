@@ -4,7 +4,7 @@
 // and keeps the supplied context apart from any declared derivation. Its bytes
 // are a retained version of kind 'output', so they outlive the workspace, the
 // card, its sources and fresh context, and are in every backup.
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { libraryFilename } from './public/library-format.js';
 import { maxDocumentBytes } from './library.js';
 
@@ -18,7 +18,7 @@ export const savedOutputsMigration = `
 `;
 const fail = (status, message) => { throw Object.assign(new Error(message), { status }); };
 const live = ['dispatching', 'accepted', 'running'];
-export const revokedSaveMessage = 'Not saved: this response was stopped, its project archived or the workspace restored before the output was saved.';
+const revokedSaveMessage = 'This response was stopped, its project archived or the workspace restored before it was saved.';
 
 // Exactly what the submission supplied, with its labels and versions. Supplying
 // an input never claims the output was derived from it.
@@ -31,7 +31,7 @@ export const suppliedInputs = (frozen) => [
 // supplied: an image or Library version ID, or a Library asset ID naming the
 // supplied version. Anything else refuses the save rather than recording a
 // derivation nobody can check. No sources declared leaves it unknown.
-export function declaredDerivation(frozen, sources) {
+function declaredDerivation(frozen, sources) {
   if (sources === null) return { declared: false };
   const supplied = suppliedInputs(frozen);
   return { declared: true, sources: sources.map((id) => {
@@ -41,7 +41,7 @@ export function declaredDerivation(frozen, sources) {
   }) };
 }
 
-export function createOutputStore({ all, get, run, transaction, retainedCard, requireCard, recordChange, now, retained, revocation }) {
+export function createSavedOutputStore({ all, get, run, transaction, retainedCard, requireCard, recordChange, now, retained, revoked }) {
   function outputFrom(row) {
     const version = row.version_id ? retained().version({ workspaceId: row.workspace_id }, row.version_id) : null;
     return { ...JSON.parse(row.provenance), id: row.id, cardId: row.card_id, attemptId: row.attempt_id, operationId: row.operation_id,
@@ -52,17 +52,17 @@ export function createOutputStore({ all, get, run, transaction, retainedCard, re
   function activity(ctx, cardId, type, data) {
     recordChange(ctx, 'chat', cardId, type, { projectId: retainedCard(ctx, cardId).project_id, data });
   }
-  function provenance(attemptId, { creationMethod, itemId = null, derivation }) {
+  function provenance(attemptId, { creationMethod, itemId = null, sources }) {
     const a = get('SELECT * FROM chat_attempts WHERE id = ?', attemptId);
     const s = get('SELECT * FROM chat_submissions WHERE id = ?', a.submission_id); const frozen = JSON.parse(s.frozen);
     return { provider: frozen.provider ?? 'codex', model: frozen.model, creationMethod, conversationId: s.conversation_id, submissionId: s.id,
-      laneRunId: frozen.lane?.runId ?? null, native: { turnId: a.turn_id, itemId }, supplied: suppliedInputs(frozen), derivation };
+      laneRunId: frozen.lane?.runId ?? null, native: { turnId: a.turn_id, itemId }, supplied: suppliedInputs(frozen), derivation: declaredDerivation(frozen, sources) };
   }
   // A live attempt may register outputs only while it still holds authority:
   // not after Stop, archive or a workspace restore, nor once it has ended.
   function authorize(attemptId) {
-    if (revocation(attemptId)) fail(409, revokedSaveMessage);
-    if (!live.includes(get('SELECT status FROM chat_attempts WHERE id = ?', attemptId)?.status)) fail(409, 'Not saved: this response no longer has authority to save outputs.');
+    if (revoked(attemptId)) fail(409, revokedSaveMessage);
+    if (!live.includes(get('SELECT status FROM chat_attempts WHERE id = ?', attemptId)?.status)) fail(409, 'This response no longer has authority to save outputs.');
   }
 
   const api = {
@@ -72,11 +72,12 @@ export function createOutputStore({ all, get, run, transaction, retainedCard, re
     },
     // Registers and saves one document. `operationId` is stable for the
     // request: repeating it returns the saved output, and repeating a failed
-    // one retries with exactly the same text. `live` registration (an agent's
+    // one retries with exactly the same text. `sources` are the declared
+    // derivation (null: unknown). `requireLive` registration (an agent's
     // own result) needs the attempt's current authority before registering,
     // before byte publication and at commit. Failures after registration are
     // recorded on the output and returned, never thrown.
-    async saveDocument(ctx, cardId, { operationId, attemptId, filename, text, creationMethod, itemId = null, derivation = { declared: false }, requireLive = false }) {
+    async saveDocument(ctx, cardId, { operationId, attemptId, filename, text, creationMethod, itemId = null, sources = null, requireLive = false }) {
       const name = libraryFilename(filename, 'document');
       if (typeof text !== 'string' || !text.length) fail(400, 'There is no text to save.');
       const bytes = Buffer.from(text, 'utf8');
@@ -98,11 +99,15 @@ export function createOutputStore({ all, get, run, transaction, retainedCard, re
         const id = randomUUID();
         run(`INSERT INTO saved_outputs (id, workspace_id, card_id, attempt_id, operation_id, filename, status, provenance, created_at)
           VALUES (?, ?, ?, ?, ?, ?, 'saving', ?, ?)`, id, ctx.workspaceId, cardId, attemptId, operationId, name,
-        JSON.stringify(provenance(attemptId, { creationMethod, itemId, derivation })), now());
+        JSON.stringify(provenance(attemptId, { creationMethod, itemId, sources })), now());
         activity(ctx, cardId, 'output_registered', { outputId: id, attemptId, filename: name });
         return { ...byId(ctx, id), projectId: card.projectId };
       });
-      if (row.status === 'saved') return outputFrom(row);
+      if (row.status === 'saved') {
+        const output = outputFrom(row);
+        if (output.hash !== createHash('sha256').update(bytes).digest('hex')) fail(409, 'This save operation already saved different text.');
+        return output;
+      }
       const projectId = row.projectId ?? retainedCard(ctx, cardId).project_id;
       try {
         const version = await retained().publish(ctx, { operationId: `saved-output:${row.id}`, kind: 'output', projectId, filename: name, provenance: { savedOutputId: row.id } },

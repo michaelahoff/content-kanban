@@ -376,7 +376,7 @@ export function createChatWorker({ store, adapter, adapters = { codex: adapter }
   async function reconcile() {
     store.chats.invalidateAfterRestart(ctx);
     store.images.interruptedImports(ctx);
-    store.outputs.interrupted(ctx);
+    store.savedOutputs.interrupted(ctx);
     for (const entry of store.chats.unfinished(ctx)) {
       if (closed) return;
       try { await settleFromHistory(entry, true); }
@@ -413,8 +413,8 @@ export function createChatWorker({ store, adapter, adapters = { codex: adapter }
     },
     // A snapshot then includes everything streamed so far, so the next delta's
     // offset continues exactly where the snapshot ends.
-    drain: async () => { while (finishing.size) await Promise.allSettled([...finishing]); },
     flushCard(cardId) { for (const work of retained) if (work.submission.cardId === cardId) flush(work); },
+    drain: async () => { while (finishing.size) await Promise.allSettled([...finishing]); },
     // No dispatched work, image save or reconciliation is in progress.
     idle: () => !live.size && !importing.size && !background,
     stop(cardId) { const result = store.chats.stop(ctx, cardId); wake(); return result; },

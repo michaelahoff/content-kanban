@@ -66,6 +66,8 @@ test('a passage saves exactly, a repeated save operation is not duplicated, and 
   assert.equal(again.body.id, first.body.id);
   assert.equal((await f.chat(card.id)).savedOutputs.length, 1);
   assert.equal((await content(f, card.id, first.body.id)).text, '# Black holes');
+  const different = await save(f, card.id, { operation, sequence: item.sequence, filename: 'title.md', text: 'They are not holes.' });
+  assert.equal(different.status, 409, 'One operation never stands for two different texts');
 
   const invented = await save(f, card.id, { sequence: item.sequence, filename: 'fake.md', text: 'Not in the reply' });
   assert.equal(invented.status, 400);
@@ -171,6 +173,10 @@ test('a lane run saves its declared inline documents with verified sources, sepa
   assert.deepEqual(script.derivation, { declared: true, sources: [{ kind: 'image', versionId: image.id, label: 'Portrait' }] });
   assert.deepEqual(script.supplied.map((input) => [input.kind, input.versionId]), [['image', image.id]], 'Supplied context is recorded separately');
   assert.deepEqual(outline.derivation, { declared: false }, 'Undeclared derivation stays unknown');
+  // Removing the supplied source from the gallery leaves the saved document and its record.
+  const { revision } = (await f.ok('GET', `/api/cards/${card.id}`)).card;
+  await f.ok('PATCH', `/api/cards/${card.id}`, { revision, images: [], imageRoles: { original: null } });
+  assert.deepEqual((await f.chat(card.id)).savedOutputs.find((entry) => entry.id === script.id).derivation, script.derivation);
   assert.equal((await content(f, card.id, script.id)).text, '# The script');
   assert.equal((await content(f, card.id, outline.id)).text, '- one\n- two');
 
@@ -198,7 +204,7 @@ test('Stop while a lane document is being saved keeps it unsaved and reported, w
   assert.match(chat.savedOutputs[0].error, /stopped/);
   assert.equal((await content(f, card.id, chat.savedOutputs[0].id)).status, 409);
   const [run] = await waitFor(async () => { const value = await runs(f, card.id); return value[0].status === 'completed' && value; });
-  assert.match(run.reason, /script\.md was not saved: Not saved: this response was stopped/);
+  assert.match(run.reason, /script\.md was not saved\. This response was stopped/);
   assert.equal((await f.ok('GET', `/api/cards/${card.id}`)).card.fields.intro, 'Applied intro', 'A separately valid card effect stands');
   const item = chat.items.find((entry) => entry.kind === 'agentMessage');
   assert.match(item.text, /Late script/, 'The reply text is retained');
@@ -289,4 +295,16 @@ test('every saved output’s payload, provenance and outcome is in a verified ba
   for (const [output, text] of [[lane, 'From the lane'], [user, item.text]]) {
     assert.equal(await (await fetch(`${base}/api/cards/${card.id}/chat/saved-outputs/${output.id}/content`)).text(), text);
   }
+});
+
+test('a lane run still working when its card leaves the lane keeps its authority to save its document', async (t) => {
+  const f = await fixture(t);
+  const { card } = await laneCard(f);
+  const stages = (await f.ok('GET', '/api/workspace')).flows[0].stages;
+  await f.ok('POST', `/api/cards/${card.id}/lane-runs`, {});
+  const send = await waitFor(() => f.codex.sends[0]);
+  await f.ok('POST', `/api/cards/${card.id}/transitions`, { action: 'move', toStageId: stages[1].id });
+  f.codex.finish(send, 'completed', block({ outputs: [{ filename: 'kept.md', text: 'Finished after leaving' }] }));
+  const chat = await waitFor(async () => { const value = await f.chat(card.id); return value.savedOutputs[0]?.status === 'saved' && value; });
+  assert.equal((await content(f, card.id, chat.savedOutputs[0].id)).text, 'Finished after leaving');
 });

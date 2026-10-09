@@ -369,11 +369,12 @@ test('late callbacks from the old runtime cannot act in a restored workspace, an
   const late = await f.codex.tool(old, 'edit_fields', { fields: { intro: 'Late tool edit' }, baseVersions: { intro: 1 } });
   assert.notEqual(late?.success, true);
   f.codex.image(old, { result: png.toString('base64') });
-  f.codex.finish(old, 'completed', result({ fields: { intro: 'Late result' }, notes: 'Late notes.' }));
+  f.codex.finish(old, 'completed', result({ fields: { intro: 'Late result' }, notes: 'Late notes.', outputs: [{ filename: 'late.md', text: 'Late document' }] }));
   await r.restart();
   await settle();
   const chat = await r.chat(card.id);
   assert.equal(chat.outputs.length, 0);
+  assert.deepEqual(chat.savedOutputs, [], 'An attempt the restore revoked saves no document');
   assert.equal(chat.proposals.length, 0);
   assert.equal(chat.submissions[0].status, 'held');
   assert.equal(chat.attempts.length, 1);

@@ -282,16 +282,18 @@ function savedOutputsMarkup(cardId, outputs) {
   return `<ul class="chat-saved-outputs" aria-label="Saved outputs">${outputs.map((output) => {
     const content = url(cardId, `saved-outputs/${encodeURIComponent(output.id)}/content`);
     if (output.status === 'saved') return `<li><strong>${escape(output.filename)}</strong> · ${method[output.creationMethod] ?? 'Saved'}${output.derivation?.declared ? ` · from ${output.derivation.sources.length ? escape(output.derivation.sources.map((source) => source.label).join(', ')) : 'no supplied inputs'}` : ''}<span class="chat-output-actions"><a class="button small secondary" href="${content}?inline=1" target="_blank" rel="noopener">View</a><a class="button small secondary" href="${content}" download>Download</a></span></li>`;
-    if (output.status === 'failed') return `<li class="chat-output-error">${escape(output.filename)} was not saved: ${escape(output.error)}</li>`;
+    if (output.status === 'failed') return `<li class="chat-output-error">${escape(output.filename)} was not saved. ${escape(output.error)}</li>`;
     return `<li class="chat-hint">Saving ${escape(output.filename)}…</li>`;
   }).join('')}</ul>`;
 }
-// The highlighted reply text, saved exactly. Repeating the same submission
-// (a lost response) reuses its operation, so it is saved once.
+// The highlighted reply text, saved exactly. Submitting the same filename
+// again (a lost response) reuses its operation, so it is saved once.
 function saveAsDocument(item, sequence, text) {
-  const operation = crypto.randomUUID();
+  const operations = new Map();
   smallForm({ title: 'Save as document', fields: `<label class="form-label" for="chat-document-name">Filename</label><input class="form-input" id="chat-document-name" name="filename" value="reply.md" required maxlength="255"><pre class="chat-review-text">${escape(text)}</pre><p class="chat-hint">Saves this exact text as a document kept with this card chat. It does not change the card or the Library.</p>`, submit: 'Save document', onSubmit: async (data) => {
-    await send('POST', url(item.id, 'saved-outputs'), { operation, sequence, filename: String(data.get('filename')), text });
+    const filename = String(data.get('filename'));
+    if (!operations.has(filename)) operations.set(filename, crypto.randomUUID());
+    await send('POST', url(item.id, 'saved-outputs'), { operation: operations.get(filename), sequence, filename, text });
     await refresh(item); toast('Saved as document.');
   } });
 }

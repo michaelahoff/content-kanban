@@ -4,7 +4,6 @@
 import { composeLanePrompt, parseLaneResult, setFields } from './public/playbook-format.js';
 import { submissionText } from './public/chat-context.js';
 import { problemMessage } from './submission-inputs.js';
-import { declaredDerivation } from './store-outputs.js';
 
 const providerName = (provider) => (provider === 'claude' ? 'Claude' : 'Codex');
 
@@ -244,8 +243,8 @@ export async function applyLaneResult({ store, ctx, attempt, submission, text })
   const automation = { ...ctx, actor: `automation:${attempt.id}` };
   for (const [index, output] of (result?.outputs ?? []).entries()) {
     try {
-      const saved = await store.outputs.saveDocument(automation, submission.cardId, { operationId: `lane:${attempt.id}:${index}`, attemptId: attempt.id,
-        filename: output.filename, text: output.text, creationMethod: 'lane-result', derivation: declaredDerivation(submission, output.sources), requireLive: true });
+      const saved = await store.savedOutputs.saveDocument(automation, submission.cardId, { operationId: `lane:${attempt.id}:${index}`, attemptId: attempt.id,
+        filename: output.filename, text: output.text, creationMethod: 'lane-result', sources: output.sources, requireLive: true });
       outcome.outputs.push({ filename: saved.filename, status: saved.status, outputId: saved.id, ...(saved.error ? { error: saved.error } : {}) });
     } catch (error) { outcome.outputs.push({ filename: output.filename, status: 'failed', error: error.message }); }
   }
@@ -257,7 +256,7 @@ export async function applyLaneResult({ store, ctx, attempt, submission, text })
     outcome.move ? `Proposed moving to ${outcome.move}.` : '',
     outcome.notes ? 'Added hand-off notes.' : '',
     saved.length ? `Saved ${new Intl.ListFormat('en', { type: 'conjunction' }).format(saved)}.` : '',
-    ...outcome.outputs.filter((output) => output.status !== 'saved').map((output) => `${output.filename} was not saved: ${output.error}`),
+    ...outcome.outputs.filter((output) => output.status !== 'saved').map((output) => `${output.filename} was not saved. ${output.error}`),
     ...outcome.errors,
   ].filter(Boolean).join(' ') || 'The result block changed nothing.';
   store.laneRuns.update(ctx, run.id, { status: 'completed', reason: summary, result: outcome });
