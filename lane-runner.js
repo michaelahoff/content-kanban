@@ -49,33 +49,38 @@ export function createLaneRunner({ store, service, providers, ctx, paused = () =
   const preparedParts = (prepared) => ({ playbook: prepared.document?.hash, map: prepared.map?.hash ?? null,
     skills: prepared.skills.map((skill) => [skill.name, skill.hash ?? null]), notes: prepared.notes.hash,
     target: [prepared.provider, prepared.model], prompt: prepared.prompt });
-  const partNames = { playbook: 'lane playbook', map: 'project map', skills: 'named skills', notes: 'hand-off notes', target: 'provider or model', prompt: 'lane prompt' };
+  const partNames = { playbook: 'lane playbook', map: 'project map', skills: 'named skills', notes: 'hand-off notes', target: 'provider and model', prompt: 'project and lane names' };
+  const listed = new Intl.ListFormat('en', { type: 'conjunction' });
+  const conflict = (message) => Object.assign(new Error(message), { status: 409 });
+  const closedRun = () => Object.assign(new Error('This lane run was cancelled while it was being prepared.'), { status: 409, code: 'lane-run-closed' });
   const changedWhilePreparing = (error) => error.status === 409 && /changed while preparing/.test(error.message);
-  // Repreparations in a row before a run that keeps changing fails visibly.
-  const preparations = 3;
+  // A different provider, or conversation: fresh, needs empty fresh context.
+  const needsFresh = ({ chat, settings, provider }) => chat.used && (settings.conversation === 'fresh' || chat.provider !== provider) || chat.state !== 'active';
+  // Preparations in a row before a run whose inputs keep changing fails visibly.
+  const maxPreparations = 5;
+  const finish = (run, status, reason) => store.laneRuns.update(ctx, run.id, { status, reason });
 
   async function start(run) {
     for (let attempt = 1; ; attempt += 1) {
       try { return await prepareAndQueue(run); }
       catch (error) {
         if (closed || error.code === 'lane-run-closed') return;
-        if (!changedWhilePreparing(error)) return store.laneRuns.update(ctx, run.id, { status: 'failed', reason: error.message });
+        if (!changedWhilePreparing(error)) return finish(run, 'failed', error.message);
         // Prepare again from what is saved now; the run is still pending.
-        if (attempt === preparations) {
-          return store.laneRuns.update(ctx, run.id, { status: 'failed',
-            reason: `${error.message} It changed during ${preparations} preparations in a row, so nothing was queued. Run playbook when it is settled.` });
+        if (attempt === maxPreparations) {
+          return finish(run, 'failed', `${error.message} This run's inputs changed during ${maxPreparations} preparations in a row, so nothing was queued. Run playbook when they are settled.`);
         }
       }
     }
   }
 
   async function prepareAndQueue(run) {
-    const finish = (status, reason) => store.laneRuns.update(ctx, run.id, { status, reason });
+    const end = (status, reason) => finish(run, status, reason);
     let info = current(run);
     if (!info) return;
     const trigger = run.trigger === 'manual' ? 'manual' : 'enter';
     const enabled = (settings) => settings.run !== 'off' && (trigger === 'manual' || settings.run === 'on-enter');
-    const cancelDisabled = () => finish('cancelled', 'The playbook was turned off or its trigger changed before this run started.');
+    const cancelDisabled = () => end('cancelled', 'The playbook was turned off or its trigger changed before this run started.');
     if (waitingForChat.has(run.id)) {
       if (store.chats.laneConversation(ctx, run.cardId).busy) {
         // Everything else is read when the chat is free; turning the
@@ -87,22 +92,21 @@ export function createLaneRunner({ store, service, providers, ctx, paused = () =
       waitingForChat.delete(run.id);
     }
     let prepared = prepare(info.card, info.stage, info.project, info.stages, trigger);
-    if (prepared.error) return finish('failed', prepared.error);
+    if (prepared.error) return end('failed', prepared.error);
     if (!enabled(prepared.settings)) return cancelDisabled();
     // Models are listed once and saved; list them now if that never happened.
     if (!prepared.model && !store.providerCatalog(ctx, prepared.provider).discovery && providers) {
       await providers.refresh(ctx, prepared.provider);
       if (closed || !(info = current(run))) return;
       prepared = prepare(info.card, info.stage, info.project, info.stages, trigger);
-      if (prepared.error) return finish('failed', prepared.error);
+      if (prepared.error) return end('failed', prepared.error);
       if (!enabled(prepared.settings)) return cancelDisabled();
     }
-    if (!prepared.model) return finish('failed', prepared.warning);
+    if (!prepared.model) return end('failed', prepared.warning);
     const { card, stage } = info;
     const { chat, settings, provider } = prepared;
-    // A different provider, or conversation: fresh, needs empty fresh context.
-    // That waits until the card chat has nothing running or queued.
-    if (chat.used && (settings.conversation === 'fresh' || chat.provider !== provider) || chat.state !== 'active') {
+    // Fresh context waits until the card chat has nothing running or queued.
+    if (needsFresh(prepared)) {
       if (chat.busy) {
         waitingForChat.add(run.id);
         const reason = 'Waiting for the card chat to finish before starting fresh context for this lane run.';
@@ -113,18 +117,20 @@ export function createLaneRunner({ store, service, providers, ctx, paused = () =
     }
     // Called synchronously with the commit, after the asynchronous discovery
     // and byte checks: the run must still be pending in this lane, and every
-    // saved input and the target must be what was prepared.
+    // saved input and the target must be what was prepared. A Send into
+    // the conversation since needs fresh context again.
     const confirm = () => {
       const now = current(run);
-      if (!now) throw Object.assign(new Error('This lane run was cancelled while it was being prepared.'), { status: 409, code: 'lane-run-closed' });
+      if (!now) throw closedRun();
       const latest = prepare(now.card, now.stage, now.project, now.stages, trigger);
-      // Preparing again reports the error or cancels the disabled run.
-      if (latest.error || !enabled(latest.settings)) throw Object.assign(new Error('The lane playbook changed while preparing the lane run.'), { status: 409 });
+      if (latest.error) { end('failed', latest.error); throw closedRun(); }
+      if (!enabled(latest.settings)) { cancelDisabled(); throw closedRun(); }
+      if (needsFresh(latest)) throw conflict('The card chat changed while preparing the lane run.');
       const [before, after] = [preparedParts(prepared), preparedParts(latest)];
       const differs = Object.keys(before).filter((key) => JSON.stringify(before[key]) !== JSON.stringify(after[key]));
       // The prompt holds the documents; name it only for a lane or project rename.
       const changed = differs.length > 1 ? differs.filter((key) => key !== 'prompt') : differs;
-      if (changed.length) throw Object.assign(new Error(`The ${changed.map((key) => partNames[key]).join(', ')} changed while preparing the lane run.`), { status: 409 });
+      if (changed.length) throw conflict(`The ${listed.format(changed.map((key) => partNames[key]))} changed while preparing the lane run.`);
     };
     // queueLane links the run and its submission in one commit.
     const submission = await service.queueLane(ctx, card.id, { id: `lane-${run.id}`, prompt: prepared.prompt, provider, model: prepared.model,
@@ -133,7 +139,7 @@ export function createLaneRunner({ store, service, providers, ctx, paused = () =
         playbook: { ...prepared.document }, map: prepared.map && { ...prepared.map },
         skills: prepared.skills.map(({ name, path, hash, text }) => ({ name, path, hash: hash ?? null, text })),
         notesHash: prepared.notes.hash, notesText: prepared.notes.text } });
-    if (!submission.lane || submission.lane.runId !== run.id) finish('failed', 'A different submission already uses this lane run’s ID.');
+    if (!submission.lane || submission.lane.runId !== run.id) end('failed', 'A different submission already uses this lane run’s ID.');
   }
 
   async function drain() {

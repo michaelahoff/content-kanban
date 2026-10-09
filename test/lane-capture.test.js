@@ -142,8 +142,8 @@ test('inputs that change during every preparation end the run with the conflict 
   const requested = await f.ok('POST', `/api/cards/${card.id}/lane-runs`, {});
   const failed = await waitFor(async () => (await f.runs(card.id)).find((run) => run.status === 'failed'));
   assert.equal(failed.id, requested.id);
-  assert.match(failed.reason, /The hand-off notes changed while preparing the lane run\. It changed during 3 preparations in a row/);
-  assert.equal(preparations, 3);
+  assert.match(failed.reason, /The hand-off notes changed while preparing the lane run\. This run's inputs changed during 5 preparations in a row/);
+  assert.equal(preparations, 5);
   assert.deepEqual((await f.chat(card.id)).submissions, [], 'no stale or mixed snapshot, and nothing to Retry');
   assert.deepEqual(f.codex.sends, []);
 
@@ -151,7 +151,7 @@ test('inputs that change during every preparation end the run with the conflict 
   const again = await f.ok('POST', `/api/cards/${card.id}/lane-runs`, {});
   assert.notEqual(again.id, failed.id);
   const send = await waitFor(() => f.codex.sends[0]);
-  assert.ok(f.sentText(send).includes('Edited 3'));
+  assert.ok(f.sentText(send).includes('Edited 5'));
   assert.deepEqual((await f.runs(card.id)).map((run) => run.status), ['queued', 'failed']);
 });
 
@@ -224,4 +224,48 @@ test('a card chat model chosen while a run is prepared becomes its target when t
   held.release();
   assert.equal((await waitFor(() => f.codex.sends[0])).model, 'other-model');
   assert.deepEqual((await f.chat(card.id)).submissions.map((submission) => submission.model), ['other-model']);
+});
+
+test('a playbook turned off during the last preparation it gets cancels the run rather than failing it', async (t) => {
+  const f = await laneFixture(t);
+  await setPlaybook(f.ok, f.flowId, f.stages[0], { run: 'manual', model: 'test-model' }, 'Summarize.');
+  const card = await f.card();
+  const discover = f.codex.discover.bind(f.codex);
+  let preparations = 0;
+  f.codex.discover = async (...args) => {
+    preparations += 1;
+    if (preparations < 5) await writeFile(path.join(f.dataDir, 'workspaces', card.id, 'notes.md'), `Edited ${preparations}`);
+    else await setPlaybook(f.ok, f.flowId, f.stages[0], { run: 'off', model: 'test-model' }, 'Summarize.');
+    return discover(...args);
+  };
+  await f.ok('POST', `/api/cards/${card.id}/lane-runs`, {});
+  const [run] = await waitFor(async () => { const all = await f.runs(card.id); return all[0].status !== 'pending' && all; });
+  assert.equal(run.status, 'cancelled', run.reason);
+  assert.match(run.reason, /turned off/);
+  assert.equal(preparations, 5);
+  assert.deepEqual((await f.chat(card.id)).submissions, []);
+});
+
+test('a manual Send queued while a fresh-context run is prepared never shares that run\'s fresh conversation', async (t) => {
+  const f = await laneFixture(t);
+  await setPlaybook(f.ok, f.flowId, f.stages[1], { conversation: 'fresh', model: 'test-model' }, 'Start over.');
+  const card = await f.card();
+  await f.queue(card.id, await f.compose(card.id));
+  f.codex.finish(await waitFor(() => f.codex.sends[0]));
+  await waitFor(async () => (await f.chat(card.id)).submissions[0].status === 'completed');
+  const held = f.holdDiscovery();
+  await f.ok('POST', `/api/cards/${card.id}/transitions`, { action: 'move', toStageId: f.stages[1].id });
+  await held.reached;
+  await f.queue(card.id, await f.compose(card.id, 'A manual question'));
+  held.release();
+  const manual = await waitFor(() => f.codex.sends[1]);
+  assert.match(f.sentText(manual), /A manual question/);
+  assert.equal((await f.runs(card.id))[0].status, 'pending', 'the run waits for the chat again');
+  f.codex.finish(manual);
+  await waitFor(() => f.codex.sends[2]);
+  const chat = await f.chat(card.id);
+  const lane = chat.submissions.find((submission) => submission.lane);
+  assert.equal(chat.conversations.length, 3);
+  assert.equal(lane.conversationId, chat.conversations.at(-1).id);
+  assert.deepEqual(chat.submissions.filter((submission) => submission.conversationId === lane.conversationId).map((submission) => submission.id), [lane.id], 'alone in its fresh conversation');
 });
