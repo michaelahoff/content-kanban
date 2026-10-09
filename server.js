@@ -37,6 +37,14 @@ function uploadInput(url) {
   return { filename: url.searchParams.get('filename'), operationId: operation, collision: url.searchParams.get('collision') || undefined,
     assetId: url.searchParams.get('asset') || undefined, folderId: url.searchParams.get('folder') || null };
 }
+// Restores and copies name versions, projects and labels, never bytes or
+// paths: only the listed fields and an operation ID are accepted.
+function libraryChoices(input, fields, action) {
+  assert(input && typeof input === 'object' && Object.keys(input).every((key) => key === 'operation' || fields.includes(key)), `${action} takes only ${fields.join(', ')} and an operation ID.`);
+  assert(/^[\w-]{1,100}$/.test(input.operation || ''), `Each ${action.toLowerCase()} needs an operation ID.`);
+  const { operation, ...choices } = input;
+  return { ...choices, operationId: operation };
+}
 // Stops a publication when the uploading client disconnects.
 function uploadSignal(req) {
   const controller = new AbortController();
@@ -190,6 +198,10 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
       ['GET', /^\/api\/projects\/([^/]+)\/library\/assets\/[^/]+$/, (ctx, req, id, url) => store.library.asset(ctx, id, url.pathname.split('/').at(-1))],
       ['PATCH', /^\/api\/projects\/([^/]+)\/library\/assets\/[^/]+$/, async (ctx, req, id, url) => store.library.updateAsset(ctx, id, url.pathname.split('/').at(-1), await read(req))],
       ['DELETE', /^\/api\/projects\/([^/]+)\/library\/assets\/[^/]+$/, (ctx, req, id, url) => store.library.removeAsset(ctx, id, url.pathname.split('/').at(-1))],
+      ['POST', /^\/api\/projects\/([^/]+)\/library\/assets\/[^/]+\/restore$/, async (ctx, req, id, url) =>
+        store.library.restoreVersion(ctx, id, url.pathname.split('/').at(-2), libraryChoices(await read(req), ['versionId', 'baseVersionId'], 'Restore'))],
+      ['POST', /^\/api\/projects\/([^/]+)\/library\/assets\/[^/]+\/copy$/, async (ctx, req, id, url) =>
+        store.library.copyAsset(ctx, id, url.pathname.split('/').at(-2), libraryChoices(await read(req), ['targetProjectId', 'folderId', 'filename', 'collision'], 'Copy')), 201],
       ['GET', /^\/api\/projects\/([^/]+)\/library\/removed$/, (ctx, req, id) => store.library.removed(ctx, id)],
       ['POST', /^\/api\/projects\/([^/]+)\/library\/folders$/, async (ctx, req, id) => store.library.createFolder(ctx, id, await read(req)), 201],
       ['POST', /^\/api\/projects\/([^/]+)\/library\/folders\/paths$/, async (ctx, req, id) => store.library.ensureFolders(ctx, id, await read(req))],

@@ -40,15 +40,27 @@ function documentText(value) {
   return value;
 }
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
+// Written text keeps previewing as text when restored or copied.
+const isWritten = (version) => version.provenance.method === 'document' || version.provenance.written === true;
+// How each kind of publication names itself in retry refusals, and what it creates.
+const publications = {
+  upload: { noun: 'upload', retry: () => 'Upload it', again: (filename) => `Upload ${filename}`, kind: 'asset' },
+  document: { noun: 'save', retry: () => 'Save', again: () => 'Save', kind: 'document' },
+  copy: { noun: 'copy', retry: () => 'Copy it', again: () => 'Copy it' },
+};
 const savedOutcome = (provenance) => provenance.baseVersionId ? 'saved' : provenance.collision === 'replace' ? 'replaced' : 'created';
 
 export function createLibrary({ retained, metadata, drafts, project, record }) {
   const numbered = (versions) => versions.map((version, index) => ({ id: version.id, size: version.size, hash: version.hash,
-    available: version.available, error: version.error, committedAt: version.committedAt, number: index + 1, written: version.provenance.method === 'document' }));
+    available: version.available, error: version.error, committedAt: version.committedAt, number: index + 1, written: isWritten(version),
+    ...(version.provenance.restoredFromVersionId ? { restoredFrom: version.provenance.restoredFromVersionId } : {}) }));
   function assetFrom(ctx, row) {
-    const versions = numbered(metadata.history(ctx, row.id));
+    const history = metadata.history(ctx, row.id); const versions = numbered(history);
+    // A project copy names the source version it began from.
+    const origin = history[0]?.provenance;
     return { id: row.id, projectId: row.project_id, filename: row.filename, folderId: row.folder_id, kind: row.kind, createdAt: row.created_at, removedAt: row.removed_at,
-      current: versions.find((version) => version.id === row.current_version_id) ?? null, versionCount: versions.length };
+      current: versions.find((version) => version.id === row.current_version_id) ?? null, versionCount: versions.length,
+      ...(origin?.method === 'copy' ? { copiedFrom: { projectId: origin.sourceProjectId, assetId: origin.sourceAssetId, versionId: origin.copiedFromVersionId } } : {}) };
   }
   const folderFrom = (row) => ({ id: row.id, name: row.name, parentId: row.parent_id, createdAt: row.created_at });
   // A live folder of this project.
@@ -87,6 +99,8 @@ export function createLibrary({ retained, metadata, drafts, project, record }) {
     return { version, source };
   }
 
+  // A committed operation reported again, without new bytes.
+  const savedResult = (ctx, outcome, prior) => ({ outcome, asset: assetFrom(ctx, metadata.object(ctx, prior.objectId)), version: numberedVersion(ctx, prior) });
   // A Save that committed but crashed before finishing its draft is finished here.
   function settle(ctx, projectId) {
     for (const draft of drafts.list(ctx, projectId)) {
@@ -99,18 +113,20 @@ export function createLibrary({ retained, metadata, drafts, project, record }) {
   // repeats its operation's original choice exactly: a saved one is reported
   // again without new bytes, and an unfinished one follows its file wherever
   // it has moved since.
-  function placement(ctx, projectId, { filename, folderId = null, collision = null, assetId, operationId, method, prior = metadata.operation(ctx, operationId) }) {
+  // A copy is always a new file, so its conflicts offer no file to replace.
+  function placement(ctx, projectId, { filename, folderId = null, collision = null, assetId, operationId, method, kind = publications[method].kind, prior = metadata.operation(ctx, operationId) }) {
     if (![null, 'create', 'replace'].includes(collision)) fail(400, 'Choose Create new or Replace for a name collision.');
     const outcome = collision === 'replace' ? 'replaced' : 'created';
+    const publication = publications[method];
     if (prior) {
       const source = metadata.object(ctx, prior.objectId);
       if (source.project_id !== projectId || prior.provenance.method !== method || prior.provenance.requestedFilename !== filename || (prior.provenance.folderId ?? null) !== folderId
-        || prior.provenance.collision !== collision || (collision === 'replace' && source.id !== assetId)) fail(409, `This ${method === 'upload' ? 'upload' : 'save'} was started for a different file. ${method === 'upload' ? 'Upload it' : 'Save'} again.`);
+        || prior.provenance.collision !== collision || (collision === 'replace' && source.id !== assetId)) fail(409, `This ${publication.noun} was started for a different file. ${publication.retry()} again.`);
       const descriptor = { ...(collision === 'replace' ? { objectId: source.id } : {}), kind: source.kind, filename: prior.filename };
-      if (prior.state !== 'committed' && source.removed_at) fail(409, `${source.filename} was removed. ${method === 'upload' ? `Upload ${filename}` : 'Save'} again as a new file.`);
+      if (prior.state !== 'committed' && source.removed_at) fail(409, `${source.filename} was removed. ${publication.again(filename)} again as a new file.`);
       // An interrupted first publication's name, perhaps a Create new suffix, may have been taken since.
       if (prior.state !== 'committed' && !descriptor.objectId && metadata.names(ctx, projectId, source.folder_id).some((entry) => entry.filename === prior.filename && entry.id !== source.id)) {
-        fail(409, `Another file is named ${prior.filename} now. ${method === 'upload' ? `Upload ${filename}` : 'Save'} again to choose.`);
+        fail(409, `Another file is named ${prior.filename} now. ${publication.again(filename)} again to choose.`);
       }
       return { prior, outcome, descriptor };
     }
@@ -118,12 +134,13 @@ export function createLibrary({ retained, metadata, drafts, project, record }) {
     const taken = metadata.names(ctx, projectId, folderId);
     const holder = taken.find((entry) => entry.filename === filename);
     const conflict = nameConflict(filename, taken);
+    if (conflict && method === 'copy') delete conflict.assetId;
     if (collision === 'replace') {
       if (!holder?.committed || holder.id !== assetId) fail(409, holder ? `Another file is named ${filename} now. Choose again.` : `No file is named ${filename} any more. Save it as a new file.`, { conflict });
       return { outcome, descriptor: { objectId: holder.id, kind: metadata.object(ctx, holder.id).kind, filename } };
     }
     if (holder && collision !== 'create') fail(409, `A file named ${filename} already exists.`, { conflict });
-    return { outcome, descriptor: { kind: method === 'upload' ? 'asset' : 'document', filename: conflict?.suggested ?? filename, folderId } };
+    return { outcome, descriptor: { kind, filename: conflict?.suggested ?? filename, folderId } };
   }
 
   return {
@@ -224,7 +241,7 @@ export function createLibrary({ retained, metadata, drafts, project, record }) {
       const filename = libraryFilename(input?.filename);
       const folderId = input.folderId ?? null;
       const { prior, descriptor, outcome } = placement(ctx, projectId, { ...input, filename, folderId, method: 'upload' });
-      if (prior?.state === 'committed') return { outcome, asset: assetFrom(ctx, metadata.object(ctx, prior.objectId)), version: numberedVersion(ctx, prior) };
+      if (prior?.state === 'committed') return savedResult(ctx, outcome, prior);
       const version = await retained.publish(ctx, { operationId: input.operationId, projectId, ...descriptor,
         provenance: { method: 'upload', requestedFilename: filename, collision: input.collision ?? null, ...(folderId ? { folderId } : {}) } }, source, { signal });
       const asset = assetFrom(ctx, metadata.object(ctx, version.objectId));
@@ -332,6 +349,58 @@ export function createLibrary({ retained, metadata, drafts, project, record }) {
       const versions = numbered(metadata.history(ctx, row.id)).map((version) => ({ ...version, current: version.id === row.current_version_id }));
       return { ...assetFrom(ctx, row), versions: versions.reverse() };
     },
+    // A restore publishes an older version's verified bytes as a new current
+    // version; every version in between, and every reference to one, stays.
+    async restoreVersion(ctx, projectId, assetId, input = {}, { signal } = {}) {
+      project(ctx, projectId);
+      const prior = metadata.operation(ctx, input.operationId);
+      if (prior?.state === 'committed') {
+        if (prior.provenance.method !== 'restore' || prior.objectId !== assetId || prior.provenance.restoredFromVersionId !== input.versionId
+          || metadata.object(ctx, prior.objectId).project_id !== projectId) fail(409, 'This restore was started for a different version. Restore again.');
+        return savedResult(ctx, 'restored', prior);
+      }
+      const row = libraryAsset(ctx, projectId, assetId);
+      const { version: older } = owned(ctx, projectId, input.versionId);
+      if (older.objectId !== row.id) fail(404, 'This version does not belong to this Library file.');
+      const current = numberedVersion(ctx, metadata.version(ctx, row.current_version_id));
+      if (input.baseVersionId !== current.id) fail(409, `v${current.number} of ${row.filename} was saved after you looked. Review it, then restore again.`, { conflict: { currentVersion: current } });
+      if (older.id === current.id) fail(409, `v${current.number} is already current.`);
+      if (older.hash === current.hash && older.size === current.size) return { outcome: 'unchanged', asset: assetFrom(ctx, row), version: current };
+      const provenance = { method: 'restore', restoredFromVersionId: older.id, baseVersionId: current.id, ...(isWritten(older) ? { written: true } : {}) };
+      const stream = await retained.read(ctx, older.id);
+      let version;
+      try { version = await retained.publish(ctx, { operationId: input.operationId, projectId, objectId: row.id, kind: row.kind, filename: row.filename, provenance }, stream, { signal }); }
+      finally { stream.destroy(); }
+      const asset = assetFrom(ctx, metadata.object(ctx, row.id));
+      record(ctx, 'asset_restored', asset.id, projectId, { versionId: version.id, restoredFromVersionId: older.id, filename: asset.filename });
+      return { outcome: 'restored', asset, version: numberedVersion(ctx, version) };
+    },
+    // A project copy is a new asset in another project with independent bytes
+    // of the source's current version only; nothing links their lifetimes.
+    // A copy never replaces a destination file: a taken name needs Create new
+    // or another name. A retry copies the version its operation began with.
+    async copyAsset(ctx, projectId, assetId, input = {}, { signal } = {}) {
+      project(ctx, projectId);
+      const targetId = input.targetProjectId;
+      if (typeof targetId !== 'string') fail(400, 'Choose the project to copy into.');
+      project(ctx, targetId);
+      if (targetId === projectId) fail(400, 'Choose another project to copy into.');
+      if (input.collision === 'replace') fail(400, 'A copy is always a new file. Choose Create new or another name.');
+      const filename = libraryFilename(input.filename); const folderId = input.folderId ?? null;
+      const prior = metadata.operation(ctx, input.operationId);
+      if (prior && (prior.provenance.sourceProjectId !== projectId || prior.provenance.sourceAssetId !== assetId)) fail(409, 'This copy was started for a different file. Copy it again.');
+      // A saved copy is reported again even if its source was removed since.
+      const row = libraryAsset(ctx, projectId, assetId, { allowRemoved: prior?.state === 'committed' });
+      const placed = placement(ctx, targetId, { filename, folderId, collision: input.collision ?? null, operationId: input.operationId, method: 'copy', kind: row.kind, prior });
+      if (prior?.state === 'committed') return savedResult(ctx, 'copied', prior);
+      const { version: source } = owned(ctx, projectId, prior?.provenance.copiedFromVersionId ?? row.current_version_id);
+      const provenance = { method: 'copy', requestedFilename: filename, collision: input.collision ?? null, ...(folderId ? { folderId } : {}),
+        sourceProjectId: projectId, sourceAssetId: row.id, ...(isWritten(source) ? { written: true } : {}) };
+      const version = await retained.copy(ctx, source.id, { operationId: input.operationId, projectId: targetId, ...placed.descriptor, provenance }, { signal });
+      const asset = assetFrom(ctx, metadata.object(ctx, version.objectId));
+      record(ctx, 'asset_copied', asset.id, targetId, { versionId: version.id, filename: asset.filename, from: { projectId, assetId: row.id, versionId: source.id } });
+      return { outcome: 'copied', asset, version: numberedVersion(ctx, version) };
+    },
     // Rechecks the recorded hash and size; failure marks only this version unavailable.
     async verify(ctx, projectId, versionId) {
       project(ctx, projectId, { allowArchived: true });
@@ -414,7 +483,7 @@ export function createLibrary({ retained, metadata, drafts, project, record }) {
     async read(ctx, projectId, versionId) {
       project(ctx, projectId, { allowArchived: true });
       const { version, source } = owned(ctx, projectId, versionId);
-      return { version, filename: source.filename, written: version.provenance.method === 'document', stream: await retained.read(ctx, version.id) };
+      return { version, filename: source.filename, written: isWritten(version), stream: await retained.read(ctx, version.id) };
     },
   };
 }
