@@ -50,6 +50,9 @@ export const recoveryMigration = `
 
 const active = ['dispatching', 'accepted', 'running', 'interrupt-requested'];
 export const archivedMessage = 'This project is archived. Unarchive it to make changes.';
+const restoredRetryMessage = 'This work was restored from a backup, so it cannot be retried. Send a new prompt or Run playbook instead.';
+const restoredHoldReason = 'Restored from a backup and held. It is not sent again: review its retained output, then cancel it and send new work.';
+const restoredRunReason = 'Restored from a backup and held. It does not run or apply a result; Run playbook to start new work.';
 const fail = (status, message) => { throw Object.assign(new Error(message), { status }); };
 const check = (value, message) => { if (!value) fail(400, message); };
 const object = (value) => value && typeof value === 'object' && !Array.isArray(value);
@@ -123,7 +126,7 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
     // it was recovered without being applied.
     if (['completed', 'failed', 'interrupted', 'cancelled'].includes(value)) {
       const laneReason = value === 'completed' ? 'The reply was recovered after Frameboard stopped, so its result was not applied. Run the playbook again.' : reason || `The lane run's reply was ${value}.`;
-      run("UPDATE lane_runs SET status = ?, reason = ?, updated_at = ? WHERE submission_id = ? AND status = 'queued'", value === 'cancelled' ? 'cancelled' : 'failed', laneReason, now(), id);
+      run("UPDATE lane_runs SET status = ?, reason = ?, updated_at = ? WHERE submission_id = ? AND status IN ('queued', 'held')", value === 'cancelled' ? 'cancelled' : 'failed', laneReason, now(), id);
     }
   }
   function settleAttempt(ctx, a, result, reason, cause = null) {
@@ -473,6 +476,7 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
       requireCard(ctx, cardId);
       const row = requireSubmission(ctx, cardId, id);
       if (row.revoked === 'archived') fail(409, 'This work was cancelled when its project was archived, so it cannot be retried. Send a new prompt or Run playbook instead.');
+      if (row.revoked === 'restored') fail(409, restoredRetryMessage);
       if (!['failed', 'interrupted'].includes(row.status) || row.conversation_id !== current(cardId).id
         || current(cardId).state !== 'active' || activeAttempt(cardId)) fail(409, 'Retry requires a terminal attempt in the current, available conversation. Reconcile uncertainty before retrying.');
       transaction(() => {
@@ -537,6 +541,41 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
     invalidateAfterRestart(ctx) {
       transaction(() => {
         run("UPDATE chat_requests SET status = 'invalidated' WHERE status = 'pending' AND attempt_id IN (SELECT a.id FROM chat_attempts a JOIN card_chats h ON h.card_id = a.card_id WHERE h.workspace_id = ?)", ctx.workspaceId);
+      });
+    },
+    // The recovery hold of a restored workspace, applied once before any worker
+    // wakes. The old runtime's attempts lose all effect authority, approvals and
+    // grants lapse, bound conversations are not resumed, and no earlier
+    // submission can be retried. Unfinished work in
+    // active projects is held for review; archived or deleted work stays
+    // cancelled. Retained transcripts and outputs are only kept for inspection.
+    holdRestored(ctx) {
+      const unfinished = "('queued', 'waiting', 'held', 'dispatching', 'running', 'interrupt-requested', 'uncertain')";
+      const closed = `(SELECT c.id FROM cards c JOIN projects p ON p.id = c.project_id WHERE c.deleted_at IS NOT NULL OR p.deleted_at IS NOT NULL OR p.archived_at IS NOT NULL)`;
+      return transaction(() => {
+        const at = now();
+        const held = all(`SELECT id, card_id, revoked FROM chat_submissions WHERE status IN ${unfinished}`);
+        run(`UPDATE chat_attempts SET status = 'interrupted', completed_at = ?, error = ?, cause = CASE WHEN revoked IS NULL THEN 'restored' ELSE COALESCE(cause, 'cancelled') END
+          WHERE status IN ('dispatching', 'accepted', 'running', 'interrupt-requested', 'uncertain')`, at, 'Restored from a backup. This attempt ended with the old workspace; nothing was resent.');
+        run("UPDATE chat_attempts SET revoked = 'restored' WHERE revoked IS NULL");
+        run("UPDATE chat_requests SET status = 'invalidated' WHERE status = 'pending'");
+        run("UPDATE chat_conversations SET grants = '[]' WHERE grants != '[]'");
+        // A binding names the old workspace and native index, so exact native
+        // resumption is not promised: new work continues in fresh context.
+        run("UPDATE chat_conversations SET state = 'native-unavailable' WHERE state = 'active' AND binding IS NOT NULL");
+        for (const row of held) {
+          if (row.revoked || get(`SELECT 1 FROM cards WHERE id = ? AND id IN ${closed}`, row.card_id)) {
+            status(ctx, row.id, 'cancelled', 'Cancelled before the backup was restored.');
+            continue;
+          }
+          run("UPDATE chat_submissions SET hold = 'restored', retry_at = NULL WHERE id = ?", row.id);
+          status(ctx, row.id, 'held', restoredHoldReason);
+        }
+        run("UPDATE chat_submissions SET revoked = 'restored' WHERE revoked IS NULL AND status != 'completed'");
+        // Lane runs never apply a result here. A cancelled card's runs close.
+        run(`UPDATE lane_runs SET status = 'cancelled', reason = 'Cancelled before the backup was restored.', updated_at = ? WHERE status IN ('pending', 'queued') AND card_id IN ${closed}`, at);
+        run("UPDATE lane_runs SET status = 'held', reason = ?, updated_at = ? WHERE status IN ('pending', 'queued')", restoredRunReason, at);
+        return { held: held.length };
       });
     },
     // Settles an unfinished or uncertain attempt from read-only native evidence.

@@ -26,6 +26,14 @@ export function snapshotDatabase(filename, destination) {
   finally { db.close(); }
 }
 
+// Restore marks the staged database before activation. The next open applies
+// the recovery hold in one commit, before the app creates any worker.
+export function markRestored(filename, details) {
+  const db = new DatabaseSync(filename);
+  try { db.prepare("INSERT INTO meta (key, value) VALUES ('restore_recovery', ?)").run(JSON.stringify(details)); }
+  finally { db.close(); }
+}
+
 export function inspectBackupDatabase(filename) {
   const db = new DatabaseSync(filename, { readOnly: true });
   try {
@@ -212,6 +220,8 @@ const migrations = [`
   UPDATE chat_attempts SET revoked = 'stopped' WHERE cause = 'user';
 `];
 
+// The newest schema this version can open; restore refuses newer backups.
+export const supportedSchemaVersion = migrations.length;
 const now = () => new Date().toISOString();
 const fail = (status, message) => { throw Object.assign(new Error(message), { status }); };
 const check = (value, message) => { if (!value) fail(400, message); };
@@ -462,9 +472,9 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
   // Cancels runs that have not started work. Running replies finish; their
   // result arrives as proposals because the card is no longer in that lane.
   function cancelLaneRuns(ctx, cardId, keep, reason) {
-    for (const row of all("SELECT * FROM lane_runs WHERE card_id = ? AND status IN ('pending', 'queued')", cardId)) {
+    for (const row of all("SELECT * FROM lane_runs WHERE card_id = ? AND status IN ('pending', 'queued', 'held')", cardId)) {
       if (keep(row)) continue;
-      if (row.status === 'queued') {
+      if (row.submission_id && row.status !== 'pending') {
         if (!chats.cancelQueued(ctx, row.submission_id, reason)) continue;
       }
       run("UPDATE lane_runs SET status = 'cancelled', reason = ?, updated_at = ? WHERE id = ?", reason, now(), row.id);
@@ -605,7 +615,7 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
     const at = now();
     for (const row of rows) {
       chats.cancelCard(ctx, row.id, reason);
-      run("UPDATE lane_runs SET status = 'cancelled', reason = ?, updated_at = ? WHERE card_id = ? AND status IN ('pending', 'queued')", reason, at, row.id);
+      run("UPDATE lane_runs SET status = 'cancelled', reason = ?, updated_at = ? WHERE card_id = ? AND status IN ('pending', 'queued', 'held')", reason, at, row.id);
       run('UPDATE cards SET deleted_at = ? WHERE id = ?', at, row.id);
       insertEvent(ctx.workspaceId, cardFrom(row), 'deleted', ctx.actor, { from: row.stage_id, data: { reason }, at });
       recordSavedState(ctx, row.id, 'deleted', at);
@@ -1101,6 +1111,8 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
         if (!found.settings.instructions) fail(409, 'This lane playbook has no instructions to run.');
         if (found.settings.run === 'off') fail(409, 'This lane playbook is turned off. Change run: off to manual or on-enter.');
         return transaction(() => {
+          // New explicit work replaces runs held after a restore, with their submissions.
+          cancelLaneRuns(ctx, cardId, (row) => row.status !== 'held', 'Replaced by a new run of the playbook.');
           const open = get("SELECT id FROM lane_runs WHERE card_id = ? AND stage_id = ? AND status = 'pending'", cardId, stage.id);
           return laneRunFrom(get('SELECT * FROM lane_runs WHERE id = ?', open?.id ?? requestLaneRun(ctx, card, stage, 'manual')));
         });
@@ -1127,6 +1139,13 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
     },
   };
   try {
+    const restored = meta('restore_recovery');
+    if (restored) transaction(() => {
+      const ctx = { workspaceId: owner.workspaceId, actor: 'system:restore' };
+      const { held } = chats.holdRestored(ctx);
+      recordChange(ctx, 'workspace', owner.workspaceId, 'restored', { data: { ...JSON.parse(restored), held } });
+      run("DELETE FROM meta WHERE key = 'restore_recovery'");
+    });
     api.retained = await createRetainedStorage({ dataDir, checkpoint: retainedCheckpoint, metadata: createRetainedMetadata({ all, get, run, transaction, now }) });
   } catch (error) { db.close(); throw error; }
   return api;
