@@ -42,3 +42,5 @@ export function previewType(filename) {
   const found = previewTypes[splitExtension(filename)[1].toLowerCase()];
   return found ? { kind: found[0], type: found[1] } : null;
 }
+// A written document is UTF-8 text whatever its name; uploads go by extension.
+export const assetPreview = ({ kind, filename }) => kind === 'document' ? { kind: 'text', type: 'text/plain; charset=utf-8' } : previewType(filename);

@@ -56,6 +56,7 @@ test('upgrading an already-versioned database repairs legacy move foreign keys a
     ALTER TABLE projects DROP COLUMN archive_generation;
     ALTER TABLE chat_attempts DROP COLUMN revoked;
     ALTER TABLE chat_submissions DROP COLUMN revoked;
+    DROP TABLE library_drafts;
     DROP TABLE retained_versions;
     DROP TABLE retained_objects;
     DROP TABLE lane_runs;

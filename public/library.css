@@ -1,5 +1,6 @@
-/* The project Library tab and its file inspector. Filenames are the labels;
-   thumbnails appear only for image types the browser shows safely. */
+/* The project Library tab, its file inspector and the document editor.
+   Filenames are the labels; thumbnails appear only for image types the
+   browser shows safely. Unsaved drafts are marked apart from saved versions. */
 @layer board {
   .project-tabs { display: flex; gap: 22px; align-self: stretch; }
   .board-tab:not(.active) { border-bottom-color: transparent; color: var(--muted); }
@@ -26,6 +27,9 @@
   .library-name { font-size: 12px; overflow-wrap: anywhere; color: var(--text); }
   .library-meta { font-size: 10px; color: var(--muted); }
   .library-meta strong { color: var(--danger); font-weight: 500; }
+  .library-meta em { color: var(--amber); font-style: normal; }
+  .library-thumb.draft { border: 1px dashed #5d5370; background: #15141c; }
+  .library-thumb.draft span { font: 600 13px/1 ui-monospace, monospace; color: #b9aed0; letter-spacing: .08em; }
   .library-empty { min-height: 250px; display: grid; place-content: center; justify-items: center; gap: 6px; color: var(--muted); font-size: 12px; text-align: center; }
   .library-empty .icon { width: 22px; height: 22px; color: #8d8399; }
   .library-empty p { color: #c5bbd1; font-size: 14px; }
@@ -58,6 +62,19 @@
   .library-version-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; flex-shrink: 0; }
   .library-badge { padding: 1px 6px; border-radius: 4px; background: #24212f; color: #c9bff0; font-size: 10px; }
   .library-badge.danger { background: #3a1f24; color: var(--danger); }
+  .library-badge.draft { background: #3a3020; color: var(--amber); }
+  .library-preview-label { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+  #library-dialog:has(.library-editor) { width: min(900px, calc(100vw - 32px)); }
+  .library-editor { display: grid; gap: 8px; }
+  .library-draft-text { width: 100%; min-height: min(56dvh, 520px); resize: vertical; border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; background: #0b0c11; color: var(--text); font: 13.5px/1.7 ui-monospace, Consolas, monospace; tab-size: 2; }
+  .library-draft-text:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .library-draft-text[readonly] { opacity: .75; }
+  .library-draft-state { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+  .library-draft-state.notice { color: var(--danger); }
+  .library-draft-conflict { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 10px 12px; border: 1px solid #5a3a40; border-radius: 8px; background: #22161a; font-size: 12px; }
+  .library-draft-conflict span { flex: 1; min-width: 180px; }
+  .library-editor-footer { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 6px; }
+  .library-editor-footer > div { display: flex; gap: 8px; }
   .collision-options { border: 0; padding: 0; margin: 0; display: grid; gap: 10px; }
   .collision-option { display: flex; gap: 10px; align-items: flex-start; border: 1px solid var(--border); border-radius: 8px; padding: 12px; font-size: 13px; cursor: pointer; }
   .collision-option:has(input:checked) { border-color: #73638e; background: #1a1725; }

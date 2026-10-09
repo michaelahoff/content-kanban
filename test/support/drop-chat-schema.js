@@ -3,6 +3,7 @@
 export function dropChatSchema(db) {
   db.exec(`ALTER TABLE projects DROP COLUMN archived_at;
     ALTER TABLE projects DROP COLUMN archive_generation;
+    DROP TABLE library_drafts;
     DROP TABLE retained_versions;
     DROP TABLE retained_objects;
     DROP TABLE lane_runs;

@@ -32,16 +32,20 @@ test('library filenames are labels, never paths', () => {
 
 async function fixture(t) {
   const dataDir = await mkdtemp(path.join(tmpdir(), 'frameboard-library-'));
-  let store = await openStore({ dataDir });
+  // Tests set faults.checkpoint to fail a publication at a chosen stage.
+  const faults = { checkpoint: async () => {} };
+  const open = () => openStore({ dataDir, retainedCheckpoint: (stage, version) => faults.checkpoint(stage, version) });
+  let store = await open(); let closed = false;
   const ctx = { ...store.owner, actor: `user:${store.owner.userId}` };
   const projectId = store.workspace(ctx).projects[0].id;
-  t.after(async () => { store.close(); await rm(dataDir, { recursive: true, force: true }); });
+  t.after(async () => { if (!closed) store.close(); await rm(dataDir, { recursive: true, force: true }); });
   return {
-    dataDir, ctx, projectId,
+    dataDir, ctx, projectId, faults,
     get store() { return store; },
     get library() { return store.library; },
     upload(filename, bytes, options = {}) { return store.library.upload(ctx, options.projectId ?? projectId, { filename, operationId: options.operationId ?? randomUUID(), ...options }, bytes); },
-    async restart() { store.close(); store = await openStore({ dataDir }); },
+    async restart() { store.close(); store = await open(); },
+    close() { store.close(); closed = true; },
   };
 }
 const collect = async (stream) => { const chunks = []; for await (const chunk of stream) chunks.push(chunk); return Buffer.concat(chunks); };
@@ -290,7 +294,7 @@ test('complete export and restore carry every Library identity, label, version a
   await new Promise((resolve) => restored.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise((resolve) => restored.close(resolve)));
   const base = `http://127.0.0.1:${restored.address().port}`;
-  assert.deepEqual(await (await fetch(`${base}${f.library}`)).json(), { assets: before });
+  assert.deepEqual(await (await fetch(`${base}${f.library}`)).json(), { assets: before, drafts: [] });
   for (const asset of details) {
     assert.deepEqual(await (await fetch(`${base}${f.library}/assets/${asset.id}`)).json(), asset);
     for (const version of asset.versions) {
@@ -375,4 +379,191 @@ test('an archive landing during a repair leaves the version unavailable', async 
   await assert.rejects(pending, (error) => error.status === 409 && /archived/i.test(error.message));
   f.store.unarchiveProject(f.ctx, f.projectId);
   assert.equal(f.library.asset(f.ctx, f.projectId, version.objectId ?? f.library.list(f.ctx, f.projectId).assets[0].id).current.available, false);
+});
+
+const draftsOf = (f) => f.library.list(f.ctx, f.projectId).drafts;
+const text = async (f, versionId) => (await collect((await f.library.read(f.ctx, f.projectId, versionId)).stream)).toString('utf8');
+
+test('a written document is a draft until Save, which creates a stable document asset and version', async (t) => {
+  const f = await fixture(t);
+  const draft = await f.library.createDraft(f.ctx, f.projectId, { filename: 'Hook guide.md' });
+  assert.deepEqual([draft.filename, draft.text, draft.revision, draft.assetId, draft.baseVersionId], ['Hook guide.md', '', 1, null, null]);
+  const written = f.library.writeDraft(f.ctx, f.projectId, draft.id, { text: '# Hooks\nOpen on the payoff. ✨', revision: 1 });
+  assert.equal(written.revision, 2);
+  assert.deepEqual(f.library.list(f.ctx, f.projectId).assets, [], 'a draft is not a Library asset');
+  assert.deepEqual(f.store.retained.inventory(f.ctx), [], 'nor a retained version');
+
+  const saved = await f.library.saveDraft(f.ctx, f.projectId, draft.id, { revision: 2, operationId: 'save-1' });
+  assert.equal(saved.outcome, 'created');
+  assert.deepEqual([saved.asset.filename, saved.asset.kind, saved.version.number, saved.draft], ['Hook guide.md', 'document', 1, null]);
+  assert.equal(await text(f, saved.version.id), '# Hooks\nOpen on the payoff. ✨');
+  assert.deepEqual(draftsOf(f), [], 'a saved draft is finished');
+  await f.restart();
+  assert.deepEqual(f.library.list(f.ctx, f.projectId).assets.map((asset) => [asset.id, asset.current.id]), [[saved.asset.id, saved.version.id]]);
+});
+
+test('editing a saved document drafts against its current version; later saves add versions of the same asset', async (t) => {
+  const f = await fixture(t);
+  const created = await f.library.createDraft(f.ctx, f.projectId, { filename: 'guide.md', text: 'v1 text' });
+  const first = await f.library.saveDraft(f.ctx, f.projectId, created.id, { revision: 1, operationId: 'save-1' });
+
+  const edit = await f.library.createDraft(f.ctx, f.projectId, { assetId: first.asset.id });
+  assert.deepEqual([edit.assetId, edit.baseVersionId, edit.filename, edit.text], [first.asset.id, first.version.id, 'guide.md', 'v1 text']);
+  assert.equal((await f.library.createDraft(f.ctx, f.projectId, { assetId: first.asset.id })).id, edit.id, 'one draft per asset');
+  const written = f.library.writeDraft(f.ctx, f.projectId, edit.id, { text: 'v2 draft', revision: 1 });
+  assert.throws(() => f.library.writeDraft(f.ctx, f.projectId, edit.id, { text: 'stale tab', revision: 1 }), (error) => error.status === 409 && error.conflict.draftRevision === 2);
+  assert.equal(f.library.draft(f.ctx, f.projectId, edit.id).text, 'v2 draft');
+  assert.throws(() => f.library.writeDraft(f.ctx, f.projectId, edit.id, { text: 'x', filename: 'renamed.md', revision: 2 }), (error) => error.status === 400);
+  assert.equal(f.library.asset(f.ctx, f.projectId, first.asset.id).current.id, first.version.id, 'draft edits never change current content');
+  assert.equal(await text(f, first.version.id), 'v1 text');
+  assert.deepEqual(f.library.list(f.ctx, f.projectId).drafts.map((draft) => [draft.id, draft.assetId, draft.length]), [[edit.id, first.asset.id, 8]]);
+
+  await assert.rejects(f.library.saveDraft(f.ctx, f.projectId, edit.id, { revision: 1, operationId: 'save-2' }), (error) => error.status === 409);
+  const second = await f.library.saveDraft(f.ctx, f.projectId, edit.id, { revision: written.revision, operationId: 'save-2' });
+  assert.deepEqual([second.outcome, second.asset.id, second.version.number, second.draft], ['saved', first.asset.id, 2, null]);
+  assert.deepEqual([await text(f, first.version.id), await text(f, second.version.id)], ['v1 text', 'v2 draft']);
+
+  // A draft begun before another save must not silently overwrite it.
+  const stale = await f.library.createDraft(f.ctx, f.projectId, { assetId: first.asset.id });
+  const other = await f.upload('guide.md', Buffer.from('uploaded v3'), { collision: 'replace', assetId: first.asset.id });
+  f.library.writeDraft(f.ctx, f.projectId, stale.id, { text: 'my edit', revision: 1 });
+  await assert.rejects(f.library.saveDraft(f.ctx, f.projectId, stale.id, { revision: 2, operationId: 'save-3' }),
+    (error) => error.status === 409 && error.conflict.currentVersion.id === other.version.id && /v3/.test(error.message));
+  assert.equal(f.library.draft(f.ctx, f.projectId, stale.id).text, 'my edit', 'the draft is kept');
+  const forced = await f.library.saveDraft(f.ctx, f.projectId, stale.id, { revision: 2, operationId: 'save-4', baseVersionId: other.version.id });
+  assert.deepEqual([forced.version.number, await text(f, forced.version.id)], [4, 'my edit']);
+
+  // Saving unchanged text publishes nothing.
+  const same = await f.library.createDraft(f.ctx, f.projectId, { assetId: first.asset.id });
+  const unchanged = await f.library.saveDraft(f.ctx, f.projectId, same.id, { revision: 1, operationId: 'save-5' });
+  assert.deepEqual([unchanged.outcome, unchanged.version.id, unchanged.draft], ['unchanged', forced.version.id, null]);
+  assert.equal(f.library.asset(f.ctx, f.projectId, first.asset.id).versionCount, 4);
+  assert.deepEqual(draftsOf(f), []);
+});
+
+test('a failed save keeps the prior version current and the draft intact; retrying never duplicates a saved version', async (t) => {
+  const f = await fixture(t);
+  const draft = await f.library.createDraft(f.ctx, f.projectId, { filename: 'guide.md', text: 'v1' });
+  const first = await f.library.saveDraft(f.ctx, f.projectId, draft.id, { revision: 1, operationId: 'save-1' });
+  const edit = await f.library.createDraft(f.ctx, f.projectId, { assetId: first.asset.id });
+  f.library.writeDraft(f.ctx, f.projectId, edit.id, { text: 'v2', revision: 1 });
+
+  for (const stage of ['writing', 'bytes-published', 'published']) {
+    f.faults.checkpoint = async (at) => { if (at === stage) throw new Error(`disk failed while ${stage}`); };
+    await assert.rejects(f.library.saveDraft(f.ctx, f.projectId, edit.id, { revision: 2, operationId: 'save-2' }), /disk failed/);
+    assert.equal(f.library.asset(f.ctx, f.projectId, first.asset.id).current.id, first.version.id, `${stage}: v1 stays current`);
+    assert.equal(f.library.draft(f.ctx, f.projectId, edit.id).text, 'v2', `${stage}: the draft is kept`);
+  }
+  f.faults.checkpoint = async () => {};
+  await f.restart();
+  assert.equal(f.library.asset(f.ctx, f.projectId, first.asset.id).versionCount, 1);
+  const saved = await f.library.saveDraft(f.ctx, f.projectId, edit.id, { revision: 2, operationId: 'save-2' });
+  assert.equal(saved.version.number, 2);
+  const again = await f.library.saveDraft(f.ctx, f.projectId, edit.id, { revision: 2, operationId: 'save-2' });
+  assert.deepEqual([again.outcome, again.version.id], ['saved', saved.version.id], 'a repeated saved operation reports its own version');
+  assert.equal(f.library.asset(f.ctx, f.projectId, first.asset.id).versionCount, 2);
+  await assert.rejects(f.library.saveDraft(f.ctx, f.projectId, randomUUID(), { revision: 2, operationId: 'save-2' }), (error) => error.status === 409);
+});
+
+test('a first save follows the Library name rules: Create new, Replace or refuse; archive refuses draft changes', async (t) => {
+  const f = await fixture(t);
+  const held = await f.upload('brief.md', Buffer.from('uploaded'));
+  const draft = await f.library.createDraft(f.ctx, f.projectId, { filename: 'brief.md', text: 'written' });
+  await assert.rejects(f.library.saveDraft(f.ctx, f.projectId, draft.id, { revision: 1, operationId: 'save-1' }),
+    (error) => error.status === 409 && error.conflict.suggested === 'brief (1).md');
+  assert.equal(f.library.draft(f.ctx, f.projectId, draft.id).text, 'written');
+  const copy = await f.library.saveDraft(f.ctx, f.projectId, draft.id, { revision: 1, operationId: 'save-2', collision: 'create' });
+  assert.deepEqual([copy.outcome, copy.asset.filename, copy.asset.kind], ['created', 'brief (1).md', 'document']);
+
+  const replacing = await f.library.createDraft(f.ctx, f.projectId, { filename: 'brief.md', text: 'written over' });
+  const replaced = await f.library.saveDraft(f.ctx, f.projectId, replacing.id, { revision: 1, operationId: 'save-3', collision: 'replace', assetId: held.asset.id });
+  assert.deepEqual([replaced.outcome, replaced.asset.id, replaced.version.number], ['replaced', held.asset.id, 2]);
+  assert.equal(await text(f, replaced.version.id), 'written over');
+  // An uploaded file replaced by written text can be uploaded over again.
+  assert.equal((await f.upload('brief.md', Buffer.from('v3'), { collision: 'replace', assetId: held.asset.id })).version.number, 3);
+
+  await f.upload('opaque.txt', Buffer.from([0xff, 0xfe, 0x00]));
+  const opaque = f.library.list(f.ctx, f.projectId).assets.find((asset) => asset.filename === 'opaque.txt');
+  await assert.rejects(f.library.createDraft(f.ctx, f.projectId, { assetId: opaque.id }), (error) => error.status === 422);
+  await assert.rejects(f.library.createDraft(f.ctx, f.projectId, { filename: '../x.md' }), (error) => error.status === 400);
+
+  const pending = await f.library.createDraft(f.ctx, f.projectId, { filename: 'later.md', text: 'kept' });
+  f.store.archiveProject(f.ctx, f.projectId);
+  assert.equal(f.library.draft(f.ctx, f.projectId, pending.id).text, 'kept', 'archived drafts stay readable');
+  assert.throws(() => f.library.writeDraft(f.ctx, f.projectId, pending.id, { text: 'x', revision: 1 }), (error) => error.status === 409 && /archived/i.test(error.message));
+  assert.throws(() => f.library.discardDraft(f.ctx, f.projectId, pending.id), (error) => error.status === 409);
+  await assert.rejects(f.library.saveDraft(f.ctx, f.projectId, pending.id, { revision: 1, operationId: 'save-4' }), (error) => error.status === 409 && /archived/i.test(error.message));
+  await assert.rejects(f.library.createDraft(f.ctx, f.projectId, { filename: 'new.md' }), (error) => error.status === 409);
+  f.store.unarchiveProject(f.ctx, f.projectId);
+  f.library.discardDraft(f.ctx, f.projectId, pending.id);
+  assert.deepEqual(draftsOf(f), []);
+  const { project: other } = f.store.createProject(f.ctx, { name: 'Other' });
+  await assert.rejects(f.library.createDraft(f.ctx, other.id, { assetId: held.asset.id }), (error) => error.status === 404);
+});
+
+test('over HTTP, drafts autosave as app data, Save publishes them, and a saved document previews as text', async (t) => {
+  const f = await httpFixture(t);
+  const drafts = `${f.library}/drafts`;
+  const draft = await f.ok('POST', drafts, { filename: 'Hook guide', text: '' });
+  assert.equal(draft.revision, 1);
+  const written = await f.ok('PUT', `${drafts}/${draft.id}`, { text: '<b>Open</b> on the payoff', revision: 1 });
+  assert.deepEqual([written.revision, written.text], [2, undefined], 'autosave answers without echoing the text');
+  assert.equal((await f.call('PUT', `${drafts}/${draft.id}`, { text: 'stale', revision: 1 })).status, 409);
+  assert.deepEqual((await f.ok('GET', f.library)).assets, []);
+  assert.deepEqual((await f.ok('GET', f.library)).drafts.map((entry) => [entry.id, entry.filename, entry.revision, entry.length]), [[draft.id, 'Hook guide', 2, 25]]);
+  assert.equal((await f.ok('GET', `${drafts}/${draft.id}`)).text, '<b>Open</b> on the payoff');
+
+  assert.equal((await f.call('POST', `${drafts}/${draft.id}/save`, { revision: 2, operation: '' })).status, 400);
+  const saved = await f.ok('POST', `${drafts}/${draft.id}/save`, { revision: 2, operation: randomUUID() });
+  assert.deepEqual([saved.outcome, saved.asset.kind, saved.version.number, saved.draft], ['created', 'document', 1, null]);
+  assert.equal((await f.call('GET', `${drafts}/${draft.id}`)).status, 404);
+  const preview = await f.raw(`${f.library}/versions/${saved.version.id}/content?inline=1`);
+  assert.equal(preview.headers.get('content-type'), 'text/plain; charset=utf-8');
+  assert.match(preview.headers.get('content-security-policy'), /sandbox/);
+  assert.equal(await preview.text(), '<b>Open</b> on the payoff');
+
+  const edit = await f.ok('POST', drafts, { assetId: saved.asset.id });
+  assert.equal(edit.baseVersionId, saved.version.id);
+  assert.deepEqual(await f.ok('DELETE', `${drafts}/${edit.id}`), { ok: true });
+  assert.deepEqual((await f.ok('GET', f.library)).drafts, []);
+
+  const output = await mkdtemp(path.join(tmpdir(), 'frameboard-library-export-'));
+  t.after(() => rm(output, { recursive: true, force: true }));
+  const kept = await f.ok('POST', drafts, { filename: 'during.md', text: 'x' });
+  await f.ok('POST', '/api/maintenance/export', { output });
+  assert.equal((await f.call('PUT', `${drafts}/${kept.id}`, { text: 'y', revision: 1 })).status, 503);
+  assert.equal((await f.call('POST', `${drafts}/${kept.id}/save`, { revision: 1, operation: randomUUID() })).status, 503);
+  await waitFor(async () => !(await f.ok('GET', '/api/maintenance')).active);
+  assert.equal((await f.ok('GET', `${drafts}/${kept.id}`)).text, 'x');
+});
+
+test('export and restore keep saved documents as versions and drafts as app data, including after a failed save', async (t) => {
+  const f = await fixture(t);
+  const created = await f.library.createDraft(f.ctx, f.projectId, { filename: 'guide.md', text: 'saved v1' });
+  const saved = await f.library.saveDraft(f.ctx, f.projectId, created.id, { revision: 1, operationId: 'save-1' });
+  const edit = await f.library.createDraft(f.ctx, f.projectId, { assetId: saved.asset.id });
+  f.library.writeDraft(f.ctx, f.projectId, edit.id, { text: 'unsaved v2 ✍️', revision: 1 });
+  f.faults.checkpoint = async (stage) => { if (stage === 'published') throw new Error('disk full'); };
+  await assert.rejects(f.library.saveDraft(f.ctx, f.projectId, edit.id, { revision: 2, operationId: 'save-2' }), /disk full/);
+  const fresh = await f.library.createDraft(f.ctx, f.projectId, { filename: 'Pasted notes.md', text: 'pasted, never saved' });
+  const before = f.library.list(f.ctx, f.projectId);
+
+  const root = await mkdtemp(path.join(tmpdir(), 'frameboard-library-drafts-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  f.close();
+  const { backupDir } = await createBackup({ dataDir: f.dataDir, output: path.join(root, 'backups'), codexHome: path.join(root, 'native') });
+  const manifest = JSON.parse(await readFile(path.join(backupDir, 'manifest.json'), 'utf8'));
+  assert.equal(manifest.inventory.tables.library_drafts, 2);
+  assert.deepEqual(manifest.inventory.retained.map((entry) => [entry.objectId, entry.versionId]), [[saved.asset.id, saved.version.id]], 'drafts and failed saves are not retained versions');
+
+  const dataDir = path.join(root, 'restored');
+  await restoreBackup({ backupDir, dataDir, codexHome: path.join(root, 'native') });
+  const restored = await openStore({ dataDir });
+  t.after(() => restored.close());
+  assert.deepEqual(restored.library.list(f.ctx, f.projectId), before);
+  assert.equal(restored.library.draft(f.ctx, f.projectId, edit.id).text, 'unsaved v2 ✍️');
+  assert.equal(restored.library.draft(f.ctx, f.projectId, fresh.id).text, 'pasted, never saved');
+  assert.equal(restored.library.asset(f.ctx, f.projectId, saved.asset.id).current.id, saved.version.id);
+  const resaved = await restored.library.saveDraft(f.ctx, f.projectId, edit.id, { revision: 2, operationId: 'save-3' });
+  assert.equal((await collect((await restored.library.read(f.ctx, f.projectId, resaved.version.id)).stream)).toString(), 'unsaved v2 ✍️');
 });
