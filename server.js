@@ -17,7 +17,7 @@ import { lockDataDirectory } from './data-lock.js';
 import { createBackup } from './backup.js';
 import { createMaintenance, maintenanceMessage } from './maintenance.js';
 import { homedir } from 'node:os';
-import { previewType } from './public/library-format.js';
+import { assetPreview } from './public/library-format.js';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const imageTypes = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif', 'image/avif': 'avif' };
@@ -189,6 +189,20 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
       ['GET', /^\/api\/projects\/([^/]+)\/library\/assets\/[^/]+$/, (ctx, req, id, url) => store.library.asset(ctx, id, url.pathname.split('/').at(-1))],
       ['POST', /^\/api\/projects\/([^/]+)\/library\/versions\/[^/]+\/verify$/, (ctx, req, id, url) => store.library.verify(ctx, id, url.pathname.split('/').at(-2))],
       ['POST', /^\/api\/projects\/([^/]+)\/library\/versions\/[^/]+\/repair$/, (ctx, req, id, url) => store.library.repair(ctx, id, url.pathname.split('/').at(-2), req, { signal: uploadSignal(req) })],
+      ['POST', /^\/api\/projects\/([^/]+)\/library\/drafts$/, async (ctx, req, id) => store.library.createDraft(ctx, id, bodyOf(await read(req))), 201],
+      ['GET', /^\/api\/projects\/([^/]+)\/library\/drafts\/[^/]+$/, (ctx, req, id, url) => store.library.draft(ctx, id, url.pathname.split('/').at(-1))],
+      // Autosave answers with the new revision; the browser already has the text.
+      ['PUT', /^\/api\/projects\/([^/]+)\/library\/drafts\/[^/]+$/, async (ctx, req, id, url) => {
+        const { text, ...draft } = store.library.writeDraft(ctx, id, url.pathname.split('/').at(-1), bodyOf(await read(req)));
+        return draft;
+      }],
+      ['DELETE', /^\/api\/projects\/([^/]+)\/library\/drafts\/[^/]+$/, (ctx, req, id, url) => (store.library.discardDraft(ctx, id, url.pathname.split('/').at(-1)), { ok: true })],
+      ['POST', /^\/api\/projects\/([^/]+)\/library\/drafts\/[^/]+\/save$/, async (ctx, req, id, url) => {
+        const input = bodyOf(await read(req));
+        assert(/^[\w-]{1,100}$/.test(input.operation || ''), 'Each save needs an operation ID.');
+        return store.library.saveDraft(ctx, id, url.pathname.split('/').at(-2), { revision: input.revision, operationId: input.operation,
+          collision: input.collision || undefined, assetId: input.asset || undefined, baseVersionId: input.baseVersionId || undefined });
+      }],
       ['GET', /^\/api\/projects\/([^/]+)\/cards$/, (ctx, req, id) => ({ cards: store.listCards(ctx, id) })],
       ['POST', /^\/api\/projects\/([^/]+)\/cards$/, async (ctx, req, id) => store.createCard(ctx, id, await read(req)), 201],
       ['POST', /^\/api\/flows\/([^/]+)\/stages$/, async (ctx, req, id) => store.createStage(ctx, id, await read(req)), 201],
@@ -262,8 +276,8 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
           // Verified before the first byte; a change while streaming aborts the response.
           let ids;
           try { ids = content.slice(1).map(decodeURIComponent); } catch { return send(res, 404, { error: 'Not found.' }); }
-          const { version, filename, stream: bytes } = await store.library.read(currentUser(req), ...ids);
-          const inline = url.searchParams.get('inline') === '1' && previewType(filename);
+          const { version, filename, written, stream: bytes } = await store.library.read(currentUser(req), ...ids);
+          const inline = url.searchParams.get('inline') === '1' && assetPreview(filename, { written });
           res.writeHead(200, { 'Content-Type': inline ? inline.type : 'application/octet-stream', 'Content-Length': version.size,
             'Content-Disposition': disposition(inline ? 'inline' : 'attachment', filename),
             'Content-Security-Policy': "default-src 'none'; sandbox", 'Cache-Control': 'private, max-age=31536000, immutable' });
