@@ -43,9 +43,10 @@ let toastTimer;
 // Light and dark mirror YouTube's, so thumbnails can be judged in both. public/theme.js applies the saved choice on load.
 export const currentTheme = () => document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light';
 export const themeSwitchMarkup = () => `<div class="theme-switch" role="group" aria-label="Theme">${[['light', 'Light', 'sun'], ['dark', 'Dark', 'moon']].map(([theme, label, symbol]) => `<button type="button" class="chip" data-action="set-theme" data-theme="${theme}" aria-pressed="${currentTheme() === theme}">${icon(symbol)}${label}</button>`).join('')}</div>`;
-export const accents = [['blue', 'Blue', '#2260f3', '#4d8dff'], ['cyan', 'Cyan', '#00a3fd', '#38b6ff'], ['red', 'Red', '#cc0000', '#ff6a62'], ['mint', 'Mint', '#00a86b', '#34c76a']];
+// The dot colors live in styles.css (.accent-dot); theme.js accepts the same ids.
+export const accents = [['blue', 'Blue'], ['cyan', 'Cyan'], ['red', 'Red'], ['mint', 'Mint']];
 export const currentAccent = () => document.documentElement.dataset.accent || 'blue';
-export const accentSwitchMarkup = () => `<div class="accent-switch" role="group" aria-label="Accent color">${accents.map(([accent, label, light, dark]) => `<button type="button" class="accent-dot" data-action="set-accent" data-accent="${accent}" style="--dot: ${currentTheme() === 'dark' ? dark : light}" aria-label="${label} accent" title="${label}" aria-pressed="${currentAccent() === accent}"></button>`).join('')}</div>`;
+export const accentSwitchMarkup = () => `<div class="accent-switch" role="group" aria-label="Accent color">${accents.map(([accent, label]) => `<button type="button" class="accent-dot" data-action="set-accent" data-accent="${accent}" aria-label="${label} accent" title="${label}" aria-pressed="${currentAccent() === accent}"></button>`).join('')}</div>`;
 export function setAccent(accent) {
   document.documentElement.dataset.accent = accent;
   try { localStorage.setItem('frameboard-accent', accent); } catch { /* Optional display preference. */ }
@@ -56,7 +57,6 @@ export function setTheme(theme) {
   try { localStorage.setItem('frameboard-theme', theme); } catch { /* Optional display preference. */ }
   document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'dark' ? '#0f0f0f' : '#ffffff');
   document.querySelectorAll('[data-action="set-theme"]').forEach((node) => node.setAttribute('aria-pressed', String(node.dataset.theme === theme)));
-  document.querySelectorAll('[data-action="set-accent"]').forEach((node) => { const option = accents.find(([accent]) => accent === node.dataset.accent); node.style.setProperty('--dot', theme === 'dark' ? option[3] : option[2]); });
 }
 export function wordCount(text) { return text.trim() ? text.trim().split(/\s+/u).length : 0; }
 export function lastEditedMarkup(card) {

@@ -8,7 +8,7 @@
 #card-chat { display: flex; flex-direction: column; overflow: hidden; min-height: 0; min-width: 0; background: var(--surface); }
 #card-chat[hidden], #chat-resizer[hidden], .workbench-tabs[hidden] { display: none; }
 .chat-header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; padding: 18px; border-bottom: 1px solid var(--border); }
-.chat-header h2 { font-family: var(--title-font); font-size: 16px; font-weight: 500; color: var(--text); margin: 0 0 5px; }
+.chat-header h2 { font-family: var(--body-font); font-size: 16px; font-weight: 500; color: var(--text); margin: 0 0 5px; }
 .chat-header span { color: var(--muted); font-size: 12px; }
 #chat-error { flex-shrink: 0; padding: 12px 18px; color: var(--danger); background: var(--danger-wash); border-bottom: 1px solid var(--danger-line); font-size: 13px; overflow-wrap: anywhere; max-height: 140px; overflow: auto; }
 .chat-transcript { flex: 1; overflow-y: auto; padding: 18px; min-height: 100px; }
@@ -31,7 +31,7 @@
 #chat-progress[hidden], #chat-selection-actions[hidden] { display: none; }
 .chat-elapsed { margin-left: auto; color: var(--muted); font-variant-numeric: tabular-nums; }
 .chat-thinking { display: flex; gap: 3px; align-items: center; }
-.chat-thinking i { width: 4px; height: 4px; border-radius: 50%; background: var(--brand-red); animation: chat-thinking 1.4s ease-in-out infinite; }
+.chat-thinking i { width: 4px; height: 4px; border-radius: 50%; background: var(--text); animation: chat-thinking 1.4s ease-in-out infinite; }
 .chat-thinking i:nth-child(2) { animation-delay: .16s; }
 .chat-thinking i:nth-child(3) { animation-delay: .32s; }
 .chat-thinking.paused i { animation: none; background: var(--amber); }
@@ -83,7 +83,7 @@
 .chat-output-error { color: var(--danger); background: var(--danger-wash); border: 1px solid var(--danger-line); border-radius: 12px; padding: 8px 10px; font-size: 12px; margin: 6px 0; }
 .chat-saved-outputs li.chat-output-error { padding: 8px 10px; border: 1px solid var(--danger-line); border-radius: 12px; margin: 6px 0; }
 .chat-activity { display: block; color: var(--muted); font-size: 12px; margin-top: 7px; }
-.chat-activity.working { color: var(--blue); animation: chat-working 2s ease-in-out infinite; }
+.chat-activity.working { color: var(--info); animation: chat-working 2s ease-in-out infinite; }
 .chat-activity.done { color: var(--green); }
 .chat-activity.input-needed { color: var(--amber); }
 .chat-activity.needs-attention { color: var(--danger); }

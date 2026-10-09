@@ -7,7 +7,7 @@
   .playbook-header { display: flex; justify-content: space-between; align-items: center; gap: 18px; padding: 20px 26px 16px; border-bottom: 1px solid var(--border); }
   .playbook-breadcrumb { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
   .playbook-breadcrumb .icon { width: 12px; height: 12px; }
-  .playbook-header h2 { font: 700 20px/28px var(--title-font); margin-top: 4px; }
+  .playbook-header h2 { font: 700 20px/28px var(--body-font); margin-top: 4px; }
   .playbook-workspace { display: grid; grid-template-columns: 230px minmax(0, 1fr) 320px; flex: 1; min-height: 0; }
 
   .playbook-nav { display: flex; flex-direction: column; gap: 2px; padding: 16px 12px; border-right: 1px solid var(--border); background: var(--well); overflow-y: auto; min-width: 0; }
@@ -32,7 +32,7 @@
   .playbook-text:focus-visible { box-shadow: inset 0 0 0 1px var(--blue); }
   .playbook-empty { margin: auto; max-width: 440px; padding: 30px; text-align: center; color: var(--muted); line-height: 1.7; }
   .playbook-empty > .icon { width: 30px; height: 30px; color: var(--muted); }
-  .playbook-empty h3 { color: var(--text); font: 600 18px/1.4 var(--title-font); margin: 10px 0 6px; }
+  .playbook-empty h3 { color: var(--text); font: 600 18px/1.4 var(--body-font); margin: 10px 0 6px; }
   .playbook-empty p { font-size: 14px; margin-bottom: 18px; }
   .playbook-preview-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 22px; border-bottom: 1px solid var(--border); }
   .playbook-preview-head div { display: grid; gap: 2px; font-size: 14px; }
@@ -41,7 +41,7 @@
   .playbook-error { margin: 14px 22px 0; padding: 10px 12px; border: 1px solid var(--danger-line); border-radius: 12px; background: var(--danger-wash); color: var(--danger); font-size: 13px; }
 
   .playbook-inspector { padding: 22px; border-left: 1px solid var(--border); background: var(--well); overflow-y: auto; min-width: 0; font-size: 14px; line-height: 1.6; color: var(--text); }
-  .playbook-inspector h3 { font: 500 16px/1.35 var(--title-font); margin: 0 0 12px; }
+  .playbook-inspector h3 { font: 500 16px/1.35 var(--body-font); margin: 0 0 12px; }
   .playbook-inspector h4 { margin: 18px 0 4px; font-size: 13px; font-weight: 500; color: var(--muted); }
   .playbook-inspector ul, .playbook-inspector ol { padding-left: 18px; display: grid; gap: 4px; }
   .playbook-inspector li { overflow-wrap: anywhere; }

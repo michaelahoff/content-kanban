@@ -21,8 +21,8 @@ kanban: projects in a sidebar, lanes of cards, a card editor that slides in.
    (intro, word count, images, edit time) lives in the card editor.
 3. **YouTube's vibe, not its layout.** Pill buttons on a gray fill, a filled
    primary button in the text color, 8px chips, circular icon buttons, 12px
-   rounded panels, blue edges on focused fields, YouTube red for the brand
-   mark and the drop indicator. No feed grid, no fake views or avatars.
+   rounded panels, the accent on focused field edges, the brand mark and the
+   drop indicator. No feed grid, no fake views or avatars.
 4. **One accent, used for marks and the primary action, never decoration.**
    See the Accent section: it is swappable, and red is only one of the options.
 5. **Numbers mean order.** Lanes are numbered because they are pipeline stages
@@ -55,9 +55,8 @@ is made. `setTheme()` in `public/ui.js` switches and saves it.
 | `--muted` | `#606060` | `#aaaaaa` | Secondary text |
 | `--faint` | `#6b6b6b` | `#909090` | Placeholders and tertiary text |
 | `--on-text` | `#ffffff` | `#0f0f0f` | Text on a `--text` fill |
-| `--brand-red` | `#ff0033` | `#ff0033` | Brand mark, drop indicator |
-| `--mark` | `#cc0000` | `#ff6a62` | Selection marks, drop target |
-| `--blue` | `#065fd4` | `#3ea6ff` | Links, focused field edges |
+| `--accent` | per accent, see below | per accent | Primary button, brand mark, tab underline, marks, drop indicator |
+| `--accent-text` | per accent | per accent | Links, focused field edges (`--mark`, `--brand-red`, `--blue` alias these) |
 | `--green` | `#0b7a3b` | `#2ba640` | Saved, done |
 | `--amber` | `#8a5b00` | `#f1b929` | Unsaved, waiting on input |
 | `--danger` | `#cc0000` | `#ff6e66` | Errors, destructive actions |
@@ -90,8 +89,8 @@ these so every stylesheet follows the choice.
 
 Where it goes, and nowhere else: the primary button, the brand mark, the active
 tab underline, links, focused field edges, the drop indicator and drop targets,
-and the display-image selection. Status colors (green, amber, danger) stay
-semantic and never change with the accent.
+and the display-image selection. Status colors (green, amber, danger, and
+`--info` for "working") stay semantic and never change with the accent.
 
 ## Type
 

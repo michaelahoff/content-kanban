@@ -72,7 +72,7 @@ export function renderApp() {
   document.title = `${p?.name || 'Workspace'} · Frameboard`;
   app.innerHTML = `
     <aside class="sidebar" aria-label="Projects">
-      <a class="brand" href="/" aria-label="Frameboard home"><span class="brand-mark">${icon('board')}</span>Frameboard<span class="brand-period">.</span></a>
+      <a class="brand" href="/" aria-label="Frameboard home"><span class="brand-mark">${icon('board')}</span>Frameboard</a>
       <div class="sidebar-section"><span>Projects</span>${iconButton('add-project', 'Add project', 'plus')}</div>
       <nav class="project-list">${state.projects.filter((item) => !item.archivedAt).map(projectLink).join('')}</nav>
       ${state.projects.some((item) => item.archivedAt) ? `<div class="sidebar-section"><span>Archived</span></div><nav class="project-list archived-projects" aria-label="Archived projects">${state.projects.filter((item) => item.archivedAt).map(projectLink).join('')}</nav>` : ''}
