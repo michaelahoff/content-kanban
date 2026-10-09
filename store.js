@@ -472,11 +472,7 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
   const laneRunFrom = (row) => row && ({ id: row.id, cardId: row.card_id, stageId: row.stage_id, moveId: row.move_id, trigger: row.trigger,
     status: row.status, reason: row.reason, submissionId: row.submission_id, result: row.result ? JSON.parse(row.result) : null,
     createdAt: row.created_at, updatedAt: row.updated_at,
-    submissionStatus: row.submission_id ? get('SELECT status FROM chat_submissions WHERE id = ?', row.submission_id)?.status ?? null : null,
-    // Retry resends this run's frozen submission. A run that failed before
-    // queueing has none, so only Run playbook starts new work.
-    retryable: Boolean(row.submission_id) && chats.retryable(row.submission_id),
-    possiblyDelivered: Boolean(row.submission_id) && chats.possiblyDelivered(row.submission_id) });
+    submissionStatus: row.submission_id ? get('SELECT status FROM chat_submissions WHERE id = ?', row.submission_id)?.status ?? null : null });
   function requestLaneRun(ctx, card, stage, trigger, moveId = null) {
     const found = playbooks.settings(stage.flowId, stage.id, card.template);
     if (!found) return null;
@@ -1106,7 +1102,11 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
       pending: (ctx) => all("SELECT * FROM lane_runs WHERE workspace_id = ? AND status = 'pending' ORDER BY created_at", ctx.workspaceId).map(laneRunFrom),
       forCard(ctx, cardId) {
         retainedCard(ctx, cardId);
-        return all('SELECT * FROM lane_runs WHERE card_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 20', cardId).map(laneRunFrom);
+        // Retry resends a run's frozen submission. A run that failed before
+        // queueing has none, so only Run playbook starts new work.
+        const recovery = chats.recovery(cardId);
+        return all('SELECT * FROM lane_runs WHERE card_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 20', cardId)
+          .map((row) => ({ ...laneRunFrom(row), ...recovery.of(row.submission_id), conversationUncertain: recovery.conversationUncertain }));
       },
       // Everything a lane run prompt needs about where the card is.
       context(ctx, id) {

@@ -47,7 +47,8 @@ test('Retry of a failed lane run waits for an uncertain later delivery to be rec
   await f.queue(card.id, await f.compose(card.id, 'A later prompt'));
   const chat = await waitFor(async () => { const value = await f.chat(card.id); return value.submissions.at(-1).status === 'uncertain' && value; });
 
-  assert.equal((await f.runs(card.id)).find((run) => run.id === failed.id).retryable, false);
+  const blocked = (await f.runs(card.id)).find((run) => run.id === failed.id);
+  assert.deepEqual([blocked.retryable, blocked.conversationUncertain], [false, true], 'the run says why it has no Retry');
   assert.equal(chat.submissions.find((submission) => submission.id === failed.submissionId).retryable, false, 'history offers no Retry it would refuse');
   const refused = await f.retry(card.id, failed.submissionId);
   assert.equal(refused.status, 409);
@@ -192,7 +193,13 @@ test('a lane run whose delivery is uncertain says it may have reached the agent,
   assert.equal(f.sentText(rerun), f.sentText(f.codex.sends[0]), 'the whole playbook prompt, not a continuation');
   f.codex.finish(rerun, 'failed');
   const plain = await waitFor(async () => (await f.runs(card.id)).find((run) => run.id === second.id && run.status === 'failed'));
-  assert.equal(plain.possiblyDelivered, false);
+  assert.deepEqual([plain.possiblyDelivered, plain.conversationUncertain], [false, false]);
+
+  // A later attempt failing plainly does not prove the first was never delivered.
+  await f.ok('POST', `/api/cards/${card.id}/chat/retry`, { submissionId: resolved.submissionId });
+  f.codex.finish(await waitFor(() => f.codex.sends[2]), 'failed');
+  const retried = await waitFor(async () => (await f.runs(card.id)).find((run) => run.id === first.id && run.status === 'failed'));
+  assert.equal(retried.possiblyDelivered, true);
 });
 
 test('Retry of a lane run whose frozen Library version lost its bytes fails by name until exact-byte repair, never substituting the current version', async (t) => {

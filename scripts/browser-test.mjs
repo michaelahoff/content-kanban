@@ -626,7 +626,7 @@ These values apply when a card enters this lane.
   await click('[data-action="run-playbook"]');
   await waitForSend(sendsBeforeFailure + 1);
   codex.finish(codex.sends.at(-1), 'failed', 'Provider failed');
-  await waitFor(`document.querySelector('.card-playbook-guidance')?.textContent.includes('Retry in the card chat resends this run exactly as it was sent')`);
+  await waitFor(`document.querySelector('.card-playbook-guidance')?.textContent.includes("Retry in the card chat resends this run's original submission exactly as it was sent")`);
   await waitFor(`document.querySelectorAll('[data-action="chat-retry"]').length === 1 && document.querySelector('.chat-retry-hint')?.textContent.includes('Run playbook')`);
   await snapshot('lane-run-retry-guidance');
   await click('[data-action="chat-retry"]');
@@ -634,11 +634,15 @@ These values apply when a card enters this lane.
   assert.equal(codex.sends.at(-1).input[0].text, codex.sends.at(-2).input[0].text, 'Retry resends the frozen lane run');
   codex.finish(codex.sends.at(-1), 'completed', 'No result this time.');
   await waitFor(`document.querySelector('.card-playbook-run')?.textContent.includes('Done') && !document.querySelector('.card-playbook-guidance') && !document.querySelector('[data-action="chat-retry"]')`);
-  const guidance = (run) => evaluate(`import('/card-playbook.js').then(({ runGuidance }) => runGuidance(${JSON.stringify({ retryable: false, possiblyDelivered: false, submissionId: 'lane-run', ...run })}))`);
+  const guidance = (run, place) => evaluate(`import('/card-playbook.js').then(({ runGuidance }) => runGuidance(${JSON.stringify({ retryable: false, possiblyDelivered: false, conversationUncertain: false, submissionId: 'lane-run', ...run })}, ${JSON.stringify(place)}))`);
   assert.match(await guidance({ status: 'failed', submissionId: null }), /^Nothing was sent, so there is nothing to retry\. Fix the problem, then Run playbook/);
   assert.match(await guidance({ status: 'failed', submissionStatus: 'completed' }), /result was not applied\. Run playbook to start new work/);
   assert.match(await guidance({ status: 'queued', submissionStatus: 'uncertain', possiblyDelivered: true }), /may have received this run\. Check delivery in the card chat.*may repeat its work/);
-  assert.match(await guidance({ status: 'failed', submissionStatus: 'interrupted', retryable: true, possiblyDelivered: true }), /resends this run exactly as it was sent.*may already have received it, so either may repeat its work/);
+  assert.match(await guidance({ status: 'failed', submissionStatus: 'interrupted', retryable: true, possiblyDelivered: true }), /resends this run's original submission exactly as it was sent.*may already have received it, so either may repeat its work/);
+  assert.match(await guidance({ status: 'failed', submissionStatus: 'failed', conversationUncertain: true }), /^Another prompt's delivery in the card chat is uncertain\. Check delivery there first: Retry waits for it, and a new run queues behind it\.$/);
+  assert.equal(await guidance({ status: 'failed', submissionStatus: 'failed' }), 'Run playbook starts a new run with the current playbook, inputs and notes.', 'a restored or archived run has no Retry to offer');
+  assert.match(await guidance({ status: 'failed', submissionStatus: 'failed', retryable: true }, { here: false }), /^Retry in the card chat resends that run's original submission; its field changes become proposals\. Run playbook runs this lane's playbook instead\.$/);
+  assert.equal(await guidance({ status: 'failed', submissionId: null }, { here: false }), '', 'Run playbook here would not rerun a run from another lane');
   assert.equal(await guidance({ status: 'completed', submissionStatus: 'completed' }), '');
   console.log('PASS a failed lane run explains Retry of the frozen run versus Run playbook, and history offers Retry only where it is accepted');
   // The card chat checks below count native threads and sends from zero.
