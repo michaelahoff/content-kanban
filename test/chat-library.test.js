@@ -156,7 +156,7 @@ test('fresh context and a provider change clear manual Library choices; a model 
   assert.deepEqual(picked.selections.library, [asset(logo)], 'choices made with the change are kept');
 });
 
-test('a Library file replaced while Send is preparing is revalidated before commit and never sent stale', async (t) => {
+test('a Library file replaced while Send is preparing is captured at its current version, never sent stale', async (t) => {
   const f = await libraryFixture(t); const card = await f.card();
   const script = await f.upload('script.md', Buffer.from('Script A'));
   const composer = await f.select(card.id, 'Use the script', [asset(script)]);
@@ -166,12 +166,12 @@ test('a Library file replaced while Send is preparing is revalidated before comm
   const sending = f.call('POST', `/api/cards/${card.id}/chat/submissions`, { id: randomUUID(), composerRevision: composer.revision });
   await reached;
   f.codex.discover = discover;
-  await f.upload('script.md', Buffer.from('Script B'), { collision: 'replace', asset: script.asset.id });
+  const replaced = await f.upload('script.md', Buffer.from('Script B'), { collision: 'replace', asset: script.asset.id });
   release();
   const result = await sending;
-  assert.equal(result.status, 409);
-  assert.match(result.body.error, /Library file changed/);
-  assert.equal((await f.chat(card.id)).submissions.length, 0);
+  assert.equal(result.status, 201, JSON.stringify(result.body));
+  assert.equal(result.body.context.library[0].versionId, replaced.version.id);
+  assert.ok((await waitFor(() => f.codex.sends[0])).input[0].text.includes('Script B'));
 });
 
 async function claudeFixture(t) {
@@ -261,4 +261,71 @@ test('export and restore keep manual Library selections and frozen submissions, 
     db.prepare('UPDATE chat_submissions SET frozen = ? WHERE id = ?').run(JSON.stringify(frozen), row.id);
   } finally { db.close(); }
   await assert.rejects(createBackup({ dataDir: f.dataDir, output: path.join(root, 'broken'), codexHome: path.join(root, 'old-native') }), /Library version/);
+});
+
+test('each attempt records every image and Library input as sending until the harness accepts the turn', async (t) => {
+  const f = await libraryFixture(t);
+  const image = { id: '00000001-0000-4000-8000-000000000000.png', name: 'portrait.png' };
+  await writeFile(path.join(f.dataDir, 'images', image.id), png);
+  const card = await f.card({ images: [image], imageRoles: { original: image.id } });
+  const script = await f.upload('script.md', Buffer.from('Script'));
+  let ack; f.codex.ackGate = new Promise((resolve) => { ack = resolve; });
+  await f.queue(card.id, await f.select(card.id, 'Use both', [asset(script)]));
+  await waitFor(() => f.codex.sends[0]);
+  const outcome = async () => (await f.chat(card.id)).attempts[0].delivery?.map(({ filename, method, status }) => [filename, method, status]);
+  assert.deepEqual(await waitFor(outcome), [['portrait.png', 'image', 'sending'], ['script.md', 'text', 'sending']]);
+  ack();
+  await waitFor(async () => (await outcome())?.every(([, , status]) => status === 'sent'));
+});
+
+test('Retry keeps the frozen label and bytes after the source is renamed and removed; a new Send refuses the removed source', async (t) => {
+  const f = await libraryFixture(t); const card = await f.card();
+  const script = await f.upload('script.md', Buffer.from('Script A'));
+  const submission = await f.queue(card.id, await f.select(card.id, 'Use the script', [asset(script)]));
+  f.codex.finish(await waitFor(() => f.codex.sends[0]), 'failed', 'Provider failed');
+  await waitFor(async () => (await f.chat(card.id)).submissions[0].status === 'failed');
+  await f.close();
+  const db = new DatabaseSync(path.join(f.dataDir, 'frameboard.db'));
+  try { db.prepare("UPDATE retained_objects SET filename = 'renamed.md', removed_at = ? WHERE id = ?").run(new Date().toISOString(), script.asset.id); }
+  finally { db.close(); }
+  await f.restart();
+  await f.ok('POST', `/api/cards/${card.id}/chat/retry`, { submissionId: submission.id });
+  const retried = (await waitFor(() => f.codex.sends[1])).input[0].text;
+  assert.ok(retried.includes('Script A') && retried.includes('script.md') && !retried.includes('renamed.md'));
+  f.codex.finish(f.codex.sends[1]);
+  await waitFor(async () => (await f.chat(card.id)).submissions[0].status === 'completed');
+  const composer = await f.compose(card.id, 'Again');
+  const refused = await f.call('POST', `/api/cards/${card.id}/chat/submissions`, { id: randomUUID(), composerRevision: composer.revision });
+  assert.equal(refused.status, 409);
+  assert.deepEqual(refused.body.problems.map(({ label, phase }) => ({ label, phase })), [{ label: 'renamed.md', phase: 'resolve' }]);
+  assert.match(refused.body.problems[0].reason, /removed/);
+});
+
+test('Send holds the chosen model to the input modalities it reports', async (t) => {
+  const f = await libraryFixture(t); const card = await f.card();
+  const logo = await f.upload('logo.png', png);
+  const discover = f.codex.discover.bind(f.codex);
+  f.codex.discover = async (input) => {
+    const found = await discover(input);
+    return { ...found, models: found.models.map((model) => ({ ...model, inputModalities: model.id === 'test-model' ? ['text'] : ['text', 'image'] })) };
+  };
+  const refused = await f.call('POST', `/api/cards/${card.id}/chat/submissions`, { id: randomUUID(), composerRevision: (await f.select(card.id, 'Use the logo', [asset(logo)])).revision });
+  assert.equal(refused.status, 409);
+  assert.deepEqual(refused.body.problems.map(({ key, phase }) => ({ key, phase })), [{ key: `asset:${logo.asset.id}`, phase: 'capability' }]);
+  const other = await f.select(card.id, 'Use the logo', [asset(logo)], { model: 'other-model' });
+  assert.equal((await f.queue(card.id, other)).context.library[0].method, 'image');
+});
+
+test('Send verifies every byte of a large selected file, even though previews only sample it', async (t) => {
+  const f = await libraryFixture(t); const card = await f.card();
+  const bytes = Buffer.alloc(9 * 1024 * 1024, 7);
+  const video = await f.upload('cut.mp4', bytes);
+  const composer = await f.select(card.id, 'Use the cut', [asset(video)]);
+  assert.deepEqual((await f.ok('POST', `/api/cards/${card.id}/chat/preview`, {})).context.library.map((file) => file.method), ['copy']);
+  bytes[bytes.length - 1] = 8;
+  await rm(path.join(f.dataDir, 'retained', 'versions', video.version.id));
+  await writeFile(path.join(f.dataDir, 'retained', 'versions', video.version.id), bytes);
+  const refused = await f.call('POST', `/api/cards/${card.id}/chat/submissions`, { id: randomUUID(), composerRevision: composer.revision });
+  assert.equal(refused.status, 409);
+  assert.deepEqual(refused.body.problems.map(({ label, phase }) => ({ label, phase })), [{ label: 'cut.mp4', phase: 'integrity' }]);
 });

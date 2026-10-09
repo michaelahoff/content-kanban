@@ -210,11 +210,9 @@ export function createChatWorker({ store, adapter, adapters = { codex: adapter }
       if (!store.chats.bind(ctx, attempt.id, opened.binding)) { end(work, 'interrupted'); return; }
       work.unsubscribe = adapter.subscribe(opened.threadId, { acceptsRequest: (request) => request.turnId === work.turnId,
         onEvent: (event) => receive(work, event), onRequest: (request) => pendingRequest(work, request), onToolCall: (request) => toolCall(work, request) });
-      const images = await service.references(submission);
+      const inputs = await service.deliveryInputs(ctx, submission);
       if (closed) return;
-      const library = await service.libraryInputs(ctx, submission);
-      if (closed) return;
-      work.delivery = library.delivery;
+      work.delivery = inputs.delivery;
       if (store.chats.attempt(attempt.id)?.status === 'interrupt-requested') { end(work, 'interrupted'); return; }
       const actualDiscovery = await configurationDiscovery(adapter, { cwd }, submission.provider);
       if (closed) return;
@@ -231,9 +229,11 @@ export function createChatWorker({ store, adapter, adapters = { codex: adapter }
       if (closed) return;
       if (store.chats.attempt(attempt.id)?.status !== 'dispatching') { stopped(work); return; }
       work.dispatching = true; work.sent = true;
+      deliver(work, 'sending');
       const started = await adapter.startTurn({ threadId: opened.threadId, model: submission.model,
         fullAccess: store.chats.requestGrants(ctx, submission.cardId).some((grant) => grant.kind === 'full'),
-        clientUserMessageId: attempt.id, input: [{ type: 'text', text: submissionText(submission, library.texts) }, ...images, ...library.attachments] });
+        clientUserMessageId: attempt.id, input: [{ type: 'text', text: submissionText(submission, inputs.texts) }, ...inputs.images] });
+      work.accepted = true;
       if (closed) return;
       deliver(work, 'sent');
       work.turnId = started.turnId;
@@ -242,7 +242,7 @@ export function createChatWorker({ store, adapter, adapters = { codex: adapter }
     } catch (error) {
       if (closed) return;
       if (error.kind === 'input-unavailable') store.chats.delivered(ctx, work.attempt.id, error.delivery);
-      else deliver(work, work.sent && ['timeout', 'process-exited', 'protocol', 'binding-mismatch'].includes(error.kind) ? 'uncertain' : 'not-sent');
+      else if (!work.accepted) deliver(work, work.sent && ['timeout', 'process-exited', 'protocol', 'binding-mismatch'].includes(error.kind) ? 'uncertain' : 'not-sent');
       // Nothing reached Codex, or Codex refused it before acceptance: wait for
       // the provider and retry. Possible delivery is never retried this way.
       if (overloaded(error) || (!work.sent && ['timeout', 'process-exited', 'busy'].includes(error.kind))) {

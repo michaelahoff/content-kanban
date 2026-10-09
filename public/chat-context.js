@@ -26,6 +26,8 @@ export function selectedContext(card, selections, versions, outputs = []) {
   for (const id of selections.images) add(id, card.images.some((image) => image.id === id) ? 'Attachment' : 'Chat version');
   return { fields, images: [...images.values()] };
 }
+// A selected source's identity, such as asset:<id>.
+export const sourceKey = (source) => `${source.kind}:${source.id}`;
 export const referencePath = (image) => `references/${image.hash}.${image.id.split('.').pop()}`;
 const libraryEntry = (file, texts) => {
   const label = `${file.filename} (asset ${file.assetId}, version ${file.versionId}, SHA-256 ${file.hash}, ${file.size} bytes)`;

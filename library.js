@@ -1,9 +1,35 @@
 // The project Library: uploaded files with stable asset identities and
 // immutable versions. Bytes live in retained storage; names are labels.
-import { libraryFilename, nameConflict } from './public/library-format.js';
+import { libraryFilename, nameConflict, splitExtension } from './public/library-format.js';
+import { sourceKey } from './public/chat-context.js';
 import { libraryKinds } from './store-retained.js';
+import { imageFormat } from './image-files.js';
+import { rasterFormats, limits } from './submission-inputs.js';
 
 const fail = (status, message, extra = {}) => { throw Object.assign(new Error(message), { status, ...extra }); };
+// Library text larger than any request can hold is delivered as a file.
+const textProbeBytes = limits.certainTextBytes;
+const utf8 = () => new TextDecoder('utf-8', { fatal: true });
+async function collect(stream, limit = Infinity) {
+  const chunks = []; let length = 0;
+  try { for await (const chunk of stream) { chunks.push(chunk); length += chunk.length; if (length >= limit) break; } }
+  finally { stream.destroy(); }
+  return Buffer.concat(chunks);
+}
+// A supported raster image, UTF-8 text without NUL bytes, or any other file.
+// A large file whose start reads as text is a file of format text.
+function classify(bytes, size) {
+  const format = imageFormat(bytes);
+  if (rasterFormats.includes(format)) return { kind: 'image', format };
+  const readable = !bytes.includes(0) && (() => { try { utf8().decode(bytes, { stream: size > textProbeBytes }); return true; } catch { return false; } })();
+  if (readable && size <= textProbeBytes) return { kind: 'text', format: 'utf-8' };
+  return { kind: 'file', format: format ?? (readable ? 'text' : null) };
+}
+// Workspace copies are named by version, never by the filename label.
+const copyPath = (file) => {
+  const extension = file.kind === 'image' ? file.format : splitExtension(file.filename)[1].toLowerCase();
+  return `references/library/${file.versionId}${/^[a-z0-9]{1,10}$/.test(extension) ? `.${extension}` : ''}`;
+};
 
 export function createLibrary({ retained, metadata, project, record }) {
   const numbered = (versions) => versions.map((version, index) => ({ id: version.id, size: version.size, hash: version.hash,
@@ -89,7 +115,7 @@ export function createLibrary({ retained, metadata, project, record }) {
     resolve(ctx, projectId, selections) {
       const files = new Map(); const problems = [];
       for (const selection of selections) {
-        const key = `${selection.kind}:${selection.id}`;
+        const key = sourceKey(selection);
         const row = selection.kind === 'asset' ? metadata.object(ctx, selection.id) : null;
         const owned = row && row.project_id === projectId && libraryKinds.includes(row.kind);
         const reason = !owned ? 'It is not a file in this project’s Library.' : row.removed_at ? 'It was removed from the Library.'
@@ -97,11 +123,30 @@ export function createLibrary({ retained, metadata, project, record }) {
         if (reason) { problems.push({ key, label: owned ? row.filename : key, phase: 'resolve', reason }); continue; }
         if (!files.has(row.id)) {
           const version = numberedVersion(ctx, metadata.version(ctx, row.current_version_id));
-          files.set(row.id, { assetId: row.id, versionId: version.id, number: version.number, filename: row.filename, hash: version.hash, size: version.size, sources: [] });
+          files.set(row.id, { projectId, assetId: row.id, versionId: version.id, number: version.number, filename: row.filename, hash: version.hash, size: version.size, sources: [] });
         }
         files.get(row.id).sources.push({ kind: selection.kind, id: selection.id });
       }
       return { files: [...files.values()], problems };
+    },
+    // How a version can be delivered. Sends verify every byte; previews read
+    // small files whole but only sample large ones, trusting their last check.
+    async inspect(ctx, projectId, versionId, { verify = true } = {}) {
+      const { version } = owned(ctx, projectId, versionId);
+      if (verify || version.size <= textProbeBytes) return classify(await collect(await retained.read(ctx, version.id), version.size > textProbeBytes ? 64 : Infinity), version.size);
+      if (!version.available) fail(409, `Retained version ${version.id} is unavailable. ${version.error}`);
+      return classify(await retained.peek(ctx, version.id, 64), version.size);
+    },
+    copyPath,
+    // A frozen text version, read verified, for inline delivery.
+    async text(ctx, projectId, versionId) {
+      const { version } = owned(ctx, projectId, versionId);
+      return utf8().decode(await collect(await retained.read(ctx, version.id)));
+    },
+    // An independent verified workspace copy of a frozen version.
+    materialize(ctx, projectId, versionId, workspace, relative) {
+      const { version } = owned(ctx, projectId, versionId);
+      return retained.materialize(ctx, version.id, workspace, relative);
     },
     async read(ctx, projectId, versionId) {
       project(ctx, projectId, { allowArchived: true });

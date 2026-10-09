@@ -56,3 +56,28 @@ test('Claude refuses more images than one request accepts instead of sending a s
   assert.match(plan.problems[0].reason, /100/);
   assert.deepEqual(planInputs('codex', many, { textBytes: 0 }).problems, []);
 });
+
+test('a model that reports text-only input refuses images instead of sending text alone', () => {
+  const plan = planInputs('codex', [script, logo], { textBytes: 0, model: { id: 'text-model', inputModalities: ['text'] } });
+  assert.deepEqual(plan.problems.map(({ key, phase }) => ({ key, phase })), [{ key: 'asset:logo', phase: 'capability' }]);
+  assert.match(plan.problems[0].reason, /text-model/);
+  assert.deepEqual(planInputs('codex', [logo], { textBytes: 0, model: { id: 'vision', inputModalities: ['text', 'image'] } }).problems, []);
+  assert.deepEqual(planInputs('codex', [logo], { textBytes: 0, model: { id: 'unknown' } }).problems, [], 'unknown modalities leave the decision to the provider');
+});
+
+test('Claude refuses a request whose encoded images exceed its request size even when each image fits', () => {
+  const images = Array.from({ length: 7 }, (_, index) => ({ ...logo, key: `asset:${index}`, size: 4.9 * MiB }));
+  const plan = planInputs('claude', images, { textBytes: 0 });
+  assert.equal(plan.problems.length, 1);
+  assert.equal(plan.problems[0].key, null);
+  assert.match(plan.problems[0].reason, /32 MB/);
+  assert.deepEqual(planInputs('claude', images.slice(0, 4), { textBytes: 0 }).problems, []);
+});
+
+test('text too large to inline names its size, not missing file tools', () => {
+  const transcript = { key: 'asset:transcript', label: 'transcript.txt', kind: 'file', format: 'text', size: 9 * MiB };
+  const plan = planInputs('claude', [transcript], { textBytes: 0 });
+  assert.equal(plan.problems[0].phase, 'limit');
+  assert.match(plan.problems[0].reason, /too much text/);
+  assert.deepEqual(planInputs('codex', [transcript], { textBytes: 0 }).inputs.map((input) => input.method), ['copy']);
+});

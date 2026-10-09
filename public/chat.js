@@ -7,11 +7,20 @@ import { formatSize } from './library.js';
 
 const chats = new Map();
 // Each project's Library files, for naming manual selections and the picker.
+// One load per project at a time; a failed load is shown, not retried by render.
 const libraries = new Map();
-async function loadLibrary(projectId) {
-  const { assets } = await request(`/api/projects/${encodeURIComponent(projectId)}/library`);
-  libraries.set(projectId, assets);
-  return assets;
+function loadLibrary(projectId) {
+  const entry = libraries.get(projectId);
+  if (entry?.loading) return entry.loading;
+  const loading = request(`/api/projects/${encodeURIComponent(projectId)}/library`).then(({ assets }) => {
+    libraries.set(projectId, { assets }); return assets;
+  }, (error) => { libraries.set(projectId, { error: error.message }); throw error; });
+  libraries.set(projectId, { loading });
+  return loading;
+}
+// Composer edits wait for the saved composer and any Send in progress.
+function editableComposer(item) {
+  if (!item.composer || item.sending || item.pending) throw new Error('Wait for the saved composer and any Send in progress.');
 }
 const activityListeners = new Set();
 export function onActivity(listener) { activityListeners.add(listener); }
@@ -188,16 +197,18 @@ function renderComposer(item) {
 // resolves each to its current version and refuses any it cannot deliver.
 function libraryMarkup(item) {
   const projectId = locateCard(item.id).project.id;
-  const assets = libraries.get(projectId);
-  if (!assets) void loadLibrary(projectId).then(() => { if (selected === item.id) renderComposer(item); }, () => {});
+  const library = libraries.get(projectId);
+  if (!library) void loadLibrary(projectId).then(() => { if (selected === item.id) renderComposer(item); }, () => { if (selected === item.id) renderComposer(item); });
+  const assets = library?.assets;
   const chosen = item.composer.selections.library ?? [];
-  return `<fieldset class="chat-selections chat-library"><legend>Library files</legend>${chosen.length ? `<ol>${chosen.map((entry, index) => {
+  return `<fieldset class="chat-selections chat-library"><legend>Library files</legend>${library?.error ? `<p class="chat-hint">Library files could not be loaded: ${escape(library.error)}</p>` : ''}${chosen.length ? `<ol>${chosen.map((entry, index) => {
     const asset = assets?.find((candidate) => candidate.id === entry.id);
     return `<li><span>${asset ? escape(asset.filename) : assets ? `<strong>Unavailable file</strong> <small>${escape(entry.id)}</small>` : escape(entry.id)}</span><button type="button" class="button small secondary" data-action="chat-library-remove" data-index="${index}" aria-label="Remove ${escape(asset?.filename ?? 'this file')}">Remove</button></li>`;
   }).join('')}</ol>` : ''}<button type="button" class="button small secondary" data-action="chat-library-add">Add Library files…</button></fieldset>`;
 }
 function pickLibraryFiles(item) {
-  if (!item.composer || item.sending || item.pending) throw new Error('Wait for the saved composer and any Send in progress.');
+  editableComposer(item);
+  libraries.delete(locateCard(item.id).project.id);
   void loadLibrary(locateCard(item.id).project.id).then((assets) => {
     const chosen = new Set((item.composer.selections.library ?? []).map((entry) => entry.id));
     const available = assets.filter((asset) => !chosen.has(asset.id));
@@ -215,10 +226,10 @@ function libraryContextMarkup(context) {
   const library = context.library ?? [];
   return `${library.length ? `<ul class="chat-library-inputs">${library.map((file) => `<li><strong>${escape(file.filename)}</strong> <small>v${file.number} · ${formatSize(file.size)} · ${methods[file.method]}${file.sources.length > 1 ? ` · selected ${file.sources.length} times` : ''}<br>Version ${escape(file.versionId)} · SHA-256 ${escape(file.hash)}</small></li>`).join('')}</ul>` : ''}${(context.warnings ?? []).map((warning) => `<p class="chat-hint">${escape(warning)}</p>`).join('')}`;
 }
-const deliveryLabels = { prepared: 'prepared', sent: 'sent', 'not-sent': 'not sent', uncertain: 'delivery uncertain', failed: 'failed' };
+const deliveryLabels = { sending: 'sending, not confirmed', sent: 'sent', 'not-sent': 'not sent', uncertain: 'delivery uncertain', failed: 'failed' };
 function deliveryMarkup(attempt) {
   if (!attempt.delivery?.length) return '';
-  return `<ul class="chat-delivery" aria-label="Library delivery">${attempt.delivery.map((entry) => `<li>${escape(entry.filename)} · ${methods[entry.method]} · ${deliveryLabels[entry.status] ?? escape(entry.status)}${entry.reason ? ` · ${escape(entry.reason)}` : ''}</li>`).join('')}</ul>`;
+  return `<ul class="chat-delivery" aria-label="Delivery">${attempt.delivery.map((entry) => `<li>${escape(entry.filename)} · ${methods[entry.method]} · ${deliveryLabels[entry.status] ?? escape(entry.status)}${entry.reason ? ` · ${escape(entry.reason)}` : ''}</li>`).join('')}</ul>`;
 }
 function outputMarkup(output) {
   if (!output) return '';
@@ -232,7 +243,7 @@ function outputMarkup(output) {
   return `<figure class="chat-output">${status}${actions}</figure>`;
 }
 function contextMarkup(context) {
-  return `${libraryContextMarkup(context)}${context.fields.map((field) => `<p><strong>${escape(field.label)} <small>v${field.version}</small></strong><br>${escape(field.value)}</p>`).join('')}${context.images.map((image) => `<figure><img src="/images/${encodeURIComponent(image.id)}" alt="${escape(image.name)}"><figcaption>${escape(image.labels.join(', '))}: ${escape(image.name)}<br><small>Version ${escape(image.id)} · SHA-256 ${escape(image.hash)}</small></figcaption></figure>`).join('')}`;
+  return `${context.fields.map((field) => `<p><strong>${escape(field.label)} <small>v${field.version}</small></strong><br>${escape(field.value)}</p>`).join('')}${context.images.map((image) => `<figure><img src="/images/${encodeURIComponent(image.id)}" alt="${escape(image.name)}"><figcaption>${escape(image.labels.join(', '))}: ${escape(image.name)}<br><small>Version ${escape(image.id)} · SHA-256 ${escape(image.hash)}</small></figcaption></figure>`).join('')}${libraryContextMarkup(context)}`;
 }
 function frozenMarkup(submission) {
   return `<details class="chat-frozen" data-detail-key="context:${escape(submission.id)}"><summary>Submitted context · ${escape(submission.model)}</summary><p>${escape(submission.prompt)}</p>${contextMarkup(submission.context)}<small>Configuration ${escape(submission.configuration.id)}</small></details>`;
@@ -603,13 +614,13 @@ export function initializeChats(callbacks) {
       if (action === 'chat-retry-save') { await send('POST', url(item.id, `outputs/${target.dataset.id}/retry-save`), {}); await refresh(item); }
       if (action === 'chat-edit-image') {
         // Edit adds this exact version; existing selections stay visible and removable.
-        if (!item.composer || item.sending || item.pending) throw new Error('Wait for the saved composer and any Send in progress.');
+        editableComposer(item);
         if (!item.composer.selections.images.includes(target.dataset.id)) { item.composer.selections.images = [...item.composer.selections.images, target.dataset.id]; composerChanged(item); }
         item.view.preview = true; renderComposer(item); $('#chat-prompt')?.focus();
       }
       if (action === 'chat-library-add') pickLibraryFiles(item);
       if (action === 'chat-library-remove') {
-        if (!item.composer || item.sending || item.pending) throw new Error('Wait for the saved composer and any Send in progress.');
+        editableComposer(item);
         item.composer.selections.library = item.composer.selections.library.filter((entry, index) => index !== Number(target.dataset.index));
         composerChanged(item); renderComposer(item);
       }

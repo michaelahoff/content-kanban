@@ -1,7 +1,7 @@
 // Durable card-chat state, exposed only through openStore(). Native work never
 // happens here. All mutations use the board store's transaction and activity log.
 import { randomUUID } from 'node:crypto';
-import { defaultSelections, contextFields, selectedContext } from './public/chat-context.js';
+import { defaultSelections, contextFields, selectedContext, sourceKey } from './public/chat-context.js';
 
 export const chatMigration = `
   CREATE TABLE card_field_versions (card_id TEXT NOT NULL REFERENCES cards(id), field TEXT NOT NULL, version INTEGER NOT NULL,
@@ -117,7 +117,7 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
     const library = selections.library ?? [];
     check(Array.isArray(library) && library.length <= 200 && library.every((entry) => object(entry) && entry.kind === 'asset' && validId(entry.id)), 'Invalid Library selections.');
     return { prompt: value.prompt, provider: value.provider ?? 'codex', model: value.model, selections: { fields: [...new Set(selections.fields)], roles: [...new Set(selections.roles)], images: [...new Set(selections.images)],
-      library: [...new Map(library.map((entry) => [`${entry.kind}:${entry.id}`, { kind: entry.kind, id: entry.id }])).values()] },
+      library: [...new Map(library.map((entry) => [sourceKey(entry), { kind: entry.kind, id: entry.id }])).values()] },
       authority: { fields: [...new Set(value.authority.fields)] } };
   }
   function activeAttempt(cardId) {
@@ -189,10 +189,10 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
       // together with the change are kept.
       const previous = JSON.parse(row.composer);
       if (composer.provider !== (previous.provider ?? 'codex')) {
-        const earlier = new Set((previous.selections.library ?? []).map((entry) => `${entry.kind}:${entry.id}`));
-        composer.selections.library = composer.selections.library.filter((entry) => !earlier.has(`${entry.kind}:${entry.id}`));
+        const earlier = new Set((previous.selections.library ?? []).map(sourceKey));
+        composer.selections.library = composer.selections.library.filter((entry) => !earlier.has(sourceKey(entry)));
       }
-      if ((composer.model !== JSON.parse(row.composer).model || composer.provider !== (JSON.parse(row.composer).provider ?? 'codex')) && activeAttempt(cardId)) fail(409, 'Wait for the active response to finish or Stop it before changing model.');
+      if ((composer.model !== previous.model || composer.provider !== (previous.provider ?? 'codex')) && activeAttempt(cardId)) fail(409, 'Wait for the active response to finish or Stop it before changing model.');
       return transaction(() => {
         run('UPDATE card_chats SET composer = ?, composer_revision = composer_revision + 1 WHERE card_id = ?', JSON.stringify(composer), cardId);
         activity(ctx, cardId, 'composer_saved');
