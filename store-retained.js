@@ -53,6 +53,9 @@ export function createRetainedMetadata({ all, get, run, transaction, now }) {
     object: (ctx, id) => get('SELECT * FROM retained_objects WHERE id = ? AND workspace_id = ?', id, ctx.workspaceId),
     sources: (ctx, projectId) => all(`SELECT * FROM retained_objects WHERE workspace_id = ? AND project_id = ? AND ${librarySource}
       AND removed_at IS NULL AND current_version_id IS NOT NULL ORDER BY filename, created_at`, ctx.workspaceId, projectId),
+    // Library versions published from one saved output.
+    promotions: (ctx, outputId) => all(`SELECT * FROM retained_versions WHERE workspace_id = ? AND state = 'committed'
+      AND json_extract(provenance, '$.method') = 'promote' AND json_extract(provenance, '$.savedOutputId') = ? ORDER BY committed_at, rowid`, ctx.workspaceId, outputId).map(from),
     history: (ctx, objectId) => all("SELECT * FROM retained_versions WHERE workspace_id = ? AND object_id = ? AND state = 'committed' ORDER BY committed_at, rowid", ctx.workspaceId, objectId).map(from),
     // A name in one folder (null: the root) is held by a live subfolder or
     // source, including a source whose first upload is still in progress.

@@ -614,6 +614,28 @@ These values apply when a card enters this lane.
   await click('#small-form button[type="submit"]');
   await waitFor(`document.querySelectorAll('.chat-saved-outputs li').length === 2 && document.querySelector('.chat-saved-outputs').textContent.includes('lane-reply.md')`);
   console.log('PASS lane result documents and Save as document appear beside the run with downloads');
+  // Save to project library publishes a separate Library file; a second save of the same name asks Create new, Replace or Cancel.
+  const entryProjectId = (await (await fetch(`${base}/api/cards/${entryCardId}`)).json()).card.projectId;
+  const promotedFiles = async () => (await (await fetch(`${base}/api/projects/${entryProjectId}/library`)).json()).assets
+    .filter((asset) => asset.promotedFrom).map((asset) => [asset.filename, asset.versionCount]);
+  await click('.chat-saved-outputs [data-action="chat-promote-output"]');
+  await waitFor(`document.querySelector('#form-dialog').open && document.querySelector('#form-heading')?.textContent === 'Save intro-notes.md to the project Library' && document.querySelector('#name-input').value === 'intro-notes.md'`);
+  await click('#small-form button[type="submit"]');
+  await waitFor(`document.querySelector('.chat-saved-outputs')?.textContent.includes('Saved to Library as intro-notes.md')`);
+  assert.deepEqual(await promotedFiles(), [['intro-notes.md', 1]]);
+  await click('.chat-saved-outputs [data-action="chat-promote-output"]');
+  await waitFor(`document.querySelector('#form-dialog').open && document.querySelector('#form-heading')?.textContent === 'Save intro-notes.md to the project Library'`);
+  await click('#small-form button[type="submit"]');
+  await waitFor(`document.querySelector('#form-heading')?.textContent === 'A file named intro-notes.md already exists'`);
+  assert.deepEqual(await evaluate(`[...document.querySelectorAll('input[name="collision"]')].map(input => input.value)`), ['create', 'replace', 'cancel']);
+  assert.equal(await evaluate(`document.querySelector('input[name="collision"]:checked').value`), 'create', 'Create new is the default');
+  await evaluate(`document.querySelector('input[name="collision"][value="replace"]').checked = true`);
+  await click('#small-form button[type="submit"]');
+  await waitFor(`document.querySelector('.chat-saved-outputs')?.textContent.includes('Replaced intro-notes.md')`);
+  assert.deepEqual(await promotedFiles(), [['intro-notes.md', 2]]);
+  // Later checks start from an empty Library; removal keeps the saved output.
+  for (const asset of (await (await fetch(`${base}/api/projects/${entryProjectId}/library`)).json()).assets) await fetch(`${base}/api/projects/${entryProjectId}/library/assets/${asset.id}`, { method: 'DELETE' });
+  console.log('PASS Save to project library creates a Library file, then asks Create new, Replace or Cancel and replaces with a new version');
   await snapshot('lane-run-result');
   // A conflicting notes draft survives switching cards, then can be resolved.
   await fill('#lane-notes', 'My conflicting hand-off');
@@ -1006,7 +1028,8 @@ These values apply when a card enters this lane.
   await waitFor(`!document.querySelector('.library-folder[aria-label="Open folder Thumbnails"]')`);
   await click('[data-action="library-removed"]');
   await waitFor(`document.querySelector('#library-heading')?.textContent === 'Removed files'`);
-  assert.deepEqual((await evaluate(`[...document.querySelectorAll('#library-dialog .library-version strong')].map(node => node.textContent)`)).sort(), ['Thumbnails/refs/deep/note.md', 'Thumbnails/refs/logo.png']);
+  // intro-notes.md is the promoted output removed after the Save to project library check.
+  assert.deepEqual((await evaluate(`[...document.querySelectorAll('#library-dialog .library-version strong')].map(node => node.textContent)`)).sort(), ['Thumbnails/refs/deep/note.md', 'Thumbnails/refs/logo.png', 'intro-notes.md']);
   await click('#library-dialog [data-action="library-inspect"]');
   await waitFor(`document.querySelector('.library-location .library-badge')?.textContent === 'Removed' && !document.querySelector('#library-replace')`);
   await click('[data-action="library-close"]');

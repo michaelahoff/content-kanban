@@ -144,7 +144,7 @@ function send(entry) {
 // Create new is the default; Replace saves a new version of the file holding
 // the name. A copy is always a separate file, so it offers no Replace.
 // An open form (such as Copy to project) closes before the question opens.
-async function chooseCollision(conflict, holder, skip = 'Skip this file.', { replace = true } = {}) {
+export async function chooseCollision(conflict, holder, skip = 'Skip this file.', { replace = true } = {}) {
   const form = $('#form-dialog');
   if (form.open) { const closed = new Promise((resolve) => form.addEventListener('close', resolve, { once: true })); form.close(); await closed; }
   return new Promise((resolve) => {

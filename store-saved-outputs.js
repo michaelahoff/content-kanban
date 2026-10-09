@@ -41,12 +41,13 @@ function declaredDerivation(frozen, sources) {
   }) };
 }
 
-export function createSavedOutputStore({ all, get, run, transaction, retainedCard, requireCard, recordChange, now, retained, revoked }) {
+export function createSavedOutputStore({ all, get, run, transaction, retainedCard, requireCard, recordChange, now, retained, library, revoked }) {
   function outputFrom(row) {
     const version = row.version_id ? retained().version({ workspaceId: row.workspace_id }, row.version_id) : null;
     return { ...JSON.parse(row.provenance), id: row.id, cardId: row.card_id, attemptId: row.attempt_id, operationId: row.operation_id,
       filename: row.filename, status: row.status, versionId: row.version_id, hash: version?.hash ?? null, size: version?.size ?? null,
-      available: version ? version.available : null, error: row.error, createdAt: row.created_at, savedAt: row.saved_at };
+      available: version ? version.available : null, error: row.error, createdAt: row.created_at, savedAt: row.saved_at,
+      promotions: library().promotions({ workspaceId: row.workspace_id }, row.id) };
   }
   const byId = (ctx, id) => get('SELECT * FROM saved_outputs WHERE id = ? AND workspace_id = ?', id, ctx.workspaceId);
   function activity(ctx, cardId, type, data) {
@@ -147,6 +148,16 @@ export function createSavedOutputStore({ all, get, run, transaction, retainedCar
       if (!row || row.card_id !== cardId) fail(404, 'This saved output does not exist.');
       if (row.status !== 'saved') fail(409, 'This output was not saved.');
       return { output: outputFrom(row), stream: await retained().read(ctx, row.version_id) };
+    },
+    // Save to project library: only this explicit user action publishes a
+    // saved output in the Library; saving it never does. The output stays as
+    // it is, whatever happens to the asset.
+    promote(ctx, cardId, id, input) {
+      const card = retainedCard(ctx, cardId);
+      const row = byId(ctx, id);
+      if (!row || row.card_id !== cardId) fail(404, 'This saved output does not exist.');
+      if (row.status !== 'saved') fail(409, 'This output was not saved, so there is nothing to save to the Library.');
+      return library().promoteOutput(ctx, card.project_id, { ...input, cardId, outputId: row.id, versionId: row.version_id });
     },
     // Restart interrupts an in-flight save. Its text remains in the reply.
     interrupted(ctx) {

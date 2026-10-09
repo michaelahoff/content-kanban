@@ -73,7 +73,7 @@ An image version produced in a card chat, either by native image generation or b
 _Avoid_: Artifact, attachment
 
 **Saved output**:
-An exact retained snapshot of something a card chat produced, kept only by an explicit save: reply text saved with Save as document, or a document a lane result declares with its exact text. It records its card chat, conversation, submission, delivery attempt, actual provider and creation method, and keeps the context that was supplied apart from any derivation the agent declared; what is not known stays unknown. Saving is separate from producing it and from any card effect. A stopped, archived or restored attempt cannot save one, though the user can still save its retained text. Saved outputs outlive the card workspace, the card, fresh context and archive.
+An exact retained snapshot of something a card chat produced, kept only by an explicit save: reply text saved with Save as document, or a document a lane result declares with its exact text. It records its card chat, conversation, submission, delivery attempt, actual provider and creation method, and keeps the context that was supplied apart from any derivation the agent declared; what is not known stays unknown. Saving is separate from producing it and from any card effect. A stopped, archived or restored attempt cannot save one, though the user can still save its retained text. Saved outputs outlive the card workspace, the card, fresh context and archive. Only the user can publish one in the Project Library, as a separate project asset linked to it by provenance; an agent may only suggest it.
 _Avoid_: Artifact, attachment, export
 
 **Project Library**:
