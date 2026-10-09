@@ -3,7 +3,7 @@ import { request, send, enqueue } from './api.js';
 import { state, locateCard, flushCards, saveStatus, refreshSavedCard } from './state.js';
 import { contextFields } from './chat-context.js';
 import { attemptMarkup, progressState, runningStatuses } from './chat-transcript.js';
-import { formatSize, libraryChoices } from './library.js';
+import { chooseCollision, folderOptions, formatSize, libraryChoices } from './library.js';
 import { deliveryDescription, libraryPaths, parseSourceKey, selectionPaths, selectionSummary, sourceKey } from './library-format.js';
 
 const chats = new Map();
@@ -281,10 +281,50 @@ function savedOutputsMarkup(cardId, outputs) {
   const method = { 'transcript-save': 'Saved from a reply', 'lane-result': 'Saved by the lane result' };
   return `<ul class="chat-saved-outputs" aria-label="Saved outputs">${outputs.map((output) => {
     const content = url(cardId, `saved-outputs/${encodeURIComponent(output.id)}/content`);
-    if (output.status === 'saved') return `<li><strong>${escape(output.filename)}</strong> · ${method[output.creationMethod] ?? 'Saved'}${output.derivation?.declared ? ` · from ${output.derivation.sources.length ? escape(output.derivation.sources.map((source) => source.label).join(', ')) : 'no supplied inputs'}` : ''}<span class="chat-output-actions"><a class="button small secondary" href="${content}?inline=1" target="_blank" rel="noopener">View</a><a class="button small secondary" href="${content}" download>Download</a></span></li>`;
+    if (output.status === 'saved') return `<li><strong>${escape(output.filename)}</strong> · ${method[output.creationMethod] ?? 'Saved'}${output.derivation?.declared ? ` · from ${output.derivation.sources.length ? escape(output.derivation.sources.map((source) => source.label).join(', ')) : 'no supplied inputs'}` : ''}${promotionsMarkup(output.promotions ?? [])}<span class="chat-output-actions"><a class="button small secondary" href="${content}?inline=1" target="_blank" rel="noopener">View</a><a class="button small secondary" href="${content}" download>Download</a><button type="button" class="button small secondary" data-action="chat-promote-output" data-id="${escape(output.id)}">Save to project library…</button></span></li>`;
     if (output.status === 'failed') return `<li class="chat-output-error">${escape(output.filename)} was not saved. ${escape(output.error)}</li>`;
     return `<li class="chat-hint">Saving ${escape(output.filename)}…</li>`;
   }).join('')}</ul>`;
+}
+// Where a saved output was published in the Library. The files are separate:
+// changing or removing one never changes the other.
+const promotionsMarkup = (promotions) => promotions.length ? `<br><small class="chat-hint">${promotions.map((entry) => `${entry.outcome === 'replaced' ? 'Replaced' : 'Saved to Library as'} ${escape(entry.filename)}${entry.removed ? ' (since removed)' : ''}`).join(' · ')}</small>` : '';
+// Save to project library: the user names a folder and filename; a taken name
+// asks Create new, Replace or Cancel. The output stays as it is, and the new
+// Library file is not selected anywhere. Each distinct choice is one operation,
+// so a resubmitted lost response publishes once.
+async function promoteOutput(item, outputId) {
+  const output = (item.snapshot.savedOutputs ?? []).find((entry) => entry.id === outputId);
+  const projectId = locateCard(item.id)?.project.id;
+  if (!output || !projectId) return;
+  const listing = await loadLibrary(projectId);
+  const operations = new Map();
+  const promote = (body) => {
+    const key = JSON.stringify(body);
+    if (!operations.has(key)) operations.set(key, crypto.randomUUID());
+    return send('POST', url(item.id, `saved-outputs/${encodeURIComponent(output.id)}/promote`), { ...body, operation: operations.get(key) });
+  };
+  smallForm({
+    title: `Save ${output.filename} to the project Library`, submit: 'Save to Library',
+    description: 'Saves a separate Library file other cards can select. This saved output stays as it is.',
+    fields: `<label class="form-label" for="chat-promote-folder">Folder</label><select class="form-input" id="chat-promote-folder" name="folder"><option value="">Library</option>${folderOptions(listing)}</select>
+      <label class="form-label" for="name-input">Filename</label><input class="form-input" id="name-input" name="name" value="${escape(output.filename)}" maxlength="255" required autocomplete="off">`,
+    onSubmit: async (data) => {
+      const body = { folderId: data.get('folder') || null, filename: String(data.get('name')) };
+      let result;
+      try { result = await promote(body); } catch (error) {
+        const conflict = error.status === 409 && error.body?.conflict;
+        if (!conflict) throw error;
+        const holder = (await loadLibrary(projectId)).assets.find((asset) => asset.id === conflict.assetId);
+        const choice = await chooseCollision(conflict, holder, 'Save nothing to the Library.');
+        if (choice === 'cancel') return;
+        result = await promote({ ...body, collision: choice, ...(choice === 'replace' ? { assetId: conflict.assetId } : {}) });
+      }
+      libraries.delete(projectId);
+      await refresh(item);
+      toast(result.outcome === 'replaced' ? `Saved v${result.version.number} of ${result.asset.filename} in the Library.` : `Saved to the Library as ${result.asset.filename}.`);
+    },
+  });
 }
 // The highlighted reply text, saved exactly. Submitting the same filename
 // again (a lost response) reuses its operation, so it is saved once.
@@ -678,6 +718,7 @@ export function initializeChats(callbacks) {
       if (action === 'chat-use-text') useSelectedText(item);
       if (action === 'chat-reply') replyToSelection(item);
       if (action === 'chat-save-selection') { const { sequence, text } = checkedReply(item); clearReplySelection(item); saveAsDocument(item, sequence, text); }
+      if (action === 'chat-promote-output') await promoteOutput(item, target.dataset.id);
       if (action === 'chat-adopt') { const result = await send('POST', url(item.id, `outputs/${target.dataset.id}/adopt`), {}); refreshSavedCard(result.card); await refresh(item); toast(result.adopted ? 'Added to gallery. Choose roles in the editor.' : 'Already in the gallery.'); }
       if (action === 'chat-retry-save') { await send('POST', url(item.id, `outputs/${target.dataset.id}/retry-save`), {}); await refresh(item); }
       if (action === 'chat-edit-image') {

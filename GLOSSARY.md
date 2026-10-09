@@ -73,7 +73,7 @@ An image version produced in a card chat, either by native image generation or b
 _Avoid_: Artifact, attachment
 
 **Saved output**:
-An exact retained snapshot of something a card chat produced, kept only by an explicit save: reply text saved with Save as document, or a document a lane result declares with its exact text. It records its card chat, conversation, submission, delivery attempt, actual provider and creation method, and keeps the context that was supplied apart from any derivation the agent declared; what is not known stays unknown. Saving is separate from producing it and from any card effect. A stopped, archived or restored attempt cannot save one, though the user can still save its retained text. Saved outputs outlive the card workspace, the card, fresh context and archive.
+An exact retained snapshot of something a card chat produced, kept only by an explicit save: reply text saved with Save as document, or a document a lane result declares with its exact text. It records its card chat, conversation, submission, delivery attempt, actual provider and creation method, and keeps the context that was supplied apart from any derivation the agent declared; what is not known stays unknown. Saving is separate from producing it and from any card effect. A stopped, archived or restored attempt cannot save one, though the user can still save its retained text. Saved outputs outlive the card workspace, the card, fresh context and archive. Only the user can promote one into the Project Library.
 _Avoid_: Artifact, attachment, export
 
 **Project Library**:
@@ -93,6 +93,10 @@ _Avoid_: PDF support, PDF attachment
 **Project asset**:
 An uploaded file or explicitly saved document with a stable identity owned by exactly one project. Its filename is a label, not a path; matching names or bytes never merge two assets. Uploading over a taken name requires choosing Create new, Replace or Cancel.
 _Avoid_: Attachment, upload
+
+**Promotion**:
+The user's explicit **Save to project library** of a saved output: it publishes a new project asset, or by Replace a new asset version, holding its own copy of the output's bytes and linked to the output by provenance. The two keep separate lifetimes; promotion selects, adopts and assigns nothing. An agent may suggest promotion but never promotes.
+_Avoid_: Linking, sharing, aliasing
 
 **Asset folder**:
 A nested folder in a Project Library with its own stable identity. A name is unique among a folder's live files and subfolders, and different folders may hold the same filename. Renaming or moving a folder or asset keeps its identity and every version.

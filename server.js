@@ -175,6 +175,8 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
       ['POST', /^\/api\/cards\/([^/]+)\/chat\/outputs\/[^/]+\/adopt$/, (ctx, req, id, url) => store.images.adopt(ctx, id, url.pathname.split('/').at(-2))],
       ['POST', /^\/api\/cards\/([^/]+)\/chat\/outputs\/[^/]+\/retry-save$/, (ctx, req, id, url) => worker.retrySave(id, url.pathname.split('/').at(-2))],
       ['POST', /^\/api\/cards\/([^/]+)\/chat\/saved-outputs$/, async (ctx, req, id) => store.savedOutputs.saveReply(ctx, id, bodyOf(await read(req))), 201],
+      ['POST', /^\/api\/cards\/([^/]+)\/chat\/saved-outputs\/[^/]+\/promote$/, async (ctx, req, id, url) =>
+        store.savedOutputs.promote(ctx, id, url.pathname.split('/').at(-2), libraryChoices(await read(req), ['folderId', 'filename', 'collision', 'assetId'], 'Save to project library')), 201],
       ['GET', /^\/api\/chat-activity$/, (ctx) => ({ cursor: store.workspace(ctx).eventCursor, entries: store.chats.indicators(ctx) })],
       ['POST', /^\/api\/cards\/([^/]+)\/chat\/revoke-grants$/, (ctx, req, id) => store.chats.clearGrants(ctx, id)],
       ['GET', /^\/api\/cards\/([^/]+)\/chat$/, (ctx, req, id) => (worker.flushCard(id), { ...store.chats.snapshot(ctx, id), proposals: store.protection.proposals(ctx, id), savedOutputs: store.savedOutputs.list(ctx, id), outputs: store.images.outputs(ctx, id).map((output) => ({ ...output, available: Boolean(output.imageId) && existsSync(path.join(imagesDir, output.imageId)) })) })],

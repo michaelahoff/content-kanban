@@ -419,7 +419,7 @@ When you finish, end your reply with exactly one fenced code block tagged \`${re
 - ${settings.mayEdit.length ? `Frameboard applies ${settings.mayEdit.map(label).join(', ')} directly.` : 'This lane may not edit fields directly.'} Every other field becomes a proposal the user reviews.
 - Include "move" only if the playbook tells you to propose a move. Moves always wait for the user. Lanes: ${lanes.map((lane) => lane.name).join(', ')}.
 - Always include "notes": what you did, decisions made and anything still open.
-- Include "outputs" only for finished documents the playbook asks you to deliver. Frameboard saves each one's exact "text" as a document kept with this card chat; a file path or filename alone saves nothing. In "sources", list the version IDs of the supplied images or Library files it was derived from, [] if none, or leave it out if unsure.
+- Include "outputs" only for finished documents the playbook asks you to deliver. Frameboard saves each one's exact "text" as a document kept with this card chat; a file path or filename alone saves nothing. In "sources", list the version IDs of the supplied images or Library files it was derived from, [] if none, or leave it out if unsure. Saving never adds a document to the project Library: only the user can save it to the project Library, so suggest that in "notes" if it would help.
 - Report through this block only. Do not call Frameboard card tools or edit notes.md yourself during a lane run.`,
   ];
   return sections.filter(Boolean).join('\n\n');
@@ -466,7 +466,12 @@ export function parseLaneResult(text, templateId) {
       else if (output.text === undefined) result.errors.push(`Ignored ${label}: only documents with their exact text in “text” can be saved from a lane result.`);
       else if (typeof output.text !== 'string' || !output.text.length) result.errors.push(`Ignored ${label}: its text must be non-empty text.`);
       else if (output.sources !== undefined && (!Array.isArray(output.sources) || !output.sources.every((id) => typeof id === 'string'))) result.errors.push(`Ignored ${label}: “sources” must be a list of supplied version IDs.`);
-      else result.outputs.push({ filename: name, text: output.text, sources: output.sources ? [...new Set(output.sources)] : null });
+      else {
+        result.outputs.push({ filename: name, text: output.text, sources: output.sources ? [...new Set(output.sources)] : null });
+        // Saving takes only these keys and never places a document in the Library.
+        const extra = Object.keys(output).filter((key) => !['filename', 'text', 'sources'].includes(key));
+        if (extra.length) result.errors.push(`Ignored ${extra.map((key) => `“${key}”`).join(', ')} in ${label}: an output is saved with this card chat from its filename, text and sources only, and only the user can save it to the project Library.`);
+      }
     }
   }
   return result;
