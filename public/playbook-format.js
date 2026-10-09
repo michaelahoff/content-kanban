@@ -388,6 +388,7 @@ export function skillTemplate(name) {
 
 // --- Lane run prompt and result -------------------------------------------
 export const resultTag = 'frameboard-result';
+const maxLaneOutputs = 20;
 
 export function composeLanePrompt({ projectName, laneName, lanes, trigger = 'enter', map, playbook, skills = [], notes = '', settings, templateId }) {
   const fields = setFields(templateId).filter((field) => field.key !== 'prompt');
@@ -408,7 +409,8 @@ When you finish, end your reply with exactly one fenced code block tagged \`${re
 {
   "fields": { "titleOptions": "the complete new value" },
   "notes": "a short hand-off for whoever works on this card next",
-  "move": "Lane name"
+  "move": "Lane name",
+  "outputs": [{ "filename": "script.md", "text": "the document's complete exact text", "sources": ["a supplied version ID"] }]
 }
 \`\`\`
 
@@ -417,6 +419,7 @@ When you finish, end your reply with exactly one fenced code block tagged \`${re
 - ${settings.mayEdit.length ? `Frameboard applies ${settings.mayEdit.map(label).join(', ')} directly.` : 'This lane may not edit fields directly.'} Every other field becomes a proposal the user reviews.
 - Include "move" only if the playbook tells you to propose a move. Moves always wait for the user. Lanes: ${lanes.map((lane) => lane.name).join(', ')}.
 - Always include "notes": what you did, decisions made and anything still open.
+- Include "outputs" only for finished documents the playbook asks you to deliver. Frameboard saves each one's exact "text" as a document kept with this card chat; a file path or filename alone saves nothing. In "sources", list the version IDs of the supplied images or Library files it was derived from, [] if none, or leave it out if unsure.
 - Report through this block only. Do not call Frameboard card tools or edit notes.md yourself during a lane run.`,
   ];
   return sections.filter(Boolean).join('\n\n');
@@ -428,8 +431,8 @@ export function parseLaneResult(text, templateId) {
   const blocks = [...String(text ?? '').matchAll(/^```[ \t]*frameboard(?:-result)?[ \t]*\r?\n([\s\S]*?)^```[ \t]*(?=\r?$)/gm)];
   if (!blocks.length) return null;
   let value;
-  try { value = JSON.parse(blocks.at(-1)[1]); } catch (error) { return { fields: {}, notes: '', move: null, errors: [`The result block is not valid JSON: ${error.message}`] }; }
-  const result = { fields: {}, notes: '', move: null, errors: [] };
+  try { value = JSON.parse(blocks.at(-1)[1]); } catch (error) { return { fields: {}, notes: '', move: null, outputs: [], errors: [`The result block is not valid JSON: ${error.message}`] }; }
+  const result = { fields: {}, notes: '', move: null, outputs: [], errors: [] };
   if (!value || typeof value !== 'object' || Array.isArray(value)) return { ...result, errors: ['The result block must be a JSON object.'] };
   const fields = setFields(templateId).filter((field) => field.key !== 'prompt');
   if (value.fields !== undefined) {
@@ -450,6 +453,21 @@ export function parseLaneResult(text, templateId) {
   if (value.move !== undefined && value.move !== null && value.move !== '') {
     if (typeof value.move === 'string') result.move = value.move.trim();
     else result.errors.push('Ignored “move”: it must be a lane name.');
+  }
+  // Explicit inline documents to save. Leaving out "sources" leaves the
+  // derivation unknown; an empty list declares none.
+  if (value.outputs !== undefined) {
+    if (!Array.isArray(value.outputs)) result.errors.push('Ignored “outputs”: “outputs” must be a list of documents.');
+    else for (const [index, output] of value.outputs.entries()) {
+      const name = typeof output?.filename === 'string' && output.filename.trim() ? output.filename : null;
+      const label = name ? `“${name}”` : `output ${index + 1}`;
+      if (index >= maxLaneOutputs) { result.errors.push(`Ignored ${label}: a lane result can save up to ${maxLaneOutputs} documents.`); continue; }
+      if (!output || typeof output !== 'object' || Array.isArray(output) || !name) result.errors.push(`Ignored ${label}: each output needs a filename and its exact text.`);
+      else if (output.text === undefined) result.errors.push(`Ignored ${label}: only documents with their exact text in “text” can be saved from a lane result.`);
+      else if (typeof output.text !== 'string' || !output.text.length) result.errors.push(`Ignored ${label}: its text must be non-empty text.`);
+      else if (output.sources !== undefined && (!Array.isArray(output.sources) || !output.sources.every((id) => typeof id === 'string'))) result.errors.push(`Ignored ${label}: “sources” must be a list of supplied version IDs.`);
+      else result.outputs.push({ filename: name, text: output.text, sources: output.sources ? [...new Set(output.sources)] : null });
+    }
   }
   return result;
 }

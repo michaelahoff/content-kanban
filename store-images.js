@@ -14,10 +14,10 @@ export const imagesMigration = `
     UNIQUE (attempt_id, native_id));
 `;
 const fail = (status, message) => { throw Object.assign(new Error(message), { status }); };
-// What every image output records about its request and producer. The image
+// What every image output records about its request and its actual producer. The image
 // model is not reported by Codex, so it stays null rather than inferred.
 export const outputProvenance = (submission, creationMethod, { toolPrompt = null, native }) => ({
-  provider: 'codex', creationMethod, conversationModel: submission.model, imageModel: null, submissionId: submission.id,
+  provider: submission.provider ?? 'codex', creationMethod, conversationModel: submission.model, imageModel: null, submissionId: submission.id,
   configurationId: submission.configuration.id, harness: submission.configuration.harness, toolPrompt, references: submission.context.images, native });
 const versionFrom = (row) => row && ({ id: row.id, hash: row.hash, size: row.size, format: row.format, origin: row.origin, createdAt: row.created_at });
 

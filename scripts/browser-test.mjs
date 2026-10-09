@@ -598,11 +598,22 @@ These values apply when a card enters this lane.
   for (let attempt = 0; codex.sends.length === sendsBefore && attempt < 100; attempt++) await pause(50);
   const laneSend = codex.sends.at(-1);
   assert.ok(laneSend.input[0].text.includes('Warm and direct.'), 'The lane run includes its skill');
-  codex.finish(laneSend, 'completed', 'Here it is.\n\n```frameboard-result\n{"fields": {"intro": "A lane-written intro"}, "notes": "Wrote the intro in the voice guide."}\n```');
+  codex.finish(laneSend, 'completed', 'Here it is.\n\n```frameboard-result\n{"fields": {"intro": "A lane-written intro"}, "notes": "Wrote the intro in the voice guide.", "outputs": [{"filename": "intro-notes.md", "text": "Why this intro works."}]}\n```');
   await waitFor(`document.querySelector('#card-intro').value === 'A lane-written intro'`);
   await waitFor(`document.querySelector('#lane-notes').value.includes('Wrote the intro in the voice guide.')`);
   await waitFor(`document.querySelector('.card-playbook-run')?.textContent.includes('Applied Intro')`);
   await waitFor(`document.querySelector('.chat-lane-run')?.textContent.includes('Archived playbook')`);
+  // The lane's declared document and a user's Save as document sit beside the run.
+  await waitFor(`document.querySelector('.chat-saved-outputs')?.textContent.includes('intro-notes.md')`);
+  assert.ok(await evaluate(`Boolean(document.querySelector('.chat-saved-outputs a[download]'))`), 'A saved document can be downloaded');
+  await evaluate(`(() => { const range = document.createRange(); range.selectNodeContents([...document.querySelectorAll('.chat-reply-text')].at(-1)); getSelection().removeAllRanges(); getSelection().addRange(range); })()`);
+  await waitFor(`!document.querySelector('#chat-selection-actions').hidden`);
+  await click('[data-action="chat-save-selection"]');
+  await waitFor(`document.querySelector('#form-dialog').open && document.querySelector('#form-heading')?.textContent === 'Save as document'`);
+  await fill('#chat-document-name', 'lane-reply.md');
+  await click('#small-form button[type="submit"]');
+  await waitFor(`document.querySelectorAll('.chat-saved-outputs li').length === 2 && document.querySelector('.chat-saved-outputs').textContent.includes('lane-reply.md')`);
+  console.log('PASS lane result documents and Save as document appear beside the run with downloads');
   await snapshot('lane-run-result');
   // A conflicting notes draft survives switching cards, then can be resolved.
   await fill('#lane-notes', 'My conflicting hand-off');

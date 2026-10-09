@@ -117,8 +117,9 @@ export function createRetainedMetadata({ all, get, run, transaction, now }) {
       transaction(() => run('UPDATE retained_versions SET hash = ?, size = ? WHERE id = ? AND workspace_id = ?', digest.hash, digest.size, id, ctx.workspaceId));
     },
     published(ctx, id) { transaction(() => run("UPDATE retained_versions SET state = 'published' WHERE id = ? AND workspace_id = ?", id, ctx.workspaceId)); },
-    commit(ctx, id) {
+    commit(ctx, id, authorize) {
       return transaction(() => {
+        authorize?.();
         const row = get('SELECT * FROM retained_versions WHERE id = ? AND workspace_id = ?', id, ctx.workspaceId);
         const source = object(ctx, row.object_id);
         if (source.removed_at) fail(409, `${source.filename} or its folder was removed during the upload. Nothing was saved.`);

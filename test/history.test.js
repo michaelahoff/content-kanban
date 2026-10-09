@@ -57,6 +57,7 @@ test('upgrading an already-versioned database repairs legacy move foreign keys a
     ALTER TABLE chat_attempts DROP COLUMN revoked;
     ALTER TABLE chat_attempts DROP COLUMN delivery;
     ALTER TABLE chat_submissions DROP COLUMN revoked;
+    DROP TABLE saved_outputs;
     DROP TABLE library_drafts;
     DROP TABLE retained_versions;
     DROP TABLE retained_objects;

@@ -100,7 +100,7 @@ export function mountChat(cardId) {
   while (dialog.firstChild) editor.append(dialog.firstChild);
   dialog.append(editor);
   dialog.insertAdjacentHTML('afterbegin', `<div class="workbench-tabs" role="tablist" aria-label="Card workbench"><button role="tab" data-action="workbench-tab" data-tab="editor">Editor</button><button role="tab" data-action="workbench-tab" data-tab="chat">Chat</button></div>`);
-  dialog.insertAdjacentHTML('beforeend', `<div id="chat-resizer" role="separator" tabindex="0" aria-label="Resize chat" aria-orientation="vertical"></div><aside id="card-chat" aria-label="Card chat"><div class="chat-header"><div><h2>Card chat</h2><span id="chat-provider-name">Provider</span></div><button class="button small secondary" data-action="chat-fresh">Start fresh context</button></div><div id="chat-error" role="alert" hidden></div><div id="chat-transcript" class="chat-transcript" aria-label="Conversation history"></div><div id="chat-progress" role="status" hidden></div><div id="chat-selection-actions" role="group" aria-label="Selected reply actions" hidden><button type="button" data-action="chat-reply">Reply</button><button type="button" data-action="chat-use-text">Use text…</button></div><div id="chat-requests"></div><div id="chat-proposals"></div><div id="chat-grants"></div><div id="chat-composer" class="chat-composer"></div></aside>`);
+  dialog.insertAdjacentHTML('beforeend', `<div id="chat-resizer" role="separator" tabindex="0" aria-label="Resize chat" aria-orientation="vertical"></div><aside id="card-chat" aria-label="Card chat"><div class="chat-header"><div><h2>Card chat</h2><span id="chat-provider-name">Provider</span></div><button class="button small secondary" data-action="chat-fresh">Start fresh context</button></div><div id="chat-error" role="alert" hidden></div><div id="chat-transcript" class="chat-transcript" aria-label="Conversation history"></div><div id="chat-progress" role="status" hidden></div><div id="chat-selection-actions" role="group" aria-label="Selected reply actions" hidden><button type="button" data-action="chat-reply">Reply</button><button type="button" data-action="chat-use-text">Use text…</button><button type="button" data-action="chat-save-selection">Save as document…</button></div><div id="chat-requests"></div><div id="chat-proposals"></div><div id="chat-grants"></div><div id="chat-composer" class="chat-composer"></div></aside>`);
   $('.editor-header-right').insertAdjacentHTML('afterbegin', '<button class="button small secondary" data-action="toggle-chat" aria-expanded="true">Hide chat</button>');
   setDialogMode();
   if (item.snapshot) { renderComposer(item); renderTranscript(item); }
@@ -274,6 +274,27 @@ function deliveryMarkup(attempt) {
   if (!attempt.delivery?.length) return '';
   return `<ul class="chat-delivery" aria-label="Delivery">${attempt.delivery.map((entry) => `<li>${escape(entry.filename)} · ${escape(deliveryDescription(entry))} · ${deliveryLabels[entry.status] ?? escape(entry.status)}${entry.reason ? ` · ${escape(entry.reason)}` : ''}</li>`).join('')}</ul>`;
 }
+// Saved documents beside the work that produced them: retained snapshots,
+// downloadable even after Stop, archive or the card's deletion.
+function savedOutputsMarkup(cardId, outputs) {
+  if (!outputs.length) return '';
+  const method = { 'transcript-save': 'Saved from a reply', 'lane-result': 'Saved by the lane result' };
+  return `<ul class="chat-saved-outputs" aria-label="Saved outputs">${outputs.map((output) => {
+    const content = url(cardId, `saved-outputs/${encodeURIComponent(output.id)}/content`);
+    if (output.status === 'saved') return `<li><strong>${escape(output.filename)}</strong> · ${method[output.creationMethod] ?? 'Saved'}${output.derivation?.declared ? ` · from ${output.derivation.sources.length ? escape(output.derivation.sources.map((source) => source.label).join(', ')) : 'no supplied inputs'}` : ''}<span class="chat-output-actions"><a class="button small secondary" href="${content}?inline=1" target="_blank" rel="noopener">View</a><a class="button small secondary" href="${content}" download>Download</a></span></li>`;
+    if (output.status === 'failed') return `<li class="chat-output-error">${escape(output.filename)} was not saved: ${escape(output.error)}</li>`;
+    return `<li class="chat-hint">Saving ${escape(output.filename)}…</li>`;
+  }).join('')}</ul>`;
+}
+// The highlighted reply text, saved exactly. Repeating the same submission
+// (a lost response) reuses its operation, so it is saved once.
+function saveAsDocument(item, sequence, text) {
+  const operation = crypto.randomUUID();
+  smallForm({ title: 'Save as document', fields: `<label class="form-label" for="chat-document-name">Filename</label><input class="form-input" id="chat-document-name" name="filename" value="reply.md" required maxlength="255"><pre class="chat-review-text">${escape(text)}</pre><p class="chat-hint">Saves this exact text as a document kept with this card chat. It does not change the card or the Library.</p>`, submit: 'Save document', onSubmit: async (data) => {
+    await send('POST', url(item.id, 'saved-outputs'), { operation, sequence, filename: String(data.get('filename')), text });
+    await refresh(item); toast('Saved as document.');
+  } });
+}
 function outputMarkup(output) {
   if (!output) return '';
   const status = output.generationStatus !== 'completed'
@@ -325,7 +346,7 @@ function renderTranscript(item) {
         : `<div class="chat-prompt-sent"><span class="chat-speaker">You</span>${escape(submission.prompt)}</div>`;
       return `<article class="chat-submission">${sent}${frozenMarkup(submission)}<p class="chat-status">${escape(({ running: 'In progress', completed: 'Completed', queued: 'Queued', waiting: 'Waiting for provider', held: 'Needs attention', failed: 'Failed', interrupted: 'Stopped', uncertain: 'Check delivery', cancelled: 'Cancelled' })[submission.status] ?? submission.status)}${submission.reason ? ` · ${escape(submission.reason)}` : ''}</p>${attempts.map((attempt) => `${attempt.previousAttemptId ? `<div class="chat-divider">${snapshot.attempts.find((a) => a.id === attempt.previousAttemptId)?.status === 'not-delivered' ? 'Not sent before Codex stopped · sent again with original inputs' : 'Retry · original inputs retained'}</div>` : ''}${deliveryMarkup(attempt)}${attemptMarkup(snapshot.items.filter((entry) => entry.attemptId === attempt.id), attempt.id,
         (entry) => outputMarkup((snapshot.outputs ?? []).find((output) => output.attemptId === entry.attemptId
-          && (output.nativeId === entry.nativeId || output.id === entry.data?.outputId))), runningStatuses.has(attempt.status))}`).join('')}${recoveryMarkup(submission, attempts)}${['queued', 'waiting', 'held'].includes(submission.status) ? `<button class="button small secondary" data-action="chat-cancel" data-id="${escape(submission.id)}">Cancel submission</button>` : ''}${submission.retryable ? `<button class="button small secondary" data-action="chat-retry" data-id="${escape(submission.id)}">Retry original submission</button>${submission.lane ? '<p class="chat-hint chat-retry-hint">Retry resends this lane run’s original submission exactly as it was sent. To use the current playbook and inputs, choose Run playbook on the card.</p>' : ''}` : ''}</article>`;
+          && (output.nativeId === entry.nativeId || output.id === entry.data?.outputId))), runningStatuses.has(attempt.status))}${savedOutputsMarkup(snapshot.cardId, (snapshot.savedOutputs ?? []).filter((output) => output.attemptId === attempt.id))}`).join('')}${recoveryMarkup(submission, attempts)}${['queued', 'waiting', 'held'].includes(submission.status) ? `<button class="button small secondary" data-action="chat-cancel" data-id="${escape(submission.id)}">Cancel submission</button>` : ''}${submission.retryable ? `<button class="button small secondary" data-action="chat-retry" data-id="${escape(submission.id)}">Retry original submission</button>${submission.lane ? '<p class="chat-hint chat-retry-hint">Retry resends this lane run’s original submission exactly as it was sent. To use the current playbook and inputs, choose Run playbook on the card.</p>' : ''}` : ''}</article>`;
     }).join('')}`;
   }).join('');
   if (timeline.dataset.rendered !== html) {
@@ -654,6 +675,7 @@ export function initializeChats(callbacks) {
       if (action === 'chat-reject-proposal') { await send('POST', url(item.id, `proposals/${target.dataset.id}/accept`), { reject: true }); $('#form-dialog').close(); await refresh(item); }
       if (action === 'chat-use-text') useSelectedText(item);
       if (action === 'chat-reply') replyToSelection(item);
+      if (action === 'chat-save-selection') { const { sequence, text } = checkedReply(item); clearReplySelection(item); saveAsDocument(item, sequence, text); }
       if (action === 'chat-adopt') { const result = await send('POST', url(item.id, `outputs/${target.dataset.id}/adopt`), {}); refreshSavedCard(result.card); await refresh(item); toast(result.adopted ? 'Added to gallery. Choose roles in the editor.' : 'Already in the gallery.'); }
       if (action === 'chat-retry-save') { await send('POST', url(item.id, `outputs/${target.dataset.id}/retry-save`), {}); await refresh(item); }
       if (action === 'chat-edit-image') {
