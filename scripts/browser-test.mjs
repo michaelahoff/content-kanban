@@ -648,7 +648,8 @@ These values apply when a card enters this lane.
   console.log('PASS Save to project library creates a Library file, then asks Create new, Replace or Cancel and replaces with a new version');
   await snapshot('lane-run-result');
   // Use in prompt sends the saved document's exact version with the next manual prompt.
-  const reuseButton = `.chat-saved-outputs li:last-child [data-action="chat-reuse-output"]`;
+  const laneReply = (await (await fetch(`${base}/api/cards/${entryCardId}/chat`)).json()).savedOutputs.find((output) => output.filename === 'lane-reply.md');
+  const reuseButton = `[data-action="chat-reuse-output"][data-id="${laneReply.id}"]`;
   await click(reuseButton);
   await waitFor(`document.querySelector('${reuseButton}')?.getAttribute('aria-pressed') === 'true' && document.querySelector('#chat-composer').textContent.includes('Saved outputs')`);
   await waitFor(`document.querySelector('[aria-label="Reused saved outputs"]')?.textContent.includes('lane-reply.md')`);

@@ -52,6 +52,7 @@ Composer choices and frozen submissions are in the database. `inspectBackupDatab
 - Tool-disabled Claude receives a Codex-saved output's actual text in fresh context; an unsupported gallery image stops the whole union.
 - Export and restore keep the choice and the frozen reused output; a frozen reference to a missing output version fails export.
 - A lane playbook cannot select a saved output.
+- A saved image file is reused as a native image from `references/outputs/`, after the card's gallery image with the same bytes, which stays its own input.
 - Another card reuses an output only through its promoted Library asset (#65); promotion selects nothing, and on the output's own card the promoted asset and the output, equal bytes and all, are two inputs.
 
 `npm run test:browser`: **Use in prompt** on a saved document lists it in the composer and preview, Send delivers it, and the attempt records `full text inline · sent`.
@@ -70,4 +71,4 @@ Kept deliberately:
 
 - Fresh context and a primary-provider change clear reuse choices, like Library choices: manual reference choices belong to the conversation they were made in. The outputs themselves stay selectable.
 - Send does not re-resolve saved outputs at commit, as it does Library files: a saved output version never changes, and the composer revision check refuses a changed choice.
-- A gallery image and a saved output are deduplicated when they are the same image version, which today means a chat image output (`selections.images`). When #63 adds saved image files, a saved output whose bytes are an independent retained version stays a separate input, as the specification requires; one naming a gallery image version must join the image group.
+- A gallery image and a saved output are deduplicated only when they are the same image version, which means a chat image output (`selections.images`). A saved image file (#63) is its own retained `output` version, so it is reused as a native image in the saved output group, separate from a gallery image with the same bytes.

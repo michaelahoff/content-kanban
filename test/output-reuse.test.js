@@ -251,3 +251,25 @@ test('another card reuses an output only through its promoted Library asset, whi
     'equal bytes never merge a promoted asset with its output');
   assert.equal(sentText(await waitFor(() => f.codex.sends[2])).split(script).length - 1, 2, 'each is sent');
 });
+
+test('a saved image file is reused as a native image after Library files, separate from a gallery image with the same bytes', async (t) => {
+  const f = await fixture(t);
+  const upload = await (await f.raw('/api/images', { method: 'POST', headers: { 'Content-Type': 'image/png' }, body: png })).json();
+  const card = await f.card({ images: [{ id: upload.id, name: 'Portrait' }], imageRoles: { original: upload.id } });
+  await f.queue(card.id, await f.compose(card.id, 'Render a thumbnail'));
+  const send = await waitFor(() => f.codex.sends[0]);
+  const workspace = path.join(f.dataDir, 'workspaces', card.id);
+  await writeFile(path.join(workspace, 'render.png'), png);
+  f.codex.finish(send, 'completed', 'Rendered render.png');
+  const chat = await waitFor(async () => { const value = await f.chat(card.id); return value.submissions[0].status === 'completed' && value; });
+  const output = await f.ok('POST', `/api/cards/${card.id}/chat/saved-outputs`, { operation: randomUUID(), attempt: chat.attempts[0].id, path: 'render.png' });
+  assert.equal(output.status, 'saved', JSON.stringify(output));
+
+  const submission = await f.queue(card.id, await reuse(f, card.id, 'Refine the thumbnail', [output.id]));
+  assert.deepEqual(submission.context.images.map((image) => [image.id, image.labels]), [[upload.id, ['Original']]]);
+  assert.deepEqual(submission.context.savedOutputs.map((entry) => [entry.outputId, entry.method, entry.path]), [[output.id, 'image', `references/outputs/${output.versionId}.png`]]);
+  const next = await waitFor(() => f.codex.sends[1]);
+  const images = next.input.filter((entry) => entry.type === 'localImage');
+  assert.deepEqual(images.map((entry) => path.relative(workspace, entry.path)).map((relative) => relative.startsWith('references/outputs/') ? 'output' : 'card'), ['card', 'output'], 'one input per retained identity, equal bytes and all');
+  assert.deepEqual(await readFile(images[1].path), png);
+});
