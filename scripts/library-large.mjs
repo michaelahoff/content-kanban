@@ -74,8 +74,10 @@ try {
   const drafts = `/api/projects/${project.id}/library/drafts`;
   const draft = await api(app, 'POST', drafts, { filename: 'shot list.md', text: '# Shot list\nOpen on the desk.' });
   const documentAsset = (await api(app, 'POST', `${drafts}/${draft.id}/save`, { revision: draft.revision, operation: randomUUID() })).asset;
-  const opaqueUpload = await (await fetch(`http://127.0.0.1:${app.address().port}/api/projects/${project.id}/library/uploads?${new URLSearchParams({ filename: 'palette.lut', operation: randomUUID() })}`,
-    { method: 'POST', body: opaque })).json();
+  const opaqueResponse = await fetch(`http://127.0.0.1:${app.address().port}/api/projects/${project.id}/library/uploads?${new URLSearchParams({ filename: 'palette.lut', operation: randomUUID() })}`,
+    { method: 'POST', body: opaque });
+  const opaqueUpload = await opaqueResponse.json();
+  assert.equal(opaqueResponse.status, 201, JSON.stringify(opaqueUpload));
   assert.deepEqual([opaqueUpload.version.hash, opaqueUpload.version.size], [opaqueHash, opaque.length]);
   const selected = [{ kind: 'asset', id: uploaded.body.asset.id }, { kind: 'asset', id: documentAsset.id }, { kind: 'asset', id: opaqueUpload.asset.id }];
   // Send verifies every byte, then delivery streams an independent copy.
