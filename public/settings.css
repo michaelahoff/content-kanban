@@ -1,15 +1,17 @@
-.settings-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.settings-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
 .settings-heading h2 { margin: 0; }
-.provider-option, .model-catalog { padding: 24px; margin: 24px 0; border: 1px solid var(--border, #30323b); border-radius: 10px; }
-.provider-toggle { display: flex; align-items: center; gap: 12px; cursor: pointer; font-size: 18px; }
-.provider-toggle input { width: 18px; height: 18px; accent-color: var(--accent, #64d8be); }
-.provider-option label[for] { display: block; margin: 20px 0 8px; }
+.provider-option, .model-catalog { padding: 24px; margin: 24px 0; background: var(--well); border: 0; border-radius: 12px; }
+.provider-toggle { display: flex; align-items: center; gap: 12px; cursor: pointer; font-size: 16px; font-weight: 500; color: var(--text); }
+.provider-toggle strong { font-weight: 500; }
+.provider-toggle span { font-size: 14px; font-weight: 400; color: var(--muted); }
+.provider-toggle input { width: 18px; height: 18px; margin: 0; accent-color: var(--blue); }
 .provider-option textarea { width: 100%; }
-.provider-option button { margin-top: 12px; }
-.model-provider { margin-top: 24px; }
-.model-provider ul { padding-left: 22px; line-height: 1.8; }
-.model-provider time, .settings-error { display: block; font-size: 13px; }
-.settings-error { color: #ff9c9c; }
-#backup-form label { display: block; margin: 16px 0 8px; }
-#backup-form input { width: 100%; margin-bottom: 12px; }
+.provider-option .button { margin-top: 12px; }
+.model-provider { margin-top: 20px; }
+.model-provider > strong { font-weight: 500; color: var(--text); }
+.model-provider ul { padding-left: 22px; line-height: 1.6; }
+.model-provider li small { font-size: 13px; color: var(--muted); }
+.model-provider time { display: block; margin-top: 8px; font-size: 13px; color: var(--faint); }
+.provider-settings .settings-error { display: block; padding: 8px 12px; font-size: 13px; line-height: 1.5; color: var(--danger); background: var(--danger-wash); border: 1px solid var(--danger-line); border-radius: 8px; }
+#backup-form input { margin-bottom: 12px; }
 @media (max-width: 520px) { .settings-heading { align-items: start; flex-direction: column; } .provider-option, .model-catalog { padding: 16px; } }

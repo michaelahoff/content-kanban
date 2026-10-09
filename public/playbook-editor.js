@@ -116,11 +116,11 @@ function renderInspector() {
   const inspector = $('.playbook-inspector', dialog);
   const path = currentPath();
   if (selection.kind === 'map') {
-    inspector.innerHTML = `<span class="playbook-kicker">PROJECT MAP</span><h3>Read first by every lane run</h3><p class="field-help">Describe what this project makes, the lanes in order and the rules that hold everywhere. Each lane run starts with this file, so an agent always knows where it is.</p>`;
+    inspector.innerHTML = `<h3>Read first by every lane run</h3><p class="field-help">Describe what this project makes, the lanes in order and the rules that hold everywhere. Each lane run starts with this file, so an agent always knows where it is.</p>`;
     return;
   }
   if (selection.kind === 'file') {
-    inspector.innerHTML = `<span class="playbook-kicker">UNATTACHED PLAYBOOK</span><h3>Not used by any lane</h3><p class="field-help">Set <code>lane:</code> to a lane's ID to attach it, or delete the file. Lane IDs: ${project().lanes.map((lane) => `${escape(lane.name)} <code>${escape(lane.id)}</code>`).join(', ')}</p>`;
+    inspector.innerHTML = `<h3>Not used by any lane</h3><p class="field-help">Set <code>lane:</code> to a lane's ID to attach it, or delete the file. Lane IDs: ${project().lanes.map((lane) => `${escape(lane.name)} <code>${escape(lane.id)}</code>`).join(', ')}</p>`;
     return;
   }
   if (selection.kind === 'skill') {
@@ -129,11 +129,11 @@ function renderInspector() {
       const document = laneDocument(lane.id);
       return document && playbookSettings(parseDocument(textOf(document.path)), defaultTemplate).skills.includes(name);
     });
-    inspector.innerHTML = `<span class="playbook-kicker">SKILL</span><h3>Shared know-how</h3><p class="field-help">A lane includes this skill when its playbook mentions <code>skills/${escape(name)}.md</code> or lists <code>${escape(name)}</code> under <code>skills:</code>.</p><h4>Used by</h4><ul>${list(users.map((lane) => escape(lane.name)))}</ul>`;
+    inspector.innerHTML = `<h3>Shared know-how</h3><p class="field-help">A lane includes this skill when its playbook mentions <code>skills/${escape(name)}.md</code> or lists <code>${escape(name)}</code> under <code>skills:</code>.</p><h4>Used by</h4><ul>${list(users.map((lane) => escape(lane.name)))}</ul>`;
     return;
   }
   if (!path) {
-    inspector.innerHTML = `<span class="playbook-kicker">LANE PLAYBOOK</span><h3>How lane runs work</h3><ol class="playbook-steps"><li>When a card enters the lane, any <code>set:</code> values apply at once. Undo last move reverses them.</li><li>If the playbook has instructions and <code>run: on-enter</code>, the card chat receives the project map, this playbook, its skills and the card's hand-off notes.</li><li>The agent replies with a result block. Fields listed under <code>may_edit</code> update; other changes and lane moves wait for your review.</li></ol>`;
+    inspector.innerHTML = `<h3>How lane runs work</h3><ol class="playbook-steps"><li>When a card enters the lane, any <code>set:</code> values apply at once. Undo last move reverses them.</li><li>If the playbook has instructions and <code>run: on-enter</code>, the card chat receives the project map, this playbook, its skills and the card's hand-off notes.</li><li>The agent replies with a result block. Fields listed under <code>may_edit</code> update; other changes and lane moves wait for your review.</li></ol>`;
     return;
   }
   const settings = playbookSettings(parseDocument(textOf(path)), defaultTemplate);
@@ -141,7 +141,7 @@ function renderInspector() {
   const label = (key) => fields.find((field) => field.key === key)?.label ?? key;
   const knownSkills = new Set([...saved.keys(), ...drafts.keys()].filter((entry) => entry.startsWith('skills/')).map((entry) => entry.slice(7, -3)));
   const lane = project().lanes.find((item) => item.id === selection.laneId);
-  inspector.innerHTML = `<span class="playbook-kicker">LANE PLAYBOOK</span><h3>${escape(describeSettings(settings, defaultTemplate))}</h3>
+  inspector.innerHTML = `<h3>${escape(describeSettings(settings, defaultTemplate))}</h3>
     ${settings.errors.length ? `<div class="playbook-problems" role="alert"><strong>Fix before this lane can run</strong><ul>${settings.errors.map((error) => `<li>${escape(error)}</li>`).join('')}</ul></div>` : ''}
     ${settings.warnings.length ? `<ul class="playbook-warnings">${settings.warnings.map((warning) => `<li>${escape(warning)}</li>`).join('')}</ul>` : ''}
     <dl class="playbook-facts">
