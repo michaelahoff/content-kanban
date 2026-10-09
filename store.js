@@ -672,7 +672,7 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
   }
   const images = createImageStore({ all, get, run, transaction, retainedCard, recordChange, now, adopt: adoptImage, revoked: (attemptId) => chats.revocation(attemptId) });
   const savedOutputs = createSavedOutputStore({ all, get, run, transaction, retainedCard, requireCard, recordChange, now,
-    retained: () => api.retained, revoked: (attemptId) => chats.revocation(attemptId), workspace: (cardId) => path.resolve(dataDir, 'workspaces', cardId) });
+    retained: () => api.retained, library: () => api.library, revoked: (attemptId) => chats.revocation(attemptId), workspace: (cardId) => path.resolve(dataDir, 'workspaces', cardId) });
   const api = {
     owner,
     playbooks,

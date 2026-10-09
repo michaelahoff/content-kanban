@@ -47,20 +47,24 @@ const publications = {
   upload: { noun: 'upload', retry: () => 'Upload it', again: (filename) => `Upload ${filename}`, kind: 'asset' },
   document: { noun: 'save', retry: () => 'Save', again: () => 'Save', kind: 'document' },
   copy: { noun: 'copy', retry: () => 'Copy it', again: () => 'Copy it' },
+  promote: { noun: 'Library save', retry: () => 'Save it to the Library', again: () => 'Save it to the Library', kind: 'document' },
 };
+// A promoted version names the saved output whose bytes it began from.
+const promotedFrom = (provenance) => provenance.method === 'promote' ? { promotedFrom: { cardId: provenance.cardId, outputId: provenance.savedOutputId, versionId: provenance.outputVersionId } } : {};
 const savedOutcome = (provenance) => provenance.baseVersionId ? 'saved' : provenance.collision === 'replace' ? 'replaced' : 'created';
 
 export function createLibrary({ retained, metadata, drafts, project, record }) {
   const numbered = (versions) => versions.map((version, index) => ({ id: version.id, size: version.size, hash: version.hash,
     available: version.available, error: version.error, committedAt: version.committedAt, number: index + 1, written: isWritten(version),
-    ...(version.provenance.restoredFromVersionId ? { restoredFrom: version.provenance.restoredFromVersionId } : {}) }));
+    ...(version.provenance.restoredFromVersionId ? { restoredFrom: version.provenance.restoredFromVersionId } : {}), ...promotedFrom(version.provenance) }));
   function assetFrom(ctx, row) {
     const history = metadata.history(ctx, row.id); const versions = numbered(history);
     // A project copy names the source version it began from.
     const origin = history[0]?.provenance;
     return { id: row.id, projectId: row.project_id, filename: row.filename, folderId: row.folder_id, kind: row.kind, createdAt: row.created_at, removedAt: row.removed_at,
       current: versions.find((version) => version.id === row.current_version_id) ?? null, versionCount: versions.length,
-      ...(origin?.method === 'copy' ? { copiedFrom: { projectId: origin.sourceProjectId, assetId: origin.sourceAssetId, versionId: origin.copiedFromVersionId } } : {}) };
+      ...(origin?.method === 'copy' ? { copiedFrom: { projectId: origin.sourceProjectId, assetId: origin.sourceAssetId, versionId: origin.copiedFromVersionId } } : {}),
+      ...promotedFrom(origin ?? {}) };
   }
   const folderFrom = (row) => ({ id: row.id, name: row.name, parentId: row.parent_id, createdAt: row.created_at });
   // A live folder of this project.
@@ -400,6 +404,46 @@ export function createLibrary({ retained, metadata, drafts, project, record }) {
       const asset = assetFrom(ctx, metadata.object(ctx, version.objectId));
       record(ctx, 'asset_copied', asset.id, targetId, { versionId: version.id, filename: asset.filename, from: { projectId, assetId: row.id, versionId: source.id } });
       return { outcome: 'copied', asset, version: numberedVersion(ctx, version) };
+    },
+    // Save to project library: the user's explicit publication of a saved
+    // output's verified bytes as a new Library file, or by choice a new
+    // version of the file holding its name. The asset and the output keep
+    // independent bytes and lifetimes, linked only by provenance; nothing is
+    // selected, adopted or given a role. A retry repeats its operation.
+    async promoteOutput(ctx, projectId, input = {}, { signal } = {}) {
+      project(ctx, projectId);
+      const filename = libraryFilename(input.filename); const folderId = input.folderId ?? null;
+      const prior = metadata.operation(ctx, input.operationId);
+      if (prior && prior.provenance.savedOutputId !== input.outputId) fail(409, 'This Library save was started for a different output. Save it to the Library again.');
+      // A saved document stays written text; a saved file or image is published as uploaded bytes.
+      const written = input.written !== false;
+      const { outcome, descriptor } = placement(ctx, projectId, { filename, folderId, collision: input.collision ?? null, assetId: input.assetId, operationId: input.operationId, method: 'promote', kind: written ? 'document' : 'asset', prior });
+      if (prior?.state === 'committed') return savedResult(ctx, outcome, prior);
+      const output = metadata.version(ctx, input.versionId);
+      const owner = output && metadata.object(ctx, output.objectId);
+      if (!owner || owner.kind !== 'output' || owner.project_id !== projectId || output.state !== 'committed') fail(404, 'This saved output does not exist in this project.');
+      const provenance = { method: 'promote', requestedFilename: filename, collision: input.collision ?? null, ...(folderId ? { folderId } : {}),
+        cardId: input.cardId, savedOutputId: input.outputId, outputVersionId: output.id, ...(written ? { written: true } : {}) };
+      const stream = await retained.read(ctx, output.id);
+      let version;
+      try { version = await retained.publish(ctx, { operationId: input.operationId, projectId, ...descriptor, provenance }, stream, { signal }); }
+      finally { stream.destroy(); }
+      const asset = assetFrom(ctx, metadata.object(ctx, version.objectId));
+      record(ctx, outcome === 'replaced' ? 'asset_replaced' : 'asset_promoted', asset.id, projectId, { versionId: version.id, filename: asset.filename, from: { cardId: input.cardId, outputId: input.outputId, versionId: output.id } });
+      return { outcome, asset, version: numberedVersion(ctx, version) };
+    },
+    // Where each of a card's saved outputs has been published in the Library,
+    // oldest first, by output ID.
+    promotions(ctx, cardId) {
+      const byOutput = new Map();
+      for (const version of metadata.promotions(ctx, cardId)) {
+        const asset = metadata.object(ctx, version.objectId);
+        const list = byOutput.get(version.provenance.savedOutputId) ?? [];
+        list.push({ assetId: asset.id, versionId: version.id, filename: asset.filename, removed: Boolean(asset.removed_at),
+          outcome: savedOutcome(version.provenance), promotedAt: version.committedAt });
+        byOutput.set(version.provenance.savedOutputId, list);
+      }
+      return byOutput;
     },
     // Rechecks the recorded hash and size; failure marks only this version unavailable.
     async verify(ctx, projectId, versionId) {

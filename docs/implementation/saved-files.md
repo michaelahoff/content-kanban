@@ -50,6 +50,10 @@ Each finished response that could write files shows **Save output…**, which as
 
 A save interrupted by a restart is marked failed: a document says to save it from the reply, the user's file save says to retry, and a lane registration says to use Save output.
 
+## Save to project library
+
+Promotion (#65) works for file outputs too. A saved document is still published as a written Library document; a saved file or image is published as an uploaded Library file (`kind: 'asset'`, not `written`), so its bytes are never offered for text editing. `test/saved-files.test.js` covers this.
+
 ## Backup and restore
 
 File outputs are committed retained versions in the same `saved_outputs` store, so export bundles, verifies and inventories them as #62 does (`manifest.inventory.savedOutputs`), and restore compares the inventory. Each file output's inventory entry adds `source: { kind, path, creationMethod }`; documents add nothing, so #62 bundles still restore.
@@ -83,6 +87,6 @@ Kept deliberately:
 
 - Paths under `references/` are refused: they are copies of supplied inputs, never outputs.
 - Inline View uses the Library's preview types, so a saved image or PDF previews as itself rather than as text.
-- A saved image has no Add to gallery here. Adoption and same-card reuse are #64; promotion is #65.
+- A saved image has no Add to gallery here. Adoption and same-card reuse are #64.
 - `register_image` (`chat-service.js`) keeps its own path checks; it is the existing native-image-output route and is unchanged.
 - The store derives the workspace path the same way the chat service does, rather than taking a dependency on the service, which is created after it.

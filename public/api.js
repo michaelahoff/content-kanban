@@ -11,7 +11,7 @@ export async function request(url, options = {}) {
   const response = await fetch(url, options);
   let result = {};
   try { result = await response.json(); } catch { /* Handled by the status check below. */ }
-  if (!response.ok) throw Object.assign(new Error(result.error || 'Something went wrong. Please try again.'), { status: response.status });
+  if (!response.ok) throw Object.assign(new Error(result.error || 'Something went wrong. Please try again.'), { status: response.status, body: result });
   return result;
 }
 

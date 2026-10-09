@@ -327,3 +327,17 @@ test('a saved file survives workspace deletion, archive and card deletion, is re
   const restored = Buffer.from(await (await fetch(`${base}/api/cards/${card.id}/chat/saved-outputs/${saved.id}/content`)).arrayBuffer());
   assert.equal(sha(restored), sha(large));
 });
+
+test('Save to project library publishes a saved file as an uploaded Library file, not written text', async (t) => {
+  const f = await fixture(t); const card = await f.card();
+  const { finish } = await completedChat(f, card);
+  const { attempts: [attempt] } = await finish();
+  await workspaceFile(f, card.id, 'cut.mov', opaque);
+  const output = (await saveFile(f, card.id, { operation: 'cut', attempt: attempt.id, path: 'cut.mov' })).body;
+  const promoted = await f.call('POST', `/api/cards/${card.id}/chat/saved-outputs/${output.id}/promote`, { operation: 'promote-cut', folderId: null, filename: 'cut.mov' });
+  assert.equal(promoted.status, 201, JSON.stringify(promoted.body));
+  assert.equal(promoted.body.asset.kind, 'asset', 'A promoted file is not an editable document');
+  assert.equal(promoted.body.version.written, false);
+  assert.equal(promoted.body.version.hash, sha(opaque));
+  assert.deepEqual(promoted.body.asset.promotedFrom, { cardId: card.id, outputId: output.id, versionId: output.versionId });
+});
