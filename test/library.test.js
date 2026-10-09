@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { availableFilename, libraryFilename, previewType } from '../public/library-format.js';
+import { assetPreview, availableFilename, libraryFilename, previewType } from '../public/library-format.js';
 import { mkdtemp, rm, writeFile, chmod, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -61,7 +61,7 @@ test('an uploaded file gets a stable asset identity whose exact bytes read back 
   await f.restart();
   const [listed] = f.library.list(f.ctx, f.projectId).assets;
   assert.equal(listed.id, asset.id); assert.equal(listed.filename, 'youtube-script.md');
-  assert.deepEqual(listed.current, { id: version.id, size: bytes.length, hash: sha(bytes), available: true, error: '', committedAt: version.committedAt, number: 1 });
+  assert.deepEqual(listed.current, { id: version.id, size: bytes.length, hash: sha(bytes), available: true, error: '', committedAt: version.committedAt, number: 1, written: false });
   assert.deepEqual(await collect((await f.library.read(f.ctx, f.projectId, version.id)).stream), bytes);
 });
 
@@ -566,4 +566,69 @@ test('export and restore keep saved documents as versions and drafts as app data
   assert.equal(restored.library.asset(f.ctx, f.projectId, saved.asset.id).current.id, saved.version.id);
   const resaved = await restored.library.saveDraft(f.ctx, f.projectId, edit.id, { revision: 2, operationId: 'save-3' });
   assert.equal((await collect((await restored.library.read(f.ctx, f.projectId, resaved.version.id)).stream)).toString(), 'unsaved v2 ✍️');
+});
+
+test('a crash after a save commits never leaves its draft behind, and a retry reports the save', async (t) => {
+  const f = await fixture(t);
+  const crashAfterCommit = () => { f.faults.checkpoint = (stage) => stage === 'committed' ? new Promise(() => {}) : Promise.resolve(); };
+  const fresh = await f.library.createDraft(f.ctx, f.projectId, { filename: 'guide.md', text: 'v1' });
+  crashAfterCommit();
+  void f.library.saveDraft(f.ctx, f.projectId, fresh.id, { revision: 1, operationId: 'save-1' });
+  await waitFor(() => f.library.list(f.ctx, f.projectId).assets.length === 1);
+  f.faults.checkpoint = async () => {};
+  await f.restart();
+  assert.deepEqual(draftsOf(f), [], 'the committed first save finished its draft');
+  const [asset] = f.library.list(f.ctx, f.projectId).assets;
+  const retried = await f.library.saveDraft(f.ctx, f.projectId, fresh.id, { revision: 1, operationId: 'save-1' });
+  assert.deepEqual([retried.outcome, retried.asset.id, retried.draft], ['created', asset.id, null]);
+
+  const edit = await f.library.createDraft(f.ctx, f.projectId, { assetId: asset.id });
+  f.library.writeDraft(f.ctx, f.projectId, edit.id, { text: 'v2', revision: 1 });
+  crashAfterCommit();
+  void f.library.saveDraft(f.ctx, f.projectId, edit.id, { revision: 2, operationId: 'save-2' });
+  await waitFor(() => f.library.asset(f.ctx, f.projectId, asset.id).versionCount === 2);
+  f.faults.checkpoint = async () => {};
+  await f.restart();
+  const next = await f.library.createDraft(f.ctx, f.projectId, { assetId: asset.id });
+  assert.notEqual(next.id, edit.id, 'the saved edit is not offered as a stale draft');
+  assert.deepEqual([next.baseVersionId, next.text], [f.library.asset(f.ctx, f.projectId, asset.id).current.id, 'v2']);
+});
+
+test('saves racing on one draft never publish twice, and a lost race reports the newer version', async (t) => {
+  const f = await fixture(t);
+  const draft = await f.library.createDraft(f.ctx, f.projectId, { filename: 'guide.md', text: 'v1' });
+  let release;
+  f.faults.checkpoint = (stage) => stage === 'staged' ? new Promise((resolve) => { release = resolve; }) : Promise.resolve();
+  const first = f.library.saveDraft(f.ctx, f.projectId, draft.id, { revision: 1, operationId: 'tab-a' });
+  await waitFor(() => release);
+  await assert.rejects(f.library.saveDraft(f.ctx, f.projectId, draft.id, { revision: 1, operationId: 'tab-b' }), (error) => error.status === 409 && /already being saved/.test(error.message));
+  release();
+  const saved = await first;
+  assert.deepEqual(f.library.list(f.ctx, f.projectId).assets.map((asset) => asset.filename), ['guide.md']);
+
+  // Two drafts of one asset cannot exist, but a save can lose to an upload committing first.
+  const edit = await f.library.createDraft(f.ctx, f.projectId, { assetId: saved.asset.id });
+  f.library.writeDraft(f.ctx, f.projectId, edit.id, { text: 'mine', revision: 1 });
+  release = null;
+  const losing = f.library.saveDraft(f.ctx, f.projectId, edit.id, { revision: 2, operationId: 'tab-c' });
+  await waitFor(() => release);
+  f.faults.checkpoint = async () => {};
+  const upload = await f.upload('guide.md', Buffer.from('uploaded'), { collision: 'replace', assetId: saved.asset.id });
+  release();
+  await assert.rejects(losing, (error) => error.status === 409 && error.conflict?.currentVersion.id === upload.version.id);
+  assert.equal(f.library.draft(f.ctx, f.projectId, edit.id).text, 'mine');
+});
+
+test('previews and editing follow the current version’s content, not the file’s origin', async (t) => {
+  const f = await fixture(t);
+  const uploaded = await f.upload('README', Buffer.from('plain upload'));
+  assert.equal(uploaded.version.written, false);
+  const draft = await f.library.createDraft(f.ctx, f.projectId, { filename: 'README', text: 'written over' });
+  const written = await f.library.saveDraft(f.ctx, f.projectId, draft.id, { revision: 1, operationId: 'save-1', collision: 'replace', assetId: uploaded.asset.id });
+  assert.deepEqual([written.asset.kind, written.version.written, written.asset.current.written], ['asset', true, true]);
+  assert.equal(assetPreview('README', written.asset.current)?.kind, 'text');
+  const binary = await f.upload('README', Buffer.from([0xff, 0]), { collision: 'replace', assetId: uploaded.asset.id });
+  assert.equal(assetPreview('README', binary.asset.current), null);
+  assert.equal(assetPreview('ref.png', { written: true }).kind, 'text', 'a written document named like an image is text');
+  assert.equal(assetPreview('ref.png', { written: false }).kind, 'image');
 });

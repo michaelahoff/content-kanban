@@ -16,7 +16,7 @@ import { imagesMigration, createImageStore } from './store-images.js';
 import { retainedMigration, createRetainedMetadata } from './store-retained.js';
 import { createRetainedStorage } from './retained-storage.js';
 import { createLibrary } from './library.js';
-import { libraryDraftsMigration, createDraftStore } from './store-library.js';
+import { libraryDraftsMigration, createDraftStore } from './store-drafts.js';
 
 export const imageIdPattern = /^[a-f0-9-]{36}\.(png|jpg|webp|gif|avif)$/;
 

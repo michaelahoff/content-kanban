@@ -3,7 +3,7 @@
 // explicitly. Document drafts are kept as the user types; only Save publishes.
 import { $, escape, icon, button, iconButton, toast, smallForm, id } from './ui.js';
 import { request } from './api.js';
-import { assetPreview, libraryFilename, nameConflict, previewType, splitExtension } from './library-format.js';
+import { assetPreview, libraryFilename, nameConflict, splitExtension } from './library-format.js';
 import { project } from './state.js';
 
 const dialog = $('#library-dialog');
@@ -44,9 +44,9 @@ export async function renderLibrary() {
 
 const draftFor = (asset) => library.drafts.find((draft) => draft.assetId === asset.id);
 // Text files and written documents open in the editor; the server checks the bytes are UTF-8.
-const editable = (asset) => assetPreview(asset)?.kind === 'text';
+const editable = (asset) => assetPreview(asset.filename, asset.current)?.kind === 'text';
 function thumbnail(asset) {
-  const preview = previewType(asset.filename);
+  const preview = assetPreview(asset.filename, asset.current);
   if (!asset.current.available) return `<div class="library-thumb unavailable">${icon('close')}<span>Unavailable</span></div>`;
   if (preview?.kind === 'image') return `<div class="library-thumb"><img src="${contentURL(asset.current.id, true)}" alt="" loading="lazy" draggable="false"></div>`;
   return `<div class="library-thumb file"><span>${escape(extension(asset.filename))}</span></div>`;
@@ -174,7 +174,7 @@ export function uploadLibraryFiles(files) {
 
 async function preview(asset) {
   const node = $('#library-preview', dialog);
-  const type = assetPreview(asset);
+  const type = assetPreview(asset.filename, asset.current);
   if (!asset.current.available) { node.innerHTML = '<p class="library-preview-note">This version’s bytes are unavailable. Repair it with the exact original file below.</p>'; return; }
   if (type?.kind === 'image') { node.innerHTML = `<img src="${contentURL(asset.current.id, true)}" alt="${escape(asset.filename)}">`; return; }
   if (type?.kind !== 'text') { node.innerHTML = '<p class="library-preview-note">No preview for this file type. Download it to open the exact original.</p>'; return; }

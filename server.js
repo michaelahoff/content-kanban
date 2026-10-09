@@ -276,8 +276,8 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
           // Verified before the first byte; a change while streaming aborts the response.
           let ids;
           try { ids = content.slice(1).map(decodeURIComponent); } catch { return send(res, 404, { error: 'Not found.' }); }
-          const { version, filename, kind, stream: bytes } = await store.library.read(currentUser(req), ...ids);
-          const inline = url.searchParams.get('inline') === '1' && assetPreview({ kind, filename });
+          const { version, filename, written, stream: bytes } = await store.library.read(currentUser(req), ...ids);
+          const inline = url.searchParams.get('inline') === '1' && assetPreview(filename, { written });
           res.writeHead(200, { 'Content-Type': inline ? inline.type : 'application/octet-stream', 'Content-Length': version.size,
             'Content-Disposition': disposition(inline ? 'inline' : 'attachment', filename),
             'Content-Security-Policy': "default-src 'none'; sandbox", 'Cache-Control': 'private, max-age=31536000, immutable' });

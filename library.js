@@ -9,7 +9,7 @@ const fail = (status, message, extra = {}) => { throw Object.assign(new Error(me
 export const maxDocumentBytes = 4 * 1024 * 1024;
 function documentText(value) {
   if (typeof value !== 'string') fail(400, 'Send the document text.');
-  if (Buffer.byteLength(value, 'utf8') > maxDocumentBytes) fail(413, 'Documents can be up to 4 MB. Upload larger files instead.');
+  if (Buffer.byteLength(value, 'utf8') > maxDocumentBytes) fail(413, `Documents can be up to ${maxDocumentBytes / 1024 / 1024} MB. Upload larger files instead.`);
   return value;
 }
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
@@ -18,7 +18,7 @@ const savedOutcome = (provenance) => provenance.baseVersionId ? 'saved' : proven
 
 export function createLibrary({ retained, metadata, drafts, project, record }) {
   const numbered = (versions) => versions.map((version, index) => ({ id: version.id, size: version.size, hash: version.hash,
-    available: version.available, error: version.error, committedAt: version.committedAt, number: index + 1 }));
+    available: version.available, error: version.error, committedAt: version.committedAt, number: index + 1, written: version.provenance.method === 'document' }));
   function assetFrom(ctx, row) {
     const versions = numbered(metadata.history(ctx, row.id));
     return { id: row.id, projectId: row.project_id, filename: row.filename, kind: row.kind, createdAt: row.created_at,
@@ -37,6 +37,13 @@ export function createLibrary({ retained, metadata, drafts, project, record }) {
     if (!row || row.project_id !== projectId || !libraryKinds.includes(row.kind) || row.removed_at || !row.current_version_id) fail(404, 'This Library file does not exist.');
     return row;
   };
+  // A Save that committed but crashed before finishing its draft is finished here.
+  function settle(ctx, projectId) {
+    for (const draft of drafts.list(ctx, projectId)) {
+      const saved = draft.saveOperationId && metadata.operation(ctx, draft.saveOperationId);
+      if (saved?.state === 'committed') drafts.afterSave(ctx, projectId, draft.id, saved.provenance.revision, saved);
+    }
+  }
   // Where a publication lands: a new asset, or by explicit choice a new version
   // of the asset holding its name. A retry repeats its operation's original
   // choice exactly; a saved operation is reported again without new bytes.
@@ -64,6 +71,7 @@ export function createLibrary({ retained, metadata, drafts, project, record }) {
   return {
     list(ctx, projectId) {
       project(ctx, projectId, { allowArchived: true });
+      settle(ctx, projectId);
       return { assets: metadata.sources(ctx, projectId).map((row) => assetFrom(ctx, row)),
         drafts: drafts.list(ctx, projectId).map(({ text, ...draft }) => ({ ...draft, length: text.length })) };
     },
@@ -84,27 +92,30 @@ export function createLibrary({ retained, metadata, drafts, project, record }) {
     // file starts from its current version. Each asset has at most one draft.
     async createDraft(ctx, projectId, input = {}) {
       project(ctx, projectId);
+      settle(ctx, projectId);
       if (!input.assetId) {
         const draft = drafts.create(ctx, { projectId, filename: libraryFilename(input.filename), text: documentText(input.text ?? '') });
         record(ctx, 'draft_created', draft.id, projectId, { filename: draft.filename }, 'library_draft');
         return draft;
       }
       const row = live(ctx, projectId, input.assetId);
-      const existing = drafts.forAsset(ctx, row.id);
-      if (existing) return existing;
+      const existing = () => drafts.forAsset(ctx, row.id);
+      if (existing()) return existing();
       const current = metadata.version(ctx, row.current_version_id);
       if (current.size > maxDocumentBytes) fail(413, 'This file is too large to edit here. Download it to edit it elsewhere.');
       const stream = await retained.read(ctx, current.id);
       let text;
       try { text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(await collect(stream)); }
       catch (error) { if (error.status) throw error; fail(422, 'This file is not UTF-8 text, so it cannot be edited here.'); }
-      if (drafts.forAsset(ctx, row.id)) return drafts.forAsset(ctx, row.id);
+      // Another request may have started this draft while the bytes were read.
+      if (existing()) return existing();
       const draft = drafts.create(ctx, { projectId, assetId: row.id, baseVersionId: current.id, filename: row.filename, text });
       record(ctx, 'draft_created', draft.id, projectId, { assetId: row.id, filename: draft.filename }, 'library_draft');
       return draft;
     },
     draft(ctx, projectId, draftId) {
       project(ctx, projectId, { allowArchived: true });
+      settle(ctx, projectId);
       return drafts.get(ctx, projectId, draftId);
     },
     // A draft edit is app data only: it never touches retained/current content.
@@ -128,11 +139,15 @@ export function createLibrary({ retained, metadata, drafts, project, record }) {
       const prior = metadata.operation(ctx, input.operationId);
       if (prior?.state === 'committed') {
         if (prior.provenance.method !== 'document' || prior.provenance.draftId !== draftId || metadata.object(ctx, prior.objectId).project_id !== projectId) fail(409, 'This save was started for a different draft. Save again.');
-        const version = numberedVersion(ctx, prior);
-        return { outcome: savedOutcome(prior.provenance), asset: assetFrom(ctx, metadata.object(ctx, prior.objectId)), version, draft: drafts.find(ctx, projectId, draftId) };
+        const remaining = drafts.find(ctx, projectId, draftId) && drafts.afterSave(ctx, projectId, draftId, prior.provenance.revision, prior);
+        return { outcome: savedOutcome(prior.provenance), asset: assetFrom(ctx, metadata.object(ctx, prior.objectId)), version: numberedVersion(ctx, prior), draft: remaining ?? null };
       }
+      settle(ctx, projectId);
       const draft = drafts.get(ctx, projectId, draftId);
       if (draft.revision !== input.revision) fail(409, 'This draft changed in another tab. Review it, then save again.', { conflict: { draftRevision: draft.revision } });
+      // One Save at a time per draft, so two tabs never publish it twice.
+      const saving = draft.saveOperationId !== input.operationId && metadata.operation(ctx, draft.saveOperationId);
+      if (saving && ['staging', 'published'].includes(saving.state)) fail(409, 'This draft is already being saved in another tab.');
       const bytes = Buffer.from(draft.text, 'utf8');
       let descriptor; let provenance;
       if (draft.assetId) {
@@ -141,7 +156,7 @@ export function createLibrary({ retained, metadata, drafts, project, record }) {
         const base = input.baseVersionId ?? draft.baseVersionId;
         if (base !== current.id) fail(409, `v${current.number} of ${row.filename} was saved after this draft began.`, { conflict: { currentVersion: current } });
         if (sha256(bytes) === current.hash && bytes.length === current.size) {
-          drafts.saved(ctx, projectId, draftId, draft.revision, saved);
+          drafts.afterSave(ctx, projectId, draftId, draft.revision, saved);
           return { outcome: 'unchanged', asset: assetFrom(ctx, row), version: current, draft: null };
         }
         descriptor = { objectId: row.id, kind: row.kind, filename: row.filename };
@@ -150,8 +165,19 @@ export function createLibrary({ retained, metadata, drafts, project, record }) {
         ({ descriptor } = placement(ctx, projectId, { ...input, filename: draft.filename, method: 'document', prior }));
         provenance = { method: 'document', draftId, revision: draft.revision, requestedFilename: draft.filename, collision: input.collision ?? null };
       }
-      const version = await retained.publish(ctx, { operationId: input.operationId, projectId, ...descriptor, provenance }, bytes, { signal });
-      const remaining = drafts.saved(ctx, projectId, draftId, draft.revision, version);
+      drafts.saving(ctx, projectId, draftId, input.operationId);
+      let version;
+      try { version = await retained.publish(ctx, { operationId: input.operationId, projectId, ...descriptor, provenance }, bytes, { signal }); }
+      catch (error) {
+        // Another save of this asset committed first: report the version that won.
+        const current = draft.assetId && metadata.object(ctx, draft.assetId)?.current_version_id;
+        if (current && current !== provenance.baseVersionId) {
+          const winner = numberedVersion(ctx, metadata.version(ctx, current));
+          fail(409, `v${winner.number} of ${descriptor.filename} was saved while this draft was saving.`, { conflict: { currentVersion: winner } });
+        }
+        throw error;
+      }
+      const remaining = drafts.afterSave(ctx, projectId, draftId, draft.revision, version);
       const asset = assetFrom(ctx, metadata.object(ctx, version.objectId));
       record(ctx, 'document_saved', asset.id, projectId, { versionId: version.id, filename: asset.filename });
       return { outcome: savedOutcome(provenance), asset, version: numberedVersion(ctx, version), draft: remaining };
@@ -181,7 +207,7 @@ export function createLibrary({ retained, metadata, drafts, project, record }) {
     async read(ctx, projectId, versionId) {
       project(ctx, projectId, { allowArchived: true });
       const { version, source } = owned(ctx, projectId, versionId);
-      return { version, filename: source.filename, kind: source.kind, stream: await retained.read(ctx, version.id) };
+      return { version, filename: source.filename, written: version.provenance.method === 'document', stream: await retained.read(ctx, version.id) };
     },
   };
 }
