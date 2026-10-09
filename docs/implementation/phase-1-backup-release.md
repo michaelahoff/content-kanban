@@ -4,6 +4,8 @@ Ticket: [#25](https://github.com/michaelahoff/content-kanban/issues/25). Accepta
 
 ## Backup and restore
 
+[Complete workspace export](workspace-export.md) (#50) replaces this section's export format with manifest version 2: retained versions, streaming, in-app maintenance and abandoned-staging recovery. Restore still accepts format 1 bundles. The native selection and history-only labelling below are unchanged.
+
 Stop Frameboard, then run:
 
 ```sh

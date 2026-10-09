@@ -10,4 +10,6 @@
 .model-provider ul { padding-left: 22px; line-height: 1.8; }
 .model-provider time, .settings-error { display: block; font-size: 13px; }
 .settings-error { color: #ff9c9c; }
+#backup-form label { display: block; margin: 16px 0 8px; }
+#backup-form input { width: 100%; margin-bottom: 12px; }
 @media (max-width: 520px) { .settings-heading { align-items: start; flex-direction: column; } .provider-option, .model-catalog { padding: 16px; } }

@@ -522,6 +522,12 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
         return this.snapshot(ctx, cardId);
       });
     },
+    // Attempts that hold their card's dispatch slot: native work may still act.
+    activeAttempts(ctx) {
+      return all(`SELECT a.id, a.card_id, a.status FROM chat_attempts a JOIN card_chats h ON h.card_id = a.card_id
+        WHERE h.workspace_id = ? AND a.status IN (${active.map(() => '?').join(', ')}) ORDER BY a.started_at`, ctx.workspaceId, ...active)
+        .map((row) => ({ cardId: row.card_id, attemptId: row.id, status: row.status }));
+    },
     unfinished(ctx) {
       return all(`SELECT a.* FROM chat_attempts a JOIN card_chats h ON h.card_id = a.card_id
         WHERE h.workspace_id = ? AND a.status IN ('dispatching', 'accepted', 'running', 'interrupt-requested', 'uncertain')`, ctx.workspaceId)

@@ -4,7 +4,7 @@ Implements [#47](https://github.com/michaelahoff/content-kanban/issues/47) again
 
 ## Boundary
 
-`openStore()` exposes `store.retained`; all payload filesystem access stays in `retained-storage.js`, with private SQLite operations in `store-retained.js`. Pass the existing workspace-scoped actor context. Operations require exclusive data-directory ownership, as the server/backup CLI already establish with `lockDataDirectory()`. Recovery finishes before `openStore()` returns and before the server starts its workers. Asynchronous retained operations belong outside `store.transaction()`.
+`openStore()` exposes `store.retained`; all payload filesystem access by app features stays in `retained-storage.js`, with private SQLite operations in `store-retained.js`. The one exception is whole-workspace export/restore (`backup.js`, with read-only inventory SQL in `store.js` `inspectBackupDatabase` over the database snapshot), which copies the `retained/versions/` directory verbatim while it owns the data directory (data lock or maintenance), never writes there, and verifies each payload against the version's recorded hash and size. Pass the existing workspace-scoped actor context. Operations require exclusive data-directory ownership, as the server/backup CLI already establish with `lockDataDirectory()`. Recovery finishes before `openStore()` returns and before the server starts its workers. Asynchronous retained operations belong outside `store.transaction()`.
 
 - `publish(ctx, { operationId, projectId, kind, filename, objectId?, provenance? }, bytes, { signal }?)` imports a byte stream/async iterable or `Uint8Array`. Kinds are asset, document and output; they do not restrict formats. Encode authored text explicitly before publication. A replacement names the existing object; a new publication gets an independent identity. Filenames are version metadata and never authoritative paths.
 - `publishBatch(ctx, [{ descriptor, source }], options?)` returns independent success/error outcomes. Stable workspace-scoped operation IDs make retries reuse successful versions without consuming their sources. Once the complete source digest is recorded, a failed-operation retry must match it. Before a complete stream exists, retry can restart that incomplete upload.
@@ -21,7 +21,7 @@ Publication records staging, streams/hashes complete bytes, flushes the file, pi
 
 Startup removes owned incomplete staging/repair files and tracked noncommitted payloads, marking those operations retryable. It never collects committed versions by reference count, visibility, supersession or availability. Unknown files are left alone. Required originals are verified on use; a workspace edit cannot change them through a shared inode. Matching repair atomically replaces the bytes and restores availability without rewriting frozen historical identities.
 
-Legacy backup format 1 does not yet include retained payloads. Export and restore explicitly refuse databases containing committed retained versions, rather than certify an incomplete bundle. Normal legacy backups remain supported. The subsequent complete-export stage must replace that guard with streamed inventory/verification of every retained payload.
+Backup format 2 ([complete workspace export](workspace-export.md), #50) replaced the earlier refusal: every committed version, including superseded, removed and unavailable ones, is required coverage, streamed, checked against its recorded hash and size, and inventoried in the manifest. `retained/staging/` is temporary and excluded.
 
 ## Acceptance evidence
 

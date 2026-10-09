@@ -52,6 +52,28 @@ $('#refresh-models').addEventListener('click', async () => {
   try { await loadModels(true); $('#status').textContent = providers.some((provider) => provider.error) ? 'Some providers could not refresh. See their details below.' : 'Models refreshed and saved for every chat.'; }
   catch (error) { $('#status').textContent = error.message; }
 });
+let backupTimer = null;
+function renderBackup(state) {
+  $('#backup-start').disabled = state.active; $('#backup-cancel').hidden = !state.active;
+  if (!$('#backup-output').value) $('#backup-output').value = state.defaultOutput;
+  const last = state.last;
+  $('#backup-status').textContent = state.phase === 'draining'
+    ? `Changes are paused. Waiting for ${state.running.length ? `${state.running.length} running ${state.running.length === 1 ? 'reply' : 'replies'} to finish or be stopped` : 'saves in progress'}…`
+    : state.phase === 'exporting' ? 'Exporting and verifying every file…'
+      : last?.status === 'completed' ? `Backup saved to ${last.backupDir}. ${last.label}`
+        : last ? last.error : '';
+  clearTimeout(backupTimer);
+  if (state.active) backupTimer = setTimeout(() => request('/api/maintenance').then(renderBackup, (error) => { $('#backup-status').textContent = error.message; }), 1000);
+}
+$('#backup-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  try { renderBackup(await send('POST', '/api/maintenance/export', { output: $('#backup-output').value.trim() })); }
+  catch (error) { $('#backup-status').textContent = error.message; }
+});
+$('#backup-cancel').addEventListener('click', async () => {
+  try { renderBackup(await send('POST', '/api/maintenance/cancel', {})); } catch (error) { $('#backup-status').textContent = error.message; }
+});
+request('/api/maintenance').then(renderBackup, () => {});
 try {
   providers = (await request('/api/settings')).providers; renderProviders(); renderModels();
   await loadModels(); $('#status').textContent = 'Settings apply globally. Provider switches save automatically.';

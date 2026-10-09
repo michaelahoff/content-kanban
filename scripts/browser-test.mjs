@@ -924,6 +924,18 @@ These values apply when a card enters this lane.
   await waitFor(`document.querySelector('#chat-composer').textContent.includes('Enable Claude or Codex')`);
   assert.equal(await evaluate(`document.querySelector('[data-action="chat-send"]').disabled`), true);
   console.log('PASS global Settings, independent provider toggles, saved models/instructions, Claude chat, disabled sends and mobile layout');
+  // A manual export from Settings pauses changes, then reports the verified folder.
+  await click('[data-action="close-card"]');
+  await waitFor(`import('/state.js').then(m => !m.hasUnsavedWork())`);
+  await send('Page.navigate', { url: base + '/settings.html' });
+  await waitFor(`document.querySelector('#backup-output').value.endsWith('backups')`);
+  await fill('#backup-output', path.join(temporary, 'browser-backups'));
+  await click('#backup-start');
+  await waitFor(`document.querySelector('#backup-status').textContent.includes('Backup saved to')`);
+  assert.equal(await evaluate(`document.querySelector('#backup-cancel').hidden`), true);
+  assert.equal((await api('GET', '/api/maintenance')).last.status, 'completed');
+  await snapshot('settings-export');
+  console.log('PASS Settings export pauses changes and reports the verified backup folder');
   assert.deepEqual(browserErrors, []);
   console.log('All browser checks passed. Screenshots: test-results/');
 } finally {

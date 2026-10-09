@@ -1,35 +1,112 @@
-import { mkdir, mkdtemp, readdir, writeFile, rename, rm, lstat, realpath, open, chmod } from 'node:fs/promises';
+// Complete workspace export and restore. Every payload is streamed through
+// SHA-256 with a fixed buffer, so file size never determines memory use.
+import { mkdir, mkdtemp, readdir, rename, rm, lstat, realpath, open, chmod } from 'node:fs/promises';
 import { constants } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import path from 'node:path';
-import { sha256, imageFormat, maxImageBytes } from './image-files.js';
+import { imageFormat, maxImageBytes } from './image-files.js';
 import { imageIdPattern, snapshotDatabase, inspectBackupDatabase } from './store.js';
+import { holdExclusiveLock } from './data-lock.js';
 
 const fail = (message) => { throw new Error(message); };
 const optional = async (filename) => lstat(filename).catch((error) => { if (error.code !== 'ENOENT') throw error; return null; });
+const bufferSize = 64 * 1024;
+const appStores = ['images', 'workspaces', 'flows', 'retained'];
+// Backup reads every app store directly while it owns the data directory (the
+// lock or maintenance); it never writes there. Temporary publication bytes are
+// reclaimed by the app and are never retained content.
+const temporaryStores = new Set(['retained/staging']);
+const legacyBoard = 'board.json.migrated';
+const coverage = {
+  included: ['SQLite database: projects (active and archived), lanes, cards, saved states, activity, chats, submissions, attempts, cancellations, proposals, lane runs, selections and settings',
+    'Image versions (data/images)', 'Every committed retained version, including superseded and removed ones (data/retained/versions)',
+    'Card workspaces and hand-off notes (data/workspaces)', 'Project maps, lane playbooks and skills (data/flows)',
+    'Already collected native Codex rollouts and generated images bound to card chats'],
+  excluded: ['Global native credentials and configuration', 'Native conversations not bound to a card chat', 'The native Codex index',
+    'Native Claude session files, including bound ones (their card chat history is in the database)',
+    'External service data', 'Unsaved editor text', 'Temporary retained publication staging',
+    'Image outputs that were never saved; their native file is included only when collected from a bound conversation'],
+};
 
-async function regularBytes(root, relative) {
-  const filename = path.join(root, relative);
-  if (await realpath(path.dirname(filename)) !== path.dirname(filename)) fail(`Linked directory refused: ${relative}`);
-  const file = await open(filename, constants.O_RDONLY | constants.O_NOFOLLOW);
-  try {
-    const info = await file.stat();
-    if (!info.isFile() || info.nlink !== 1) fail(`Not a regular, singly linked file: ${relative}`);
-    const bytes = await file.readFile();
-    const after = await file.stat();
-    if (info.size !== after.size || info.mtimeMs !== after.mtimeMs || info.ctimeMs !== after.ctimeMs || bytes.length !== info.size) fail(`File changed while being backed up: ${relative}`);
-    return bytes;
-  } finally { await file.close(); }
+async function syncDirectory(directory) {
+  const handle = await open(directory, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+  try { await handle.sync(); } finally { await handle.close(); }
 }
 
-async function inventory(root, relative, files, directories) {
-  const info = await optional(path.join(root, relative));
-  if (!info) return;
-  if (info.isDirectory()) {
-    directories.push(relative);
-    for (const name of (await readdir(path.join(root, relative))).sort()) await inventory(root, `${relative}/${name}`, files, directories);
-  } else if (info.isFile() && info.nlink === 1) files.push(relative);
-  else fail(`Links and special files cannot be backed up: ${relative}`);
+// Opens one regular, singly linked file below root without following any link.
+async function openRegular(root, relative) {
+  const filename = path.join(root, relative);
+  if (await realpath(path.dirname(filename)) !== path.dirname(filename)) fail(`Linked directory refused: ${relative}`);
+  let handle;
+  try { handle = await open(filename, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
+  catch (error) { if (error.code === 'ELOOP') fail(`Links and special files cannot be backed up: ${relative}`); throw error; }
+  try {
+    const info = await handle.stat();
+    if (!info.isFile() || info.nlink !== 1) fail(`Not a regular, singly linked file: ${relative}`);
+    return { handle, info };
+  } catch (error) { await handle.close(); throw error; }
+}
+const sameBytes = (a, b) => a.size === b.size && a.sha256 === b.sha256;
+const identity = (info) => `${info.dev}:${info.ino}:${info.size}:${info.mtimeMs}:${info.ctimeMs}:${info.mode}`;
+
+// Reads the whole file once, hashing it and optionally writing the same bytes.
+async function hashCopy(handle, { target, signal } = {}) {
+  const hash = createHash('sha256'); const buffer = Buffer.allocUnsafe(bufferSize); let size = 0; let head = Buffer.alloc(0);
+  for (;;) {
+    signal?.throwIfAborted();
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, size);
+    if (!bytesRead) break;
+    const chunk = buffer.subarray(0, bytesRead);
+    if (head.length < 64) head = Buffer.concat([head, chunk.subarray(0, 64 - head.length)]);
+    hash.update(chunk);
+    for (let offset = 0; target && offset < bytesRead;) {
+      const { bytesWritten } = await target.write(chunk, offset, bytesRead - offset);
+      if (!bytesWritten) fail('Writing the backup made no progress.');
+      offset += bytesWritten;
+    }
+    size += bytesRead;
+  }
+  return { size, sha256: hash.digest('hex'), head };
+}
+
+async function hashFile(root, relative, options) {
+  const { handle } = await openRegular(root, relative);
+  try { return await hashCopy(handle, options); } finally { await handle.close(); }
+}
+
+// Copies one file into staging. `expected` is the identity recorded by the
+// scan; any change before or during the copy fails rather than mixing states.
+async function copyInto(sourceRoot, relative, staging, destination, { signal, expected } = {}) {
+  const { handle, info } = await openRegular(sourceRoot, relative);
+  try {
+    if (expected && identity(info) !== expected) fail(`Changed during export: ${relative}`);
+    const filename = path.join(staging, destination);
+    await mkdir(path.dirname(filename), { recursive: true, mode: 0o700 });
+    const target = await open(filename, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
+    try {
+      let result;
+      try { result = await hashCopy(handle, { target, signal }); await target.sync(); } finally { await target.close(); }
+      if (identity(await handle.stat()) !== identity(info) || result.size !== info.size) fail(`File changed while being exported: ${relative}`);
+      return { ...result, mode: info.mode & 0o777 };
+    } catch (error) { await rm(filename, { force: true }); throw error; } // Only the file this call created.
+  } finally { await handle.close(); }
+}
+
+// Every app-store file and directory, with the identity each must keep.
+async function scan(dataDir) {
+  const files = new Map(); const directories = [];
+  async function walk(relative) {
+    const info = await optional(path.join(dataDir, relative));
+    if (!info) return;
+    if (info.isDirectory()) {
+      directories.push(relative);
+      for (const name of (await readdir(path.join(dataDir, relative))).sort()) if (!temporaryStores.has(`${relative}/${name}`)) await walk(`${relative}/${name}`);
+    } else if (info.isFile() && info.nlink === 1) files.set(relative, identity(info));
+    else fail(`Links and special files cannot be backed up: ${relative}`);
+  }
+  for (const root of [...appStores, legacyBoard]) await walk(root);
+  return { files, directories };
 }
 
 function nativePath(relative, threads) {
@@ -37,9 +114,23 @@ function nativePath(relative, threads) {
     || (relative.startsWith(`generated_images/${id}/`) && /\.(png|jpg|jpeg|webp|gif|avif)$/i.test(relative)));
 }
 
-async function selectedNative(home, threads) {
-  const files = []; const missing = [];
-  if (!await optional(home)) return { files, missing: threads };
+// The first JSONL record, read with a bounded buffer.
+async function firstLine(root, relative) {
+  const { handle } = await openRegular(root, relative);
+  try {
+    const buffer = Buffer.allocUnsafe(bufferSize); const parts = []; let size = 0;
+    for (;;) {
+      const { bytesRead } = await handle.read(buffer, 0, buffer.length, size);
+      const end = buffer.subarray(0, bytesRead).indexOf(10);
+      parts.push(Buffer.from(buffer.subarray(0, end < 0 ? bytesRead : end))); size += bytesRead;
+      if (end >= 0 || !bytesRead) return Buffer.concat(parts).toString('utf8');
+      if (size > 64 * 1024 * 1024) fail(`Native rollout header is too large: ${relative}`);
+    }
+  } finally { await handle.close(); }
+}
+
+async function nativeCandidates(home, threads) {
+  if (!threads.length || !await optional(home)) return { home: null, candidates: [] };
   home = await realpath(home);
   const candidates = [];
   // Walk directories only; unrelated native files are never opened or copied.
@@ -52,21 +143,53 @@ async function selectedNative(home, threads) {
       else if (nativePath(child, threads)) candidates.push(child);
     }
   }
-  if (threads.length) for (const root of ['sessions', 'archived_sessions']) await walk(root);
+  for (const root of ['sessions', 'archived_sessions']) await walk(root);
   for (const id of threads) await walk(`generated_images/${id}`);
-  for (const relative of candidates) {
-    const bytes = await regularBytes(home, relative);
-    if (relative.endsWith('.jsonl')) {
-      const first = JSON.parse(bytes.toString('utf8').split('\n', 1)[0]);
-      if (first.type !== 'session_meta' || !threads.includes(first.payload?.id) || !relative.endsWith(`-${first.payload.id}.jsonl`)) fail(`Native rollout identity mismatch: ${relative}`);
-    } else if (bytes.length > maxImageBytes || !imageFormat(bytes)) fail(`Invalid native image: ${relative}`);
-    files.push({ relative, bytes });
-  }
-  for (const id of threads) if (!files.some((item) => item.relative.endsWith(`-${id}.jsonl`))) missing.push(id);
-  return { files, missing };
+  return { home, candidates };
 }
 
-export async function createBackup({ dataDir, output, codexHome }) {
+// Each staging folder has a sibling `.owner` file, created exclusively before
+// the folder and locked for the whole export; the kernel releases the lock if
+// the process dies. Only staging with that proof of ownership is reclaimed.
+const stagingName = /^\.incomplete-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}\.\d{3}Z-[0-9a-f]{8}$/;
+async function claimStaging(output, name) {
+  const staging = path.join(output, `.incomplete-${name}`); const ownerFile = `${staging}.owner`;
+  await (await open(ownerFile, 'wx', 0o600)).close();
+  const owner = holdExclusiveLock(ownerFile);
+  if (!owner) { await rm(ownerFile, { force: true }); fail('Another export claimed this staging folder. Try again.'); }
+  try { await mkdir(staging, { mode: 0o700 }); }
+  catch (error) { owner.close(); await rm(ownerFile, { force: true }); throw error; }
+  return { staging, release: async () => { owner.close(); await rm(ownerFile, { force: true }); } };
+}
+
+async function reclaimAbandonedStaging(output) {
+  const names = new Set(await readdir(output));
+  for (const name of names) {
+    const owned = name.endsWith('.owner') ? name.slice(0, -6) : null;
+    if (!stagingName.test(owned ?? name) || (!owned && !names.has(`${name}.owner`))) continue;
+    const ownerFile = path.join(output, `${owned ?? name}.owner`);
+    // Another export sharing this folder may publish or clean up meanwhile.
+    const ownerInfo = await optional(ownerFile);
+    // A lone owner file may belong to an export between its two creation steps.
+    if (!ownerInfo || (owned && (names.has(owned) || Date.now() - ownerInfo.mtimeMs < 60 * 60 * 1000))) continue;
+    // An unreadable owner file is not proof of ownership; leave it alone.
+    let owner; try { owner = holdExclusiveLock(ownerFile); } catch { owner = null; }
+    if (!owner) continue;
+    try { if (!owned && (await optional(path.join(output, name)))?.isDirectory()) await rm(path.join(output, name), { recursive: true, force: true }); }
+    finally { owner.close(); await rm(ownerFile, { force: true }); }
+  }
+}
+
+const explainDiskFull = (error) => error?.code === 'ENOSPC' || error?.code === 'EDQUOT'
+  ? Object.assign(new Error(`Not enough disk space for the backup. Nothing was published and earlier backups are unchanged. Free space at the backup location and try again. (${error.message})`), { code: error.code, cause: error })
+  : error;
+
+// `checkpoint(boundary)` is a fault-injection boundary for interruption tests.
+export async function createBackup(options) {
+  try { return await exportWorkspace(options); } catch (error) { throw explainDiskFull(error); }
+}
+
+async function exportWorkspace({ dataDir, output, codexHome, signal, checkpoint = async () => {} }) {
   dataDir = await realpath(dataDir);
   output = path.resolve(output);
   if (output === dataDir || output.startsWith(dataDir + path.sep)) fail('Choose a backup location outside the app data directory.');
@@ -74,48 +197,86 @@ export async function createBackup({ dataDir, output, codexHome }) {
   const createdAt = new Date().toISOString();
   output = await realpath(output);
   if (output === dataDir || output.startsWith(dataDir + path.sep)) fail('Choose a backup location outside the app data directory.');
-  const staging = await mkdtemp(path.join(output, '.incomplete-'));
+  await reclaimAbandonedStaging(output);
+  const name = `${createdAt.replaceAll(':', '-')}-${randomUUID().slice(0, 8)}`;
+  const { staging, release } = await claimStaging(output, name);
   try {
+    const before = await scan(dataDir);
+    await checkpoint('scanned');
     snapshotDatabase(path.join(dataDir, 'frameboard.db'), path.join(staging, 'frameboard.db'));
-    const { schemaVersion, images: versions, nativeThreads: threads, retainedCount } = inspectBackupDatabase(path.join(staging, 'frameboard.db'));
-    if (retainedCount) fail('Retained storage export is not available yet. This backup format cannot preserve retained payloads.');
     await chmod(path.join(staging, 'frameboard.db'), 0o600);
-    const files = ['frameboard.db']; const directories = [];
-    await inventory(dataDir, 'images', files, directories);
-    await inventory(dataDir, 'workspaces', files, directories);
-    await inventory(dataDir, 'flows', files, directories);
-    for (const version of versions) if (!files.includes(`images/${version.id}`)) fail(`Missing image: ${version.id}`);
+    const { schemaVersion, images, nativeThreads: threads, retained, projects, tables, outputs } = inspectBackupDatabase(path.join(staging, 'frameboard.db'));
+    // Database references are required coverage, not just files that were found.
+    for (const image of images) if (!before.files.has(`images/${image.id}`)) fail(`Missing image: ${image.id}`);
+    for (const version of retained) if (!before.files.has(version.path)) fail(`Missing retained version: ${version.versionId}. Repair it with its exact original bytes before exporting.`);
+    // Every retained project's map exists from its creation (startup recreates a starter otherwise).
+    for (const project of projects) if (!project.deletedAt && !before.files.has(`flows/${project.flowId}/MAP.md`)) fail(`Missing project map for "${project.name}": flows/${project.flowId}/MAP.md. Restore the file, or start Frameboard once to recreate a starter map, then export again.`);
+    const recordedImageHash = new Map(images.map((image) => [`images/${image.id}`, image.hash]));
+    const retainedByPath = new Map(retained.map((version) => [version.path, version]));
     const entries = [];
-    for (const directory of directories) await mkdir(path.join(staging, directory), { recursive: true, mode: 0o700 });
-    for (const relative of files) {
-      const bytes = await regularBytes(relative === 'frameboard.db' ? staging : dataDir, relative);
-      const mode = (await lstat(path.join(relative === 'frameboard.db' ? staging : dataDir, relative))).mode & 0o777;
+    const database = await hashFile(staging, 'frameboard.db', { signal });
+    entries.push({ path: 'frameboard.db', size: database.size, sha256: database.sha256, mode: 0o600 });
+    for (const directory of before.directories) await mkdir(path.join(staging, directory), { recursive: true, mode: 0o700 });
+    for (const [relative, expected] of before.files) {
+      await checkpoint('copying', relative);
+      const copied = await copyInto(dataDir, relative, staging, relative, { signal, expected });
       if (relative.startsWith('images/')) {
-        if (!imageIdPattern.test(path.basename(relative)) || bytes.length > maxImageBytes || !imageFormat(bytes)) fail(`Invalid stored image: ${relative}`);
-        const version = versions.find((item) => item.id === path.basename(relative));
-        if (version?.hash && sha256(bytes) !== version.hash) fail(`Damaged image: ${relative}`);
+        if (!imageIdPattern.test(path.basename(relative)) || copied.size > maxImageBytes || !imageFormat(copied.head)) fail(`Invalid stored image: ${relative}`);
+        const recorded = recordedImageHash.get(relative);
+        if (recorded && recorded !== copied.sha256) fail(`Damaged image: ${relative}`);
       }
-      if (relative !== 'frameboard.db') await writeFile(path.join(staging, relative), bytes, { flag: 'wx', mode: 0o600 });
-      entries.push({ path: relative, size: bytes.length, sha256: sha256(bytes), mode });
+      const version = retainedByPath.get(relative);
+      if (version && !sameBytes(version, copied)) fail(`Damaged retained version: ${version.versionId}. Its bytes differ from the recorded hash and size; repair it with its exact original bytes before exporting.`);
+      entries.push({ path: relative, size: copied.size, sha256: copied.sha256, mode: copied.mode });
     }
+    const native = await nativeCandidates(codexHome, threads);
+    for (const relative of native.candidates) {
+      const destination = `native/codex/${relative}`;
+      const copied = await copyInto(native.home, relative, staging, destination, { signal });
+      if (relative.endsWith('.jsonl')) {
+        let first; try { first = JSON.parse(await firstLine(staging, destination)); } catch { first = null; }
+        if (first?.type !== 'session_meta' || !threads.includes(first.payload?.id) || !relative.endsWith(`-${first.payload.id}.jsonl`)) fail(`Native rollout identity mismatch: ${relative}`);
+      } else if (copied.size > maxImageBytes || !imageFormat(copied.head)) fail(`Invalid native image: ${relative}`);
+      entries.push({ path: destination, size: copied.size, sha256: copied.sha256, mode: 0o600 });
+    }
+    // Verify the staged copies themselves before anything is published.
+    await checkpoint('verifying');
+    for (const entry of entries) {
+      const staged = await hashFile(staging, entry.path, { signal });
+      if (!sameBytes(staged, entry)) fail(`Backup verification failed: ${entry.path}`);
+    }
+    const after = await scan(dataDir);
+    const changed = [...new Set([...before.files.keys(), ...after.files.keys()])].filter((relative) => before.files.get(relative) !== after.files.get(relative));
+    if (changed.length || before.directories.join('\n') !== after.directories.join('\n')) fail(`App data changed during export${changed.length ? `: ${changed.slice(0, 5).join(', ')}` : ''}. Something was still writing: close programs editing playbooks or card workspaces, then try again.`);
     let appRevision = null;
     try { appRevision = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: new URL('.', import.meta.url), encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); } catch { /* A distributed copy may lack Git metadata. */ }
-    const native = await selectedNative(codexHome, threads);
-    for (const { relative, bytes } of native.files) {
-      const destination = `native/codex/${relative}`;
-      await mkdir(path.dirname(path.join(staging, destination)), { recursive: true, mode: 0o700 });
-      await writeFile(path.join(staging, destination), bytes, { flag: 'wx', mode: 0o600 });
-      entries.push({ path: destination, size: bytes.length, sha256: sha256(bytes), mode: 0o600 });
-    }
-    const manifest = { format: 'frameboard-backup', version: 1, createdAt, appRevision, schemaVersion,
+    // An unsaved output is not retained content; record whether its native file was collected.
+    const collectedNativePath = (savedPath) => {
+      if (!savedPath || !native.home) return null;
+      const relative = [path.resolve(codexHome), native.home].map((home) => path.relative(home, path.resolve(savedPath))).find((value) => native.candidates.includes(value));
+      return relative ? `native/codex/${relative}` : null;
+    };
+    const outputInventory = outputs.map(({ outputId, cardId, attemptId, importStatus, imageId, savedPath }) => importStatus === 'imported'
+      ? { outputId, cardId, attemptId, importStatus, retained: true, path: `images/${imageId}`, nativePath: null }
+      : { outputId, cardId, attemptId, importStatus, retained: false, path: null, nativePath: collectedNativePath(savedPath) });
+    const nativeMissing = threads.filter((id) => !native.candidates.some((relative) => relative.endsWith(`-${id}.jsonl`)));
+    const manifest = { format: 'frameboard-backup', version: 2, createdAt, appRevision, schemaVersion, coverage,
       nativeResume: 'not verified', label: 'History-only backup; native resume not verified.',
       nativeResumeReason: 'Native index dependencies are not copied; restored exact resume has not been proved.',
-      nativeMissing: native.missing, directories, files: entries };
-    await writeFile(path.join(staging, 'manifest.json'), JSON.stringify(manifest, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
-    const backupDir = path.join(output, `frameboard-${createdAt.replaceAll(':', '-')}-${path.basename(staging).slice(-6)}`);
+      nativeMissing, inventory: { projects, tables, images: images.map((image) => ({ ...image, path: `images/${image.id}` })), retained, outputs: outputInventory }, directories: before.directories, files: entries };
+    const manifestFile = await open(path.join(staging, 'manifest.json'), 'wx', 0o600);
+    try { await manifestFile.writeFile(JSON.stringify(manifest, null, 2) + '\n'); await manifestFile.sync(); } finally { await manifestFile.close(); }
+    await syncDirectory(staging);
+    await checkpoint('publishing');
+    signal?.throwIfAborted();
+    const backupDir = path.join(output, `frameboard-${name}`);
     await rename(staging, backupDir);
+    await syncDirectory(output);
     return { backupDir, nativeResume: manifest.nativeResume, label: manifest.label };
-  } catch (error) { await rm(staging, { recursive: true, force: true }); throw error; }
+  } catch (error) {
+    await rm(staging, { recursive: true, force: true });
+    throw error;
+  } finally { await release(); }
 }
 
 function validPath(relative) {
@@ -123,34 +284,45 @@ function validPath(relative) {
     && !path.posix.isAbsolute(relative) && relative.split('/').every((part) => part && part !== '.' && part !== '..');
 }
 
-async function verifiedBackupBytes(root, entry) {
-  const bytes = await regularBytes(root, entry.path);
-  if (bytes.length !== entry.size || sha256(bytes) !== entry.sha256) fail(`Backup hash mismatch: ${entry.path}`);
-  return bytes;
+async function readManifest(root) {
+  const { handle, info } = await openRegular(root, 'manifest.json');
+  try { if (info.size > 256 * 1024 * 1024) fail('The backup manifest is too large.'); return (await handle.readFile()).toString('utf8'); }
+  finally { await handle.close(); }
+}
+
+async function verifyBackupFile(root, entry) {
+  if (!sameBytes(await hashFile(root, entry.path), entry)) fail(`Backup hash mismatch: ${entry.path}`);
 }
 
 export async function restoreBackup({ backupDir, dataDir, codexHome }) {
   backupDir = await realpath(backupDir); dataDir = path.resolve(dataDir);
-  const manifest = JSON.parse((await regularBytes(backupDir, 'manifest.json')).toString());
-  if (manifest.format !== 'frameboard-backup' || manifest.version !== 1 || !Array.isArray(manifest.files) || !Array.isArray(manifest.directories)) fail('Unsupported backup manifest.');
-  const appPath = (relative) => relative === 'frameboard.db' || relative === 'images' || relative.startsWith('images/') || relative === 'workspaces' || relative.startsWith('workspaces/')
-    || relative === 'flows' || relative.startsWith('flows/');
+  let manifest;
+  try { manifest = JSON.parse(await readManifest(backupDir)); } catch { fail('Unsupported backup manifest.'); }
+  if (manifest.format !== 'frameboard-backup' || ![1, 2].includes(manifest.version) || !Array.isArray(manifest.files) || !Array.isArray(manifest.directories)) fail('Unsupported backup manifest.');
+  const roots = manifest.version === 1 ? ['images', 'workspaces', 'flows'] : appStores;
+  const appPath = (relative) => relative === 'frameboard.db' || (manifest.version === 2 && relative === legacyBoard)
+    || roots.some((root) => relative === root || relative.startsWith(`${root}/`));
   const allowed = (relative) => validPath(relative) && (appPath(relative) || relative.startsWith('native/codex/'));
   const seen = new Set();
   for (const entry of manifest.files) {
     if (!allowed(entry.path) || seen.has(entry.path) || !/^[a-f0-9]{64}$/.test(entry.sha256) || !Number.isSafeInteger(entry.size) || entry.size < 0
       || !Number.isInteger(entry.mode) || entry.mode < 0 || entry.mode > 0o777) fail('Invalid backup file entry.');
     seen.add(entry.path);
-    await verifiedBackupBytes(backupDir, entry);
+    await verifyBackupFile(backupDir, entry);
   }
   if (!seen.has('frameboard.db')) fail('The backup database is missing.');
   for (const directory of manifest.directories) if (!validPath(directory) || !appPath(directory) || seen.has(directory) || directory === 'frameboard.db') fail('Invalid backup directory entry.');
-  const { images, nativeThreads: threads, retainedCount } = inspectBackupDatabase(path.join(backupDir, 'frameboard.db'));
-  if (retainedCount) fail('Retained storage export/restore is not available in this backup format.');
+  const { images, nativeThreads: threads, retained } = inspectBackupDatabase(path.join(backupDir, 'frameboard.db'));
+  const entries = new Map(manifest.files.map((entry) => [entry.path, entry]));
   for (const image of images) {
-    const entry = manifest.files.find((item) => item.path === `images/${image.id}`);
+    const entry = entries.get(`images/${image.id}`);
     if (!entry) fail(`Missing image: ${image.id}`);
     if (image.hash && image.hash !== entry.sha256) fail(`Damaged image: ${image.id}`);
+  }
+  for (const version of retained) {
+    const entry = entries.get(version.path);
+    if (!entry) fail(`Missing retained version: ${version.versionId}`);
+    if (!sameBytes(entry, version)) fail(`Damaged retained version: ${version.versionId}`);
   }
   for (const entry of manifest.files) if (entry.path.startsWith('native/') && !nativePath(entry.path.slice(13), threads)) fail('Only bound native conversation files may be restored.');
   const existing = await optional(dataDir);
@@ -162,9 +334,7 @@ export async function restoreBackup({ backupDir, dataDir, codexHome }) {
     for (const directory of manifest.directories) await mkdir(path.join(staging, directory), { recursive: true, mode: 0o700 });
     for (const entry of manifest.files) {
       if (entry.path.startsWith('native/')) continue;
-      const bytes = await verifiedBackupBytes(backupDir, entry);
-      await mkdir(path.dirname(path.join(staging, entry.path)), { recursive: true, mode: 0o700 });
-      await writeFile(path.join(staging, entry.path), bytes, { flag: 'wx', mode: 0o600 });
+      if (!sameBytes(await copyInto(backupDir, entry.path, staging, entry.path), entry)) fail(`Backup hash mismatch: ${entry.path}`);
       await chmod(path.join(staging, entry.path), entry.mode);
     }
     // Do not merge the global native index or any global configuration. Native
@@ -180,9 +350,12 @@ export async function restoreBackup({ backupDir, dataDir, codexHome }) {
         await mkdir(parent, { mode: 0o700 }).catch((error) => { if (error.code !== 'EEXIST') throw error; });
         if (!(await lstat(parent)).isDirectory() || await realpath(parent) !== parent) fail(`Linked native restore directory refused: ${relative}`);
       }
-      const bytes = await verifiedBackupBytes(backupDir, entry);
-      try { await writeFile(path.join(root, relative), bytes, { flag: 'wx', mode: 0o600 }); nativeCopied.push(relative); }
-      catch (error) { if (error.code !== 'EEXIST') throw error; nativeSkipped.push(relative); }
+      try {
+        // copyInto removes a partial file it created; a completed copy that
+        // differs from the manifest is removed here.
+        if (!sameBytes(await copyInto(backupDir, entry.path, root, relative), entry)) { await rm(path.join(root, relative), { force: true }); fail(`Backup hash mismatch: ${entry.path}`); }
+        nativeCopied.push(relative);
+      } catch (error) { if (error.code !== 'EEXIST') throw error; nativeSkipped.push(relative); }
     }
     await rename(staging, dataDir);
     return { dataDir, nativeResume: 'not verified', label: 'History-only backup; native resume not verified.', nativeCopied, nativeSkipped };
