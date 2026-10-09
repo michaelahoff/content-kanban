@@ -359,9 +359,9 @@ async function restoreWorkspace({ backupDir, dataDir, codexHome, checkpoint = as
     await checkpoint('verifying');
     const database = path.join(staging, 'frameboard.db');
     let inspected;
-    try { inspected = inspectBackupDatabase(database); } catch (error) { fail(/^The backup database/.test(error.message) ? error.message : `The backup database is damaged or unsupported: ${error.message}`); }
+    try { inspected = inspectBackupDatabase(database); } catch (error) { fail(`The backup database is damaged or unsupported. ${error.message}`); }
     const { schemaVersion, images, nativeThreads: threads, retained } = inspected;
-    if (!(Number(schemaVersion) >= 1)) fail('The backup database is damaged or unsupported: it has no schema version.');
+    if (!(Number(schemaVersion) >= 1)) fail('The backup database is damaged or unsupported. It has no schema version.');
     if (Number(schemaVersion) > supportedSchemaVersion) fail('This backup was saved by a newer version of Frameboard. Update Frameboard, then restore it.');
     // The relationship inventory recorded at export must describe this database.
     if (manifest.version === 2 && !sameInventory(manifest.inventory, inspected)) fail('The backup inventory does not match its database. The backup was changed after export.');

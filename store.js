@@ -38,7 +38,7 @@ export function markRestored(filename, details) {
 export function inspectBackupDatabase(filename) {
   const db = new DatabaseSync(filename, { readOnly: true });
   try {
-    if (db.prepare('PRAGMA integrity_check').get().integrity_check !== 'ok' || db.prepare('PRAGMA foreign_key_check').all().length) throw new Error('The backup database is damaged: its integrity or foreign-key check failed.');
+    if (db.prepare('PRAGMA integrity_check').get().integrity_check !== 'ok' || db.prepare('PRAGMA foreign_key_check').all().length) throw new Error('The database failed its integrity or foreign-key check.');
     const images = new Map(db.prepare('SELECT id, hash FROM image_versions').all().map((image) => [image.id, image]));
     const include = (references) => {
       for (const image of references ?? []) {
