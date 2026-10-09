@@ -232,3 +232,22 @@ test('lane playbooks select only Library assets and folders: a saved output ID i
   const preview = await f.ok('GET', `/api/cards/${card.id}/lane-runs/preview`);
   assert.deepEqual(preview.problems.map(({ key, phase }) => ({ key, phase })), [{ key: `asset:${output.id}`, phase: 'resolve' }], 'promote an output to the Library before a playbook can select it');
 });
+
+test('another card reuses an output only through its promoted Library asset, which stays a separate input from the output on its own card', async (t) => {
+  const f = await fixture(t); const card = await f.card(); const other = await f.card({ title: 'Other card' });
+  const { output } = await savedDocument(f, card);
+  const promoted = await f.ok('POST', `/api/cards/${card.id}/chat/saved-outputs/${output.id}/promote`, { folderId: null, filename: 'script.md', operation: randomUUID() });
+  assert.deepEqual((await f.chat(card.id)).composer.selections.savedOutputs, [], 'promotion selects nothing');
+
+  const asset = { kind: 'asset', id: promoted.asset.id };
+  const { composer: otherComposer } = await f.chat(other.id);
+  const elsewhere = await f.queue(other.id, await f.compose(other.id, 'Use the promoted script', 'test-model', { selections: { ...otherComposer.selections, library: [asset] } }));
+  assert.deepEqual(elsewhere.context.library.map((file) => [file.assetId, file.versionId, file.hash]), [[promoted.asset.id, promoted.version.id, sha256(script)]]);
+  assert.deepEqual(elsewhere.context.savedOutputs, []);
+  f.codex.finish(await waitFor(() => f.codex.sends[1]));
+
+  const both = await f.queue(card.id, await reuse(f, card.id, 'Use both', [output.id], { selections: { library: [asset] } }));
+  assert.deepEqual([both.context.library.map((file) => file.versionId), both.context.savedOutputs.map((entry) => entry.versionId)], [[promoted.version.id], [output.versionId]],
+    'equal bytes never merge a promoted asset with its output');
+  assert.equal(sentText(await waitFor(() => f.codex.sends[2])).split(script).length - 1, 2, 'each is sent');
+});

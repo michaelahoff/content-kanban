@@ -1,6 +1,6 @@
 # Reusing saved outputs in the same card chat
 
-Implements [#64](https://github.com/michaelahoff/content-kanban/issues/64) against the approved [project-assets specification](https://github.com/michaelahoff/content-kanban/blob/f7149d373a8c8284cdd6b046049d6d54a3c35c57/docs/specs/project-assets.md), acceptance cases 15–19, 25–26 and refinement 12.A. It builds on [Saved documents and inline lane outputs](saved-outputs.md) (#62). Workspace files and rendered images are [#63](https://github.com/michaelahoff/content-kanban/issues/63); promotion to the Library is [#65](https://github.com/michaelahoff/content-kanban/issues/65).
+Implements [#64](https://github.com/michaelahoff/content-kanban/issues/64) against the approved [project-assets specification](https://github.com/michaelahoff/content-kanban/blob/f7149d373a8c8284cdd6b046049d6d54a3c35c57/docs/specs/project-assets.md), acceptance cases 15–19, 25–26 and refinement 12.A. It builds on [Saved documents and inline lane outputs](saved-outputs.md) (#62). Workspace files and rendered images are [#63](https://github.com/michaelahoff/content-kanban/issues/63); promotion to the Library is [#65](https://github.com/michaelahoff/content-kanban/issues/65) ([Promoting saved outputs](promote-outputs.md)).
 
 ## Selection
 
@@ -52,6 +52,7 @@ Composer choices and frozen submissions are in the database. `inspectBackupDatab
 - Tool-disabled Claude receives a Codex-saved output's actual text in fresh context; an unsupported gallery image stops the whole union.
 - Export and restore keep the choice and the frozen reused output; a frozen reference to a missing output version fails export.
 - A lane playbook cannot select a saved output.
+- Another card reuses an output only through its promoted Library asset (#65); promotion selects nothing, and on the output's own card the promoted asset and the output, equal bytes and all, are two inputs.
 
 `npm run test:browser`: **Use in prompt** on a saved document lists it in the composer and preview, Send delivers it, and the attempt records `full text inline · sent`.
 
@@ -70,4 +71,3 @@ Kept deliberately:
 - Fresh context and a primary-provider change clear reuse choices, like Library choices: manual reference choices belong to the conversation they were made in. The outputs themselves stay selectable.
 - Send does not re-resolve saved outputs at commit, as it does Library files: a saved output version never changes, and the composer revision check refuses a changed choice.
 - A gallery image and a saved output are deduplicated when they are the same image version, which today means a chat image output (`selections.images`). When #63 adds saved image files, a saved output whose bytes are an independent retained version stays a separate input, as the specification requires; one naming a gallery image version must join the image group.
-- That promoted assets stay separate is not yet tested; promotion is #65. Nothing compares hashes or names.
