@@ -99,6 +99,9 @@ export async function createRetainedStorage({ dataDir, metadata, checkpoint = as
   }
   const api = {
     version: metadata.version,
+    // The publication an operation began, with its pinned hash and size once
+    // its bytes were verified, even if it then failed.
+    operation: metadata.operation,
     current: metadata.current,
     inventory: metadata.inventory,
     remove: metadata.remove,

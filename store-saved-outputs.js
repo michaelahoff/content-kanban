@@ -3,10 +3,14 @@
 // submission and delivery attempt, its actual provider and creation method,
 // and keeps the supplied context apart from any declared derivation. Its bytes
 // are a retained version of kind 'output', so they outlive the workspace, the
-// card, its sources and fresh context, and are in every backup.
+// card, its sources and fresh context, and are in every backup. An output is a
+// document (exact text), or a finished workspace file or rendered image that
+// was explicitly named; nothing is discovered by scanning the workspace.
 import { createHash, randomUUID } from 'node:crypto';
 import { libraryFilename } from './public/library-format.js';
 import { maxDocumentBytes } from './library.js';
+import { archivedMessage } from './store-chat.js';
+import { openWorkspaceFile, workspacePath } from './workspace-files.js';
 
 export const savedOutputsMigration = `
   CREATE TABLE saved_outputs (id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id),
@@ -19,6 +23,7 @@ export const savedOutputsMigration = `
 const fail = (status, message) => { throw Object.assign(new Error(message), { status }); };
 const live = ['dispatching', 'accepted', 'running'];
 const revokedSaveMessage = 'This response was stopped, its project archived or the workspace restored before it was saved.';
+const outputKind = (format) => (format ? 'rendered-image' : 'file');
 
 // Exactly what the submission supplied, with its labels and versions. Supplying
 // an input never claims the output was derived from it.
@@ -41,10 +46,10 @@ function declaredDerivation(frozen, sources) {
   }) };
 }
 
-export function createSavedOutputStore({ all, get, run, transaction, retainedCard, requireCard, recordChange, now, retained, revoked }) {
+export function createSavedOutputStore({ all, get, run, transaction, retainedCard, requireCard, recordChange, now, retained, revoked, workspace }) {
   function outputFrom(row) {
     const version = row.version_id ? retained().version({ workspaceId: row.workspace_id }, row.version_id) : null;
-    return { ...JSON.parse(row.provenance), id: row.id, cardId: row.card_id, attemptId: row.attempt_id, operationId: row.operation_id,
+    return { kind: 'document', file: null, ...JSON.parse(row.provenance), id: row.id, cardId: row.card_id, attemptId: row.attempt_id, operationId: row.operation_id,
       filename: row.filename, status: row.status, versionId: row.version_id, hash: version?.hash ?? null, size: version?.size ?? null,
       available: version ? version.available : null, error: row.error, createdAt: row.created_at, savedAt: row.saved_at };
   }
@@ -52,17 +57,46 @@ export function createSavedOutputStore({ all, get, run, transaction, retainedCar
   function activity(ctx, cardId, type, data) {
     recordChange(ctx, 'chat', cardId, type, { projectId: retainedCard(ctx, cardId).project_id, data });
   }
-  function provenance(attemptId, { creationMethod, itemId = null, sources }) {
+  const frozenFor = (attemptId) => JSON.parse(get('SELECT s.frozen FROM chat_attempts a JOIN chat_submissions s ON s.id = a.submission_id WHERE a.id = ?', attemptId).frozen);
+  function provenance(attemptId, { creationMethod, itemId = null, sources, kind = 'document', file = null }) {
     const a = get('SELECT * FROM chat_attempts WHERE id = ?', attemptId);
     const s = get('SELECT * FROM chat_submissions WHERE id = ?', a.submission_id); const frozen = JSON.parse(s.frozen);
-    return { provider: frozen.provider ?? 'codex', model: frozen.model, creationMethod, conversationId: s.conversation_id, submissionId: s.id,
+    return { provider: frozen.provider ?? 'codex', model: frozen.model, creationMethod, kind, ...(file ? { file } : {}), conversationId: s.conversation_id, submissionId: s.id,
       laneRunId: frozen.lane?.runId ?? null, native: { turnId: a.turn_id, itemId }, supplied: suppliedInputs(frozen), derivation: declaredDerivation(frozen, sources) };
+  }
+  // Only a provider that could write in its workspace can have produced a
+  // workspace file. Tool-disabled Claude cannot claim one by naming a path.
+  function assertWritesFiles(attemptId, name) {
+    const frozen = frozenFor(attemptId);
+    if (frozen.provider === 'claude') fail(400, `Claude ran with its tools turned off, so it cannot have written ${name}. Put a document's exact text in “text” instead.`);
+    if (frozen.configuration?.nativeOptions?.sandbox !== 'workspace-write') fail(400, `This response could not write in its workspace, so ${name} cannot be its output.`);
   }
   // A live attempt may register outputs only while it still holds authority:
   // not after Stop, archive or a workspace restore, nor once it has ended.
   function authorize(attemptId) {
     if (revoked(attemptId)) fail(409, revokedSaveMessage);
     if (!live.includes(get('SELECT status FROM chat_attempts WHERE id = ?', attemptId)?.status)) fail(409, 'This response no longer has authority to save outputs.');
+  }
+
+  // Publishes a registered output's bytes and records the outcome. `source`
+  // supplies them once registration holds; its failure is the save's failure.
+  async function publish(ctx, cardId, row, source, authorize) {
+    const projectId = row.projectId ?? retainedCard(ctx, cardId).project_id;
+    try {
+      const version = await retained().publish(ctx, { operationId: `saved-output:${row.id}`, kind: 'output', projectId, filename: row.filename, provenance: { savedOutputId: row.id } },
+        await source(), { authorize });
+      transaction(() => {
+        run("UPDATE saved_outputs SET status = 'saved', version_id = ?, error = '', saved_at = ? WHERE id = ?", version.id, now(), row.id);
+        activity(ctx, cardId, 'output_saved', { outputId: row.id, versionId: version.id, hash: version.hash });
+      });
+    } catch (error) {
+      const reason = error.status ? error.message : `Saving failed: ${error.message}`;
+      transaction(() => {
+        run("UPDATE saved_outputs SET status = 'failed', error = ? WHERE id = ? AND status = 'saving'", reason, row.id);
+        activity(ctx, cardId, 'output_save_failed', { outputId: row.id, reason });
+      });
+    }
+    return outputFrom(byId(ctx, row.id));
   }
 
   const api = {
@@ -108,22 +142,70 @@ export function createSavedOutputStore({ all, get, run, transaction, retainedCar
         if (output.hash !== createHash('sha256').update(bytes).digest('hex')) fail(409, 'This save operation already saved different text.');
         return output;
       }
-      const projectId = row.projectId ?? retainedCard(ctx, cardId).project_id;
-      try {
-        const version = await retained().publish(ctx, { operationId: `saved-output:${row.id}`, kind: 'output', projectId, filename: name, provenance: { savedOutputId: row.id } },
-          bytes, { authorize: requireLive ? () => authorize(attemptId) : undefined });
-        transaction(() => {
-          run("UPDATE saved_outputs SET status = 'saved', version_id = ?, error = '', saved_at = ? WHERE id = ?", version.id, now(), row.id);
-          activity(ctx, cardId, 'output_saved', { outputId: row.id, versionId: version.id, hash: version.hash });
-        });
-      } catch (error) {
-        const reason = error.status ? error.message : `Saving failed: ${error.message}`;
-        transaction(() => {
-          run("UPDATE saved_outputs SET status = 'failed', error = ? WHERE id = ? AND status = 'saving'", reason, row.id);
-          activity(ctx, cardId, 'output_save_failed', { outputId: row.id, reason });
-        });
+      return publish(ctx, cardId, row, () => bytes, requireLive ? () => authorize(attemptId) : undefined);
+    },
+    // Registers and saves one finished file named by its card-workspace path,
+    // as saveDocument does. The file must be an available regular file, with
+    // no links, in the workspace of a response that could write files. Its
+    // bytes are streamed into retained storage; nothing else is read. A file
+    // that cannot be saved before registration is refused and registers
+    // nothing. Repeating a failed operation is a save-only retry.
+    async saveFile(ctx, cardId, { operationId, attemptId, path: relative, filename, creationMethod, itemId = null, sources = null, requireLive = false }) {
+      workspacePath(relative);
+      const name = libraryFilename(filename ?? relative.split('/').at(-1), 'file');
+      const prior = get('SELECT * FROM saved_outputs WHERE workspace_id = ? AND operation_id = ?', ctx.workspaceId, operationId);
+      if (prior) {
+        if (prior.card_id !== cardId || prior.attempt_id !== attemptId || prior.filename !== name || JSON.parse(prior.provenance).file?.path !== relative) fail(409, 'This save operation already names a different output.');
+        return prior.status === 'failed' ? api.retry(ctx, cardId, prior.id, { requireLive }) : outputFrom(prior);
       }
-      return outputFrom(byId(ctx, row.id));
+      requireCard(ctx, cardId);
+      if (get('SELECT card_id FROM chat_attempts WHERE id = ?', attemptId)?.card_id !== cardId) fail(404, 'This response does not exist in this card chat.');
+      if (requireLive) authorize(attemptId);
+      assertWritesFiles(attemptId, relative);
+      const file = await openWorkspaceFile(workspace(cardId), relative);
+      try {
+        const row = transaction(() => {
+          if (get('SELECT id FROM saved_outputs WHERE workspace_id = ? AND operation_id = ?', ctx.workspaceId, operationId)) fail(409, `${name} is still being saved.`);
+          const card = requireCard(ctx, cardId);
+          if (requireLive) authorize(attemptId);
+          const id = randomUUID();
+          run(`INSERT INTO saved_outputs (id, workspace_id, card_id, attempt_id, operation_id, filename, status, provenance, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, 'saving', ?, ?)`, id, ctx.workspaceId, cardId, attemptId, operationId, name,
+          JSON.stringify(provenance(attemptId, { creationMethod, itemId, sources, kind: outputKind(file.format), file: { path: relative, format: file.format } })), now());
+          activity(ctx, cardId, 'output_registered', { outputId: id, attemptId, filename: name, path: relative });
+          return { ...byId(ctx, id), projectId: card.projectId };
+        });
+        return await publish(ctx, cardId, row, () => file.stream, requireLive ? () => authorize(attemptId) : undefined);
+      } finally { file.stream.destroy(); }
+    },
+    // Save-only retry of a failed file save: the same operation, and only
+    // the exact bytes first verified. A path now holding other bytes is
+    // refused; nothing is regenerated or rerun, and a saved output is
+    // returned rather than duplicated. An agent's registration cannot be
+    // retried once its response was stopped, archived or restored over.
+    async retry(ctx, cardId, id, { requireLive = false } = {}) {
+      const row = byId(ctx, id);
+      if (!row || row.card_id !== cardId) fail(404, 'This saved output does not exist.');
+      if (row.status === 'saved') return outputFrom(row);
+      if (row.status === 'saving') fail(409, `${row.filename} is still being saved.`);
+      const { file, creationMethod } = JSON.parse(row.provenance);
+      if (!file) fail(409, 'A document is saved from its reply. Save it from the reply instead.');
+      if (retainedCard(ctx, cardId).project_archived_at) fail(409, archivedMessage);
+      const agent = creationMethod === 'lane-result';
+      if (agent && revoked(row.attempt_id)) fail(409, `${revokedSaveMessage} Save the file again yourself if you still want it.`);
+      const pinned = retained().operation(ctx, `saved-output:${row.id}`);
+      if (!pinned?.hash) fail(409, `${row.filename}'s bytes were never verified before saving failed, so there is nothing exact to retry. Save the file again.`);
+      const fence = requireLive ? () => authorize(row.attempt_id) : agent ? () => { if (revoked(row.attempt_id)) fail(409, revokedSaveMessage); } : undefined;
+      fence?.();
+      transaction(() => {
+        if (get('SELECT status FROM saved_outputs WHERE id = ?', row.id).status !== 'failed') fail(409, `${row.filename} is still being saved.`);
+        run("UPDATE saved_outputs SET status = 'saving', error = '' WHERE id = ?", row.id);
+        activity(ctx, cardId, 'output_save_retried', { outputId: row.id });
+      });
+      let opened = null;
+      try {
+        return await publish(ctx, cardId, row, async () => (opened = await openWorkspaceFile(workspace(cardId), file.path, { expected: pinned })).stream, fence);
+      } finally { opened?.stream.destroy(); }
     },
     // Save as document: the user's explicit save of a retained reply, or of a
     // passage of it. A stopped, archived-then-unarchived or recovered reply can
@@ -141,6 +223,25 @@ export function createSavedOutputStore({ all, get, run, transaction, retainedCar
       if (output.status === 'failed') throw Object.assign(new Error(output.error), { status: 409, output });
       return output;
     },
+    // Save output: the user's explicit save of one finished file a response
+    // wrote in this card's workspace, named by its path. Nothing is listed or
+    // discovered; derivation stays unknown.
+    async saveWorkspaceFile(ctx, cardId, { operation, attempt, path: relative, filename }) {
+      if (typeof operation !== 'string' || !/^[\w-]{1,100}$/.test(operation)) fail(400, 'Each save needs an operation ID.');
+      requireCard(ctx, cardId);
+      const a = typeof attempt === 'string' && get('SELECT * FROM chat_attempts WHERE id = ? AND card_id = ?', attempt, cardId);
+      if (!a) fail(404, 'This response does not exist in this card chat.');
+      if (live.concat('interrupt-requested').includes(a.status)) fail(409, 'Wait for this response to finish before saving its files.');
+      const output = await api.saveFile(ctx, cardId, { operationId: `file:${cardId}:${operation}`, attemptId: a.id, path: relative,
+        filename: filename || undefined, creationMethod: 'user-save' });
+      if (output.status === 'failed') throw Object.assign(new Error(output.error), { status: 409, output });
+      return output;
+    },
+    async retrySave(ctx, cardId, id) {
+      const output = await api.retry(ctx, cardId, id);
+      if (output.status === 'failed') throw Object.assign(new Error(output.error), { status: 409, output });
+      return output;
+    },
     async content(ctx, cardId, id) {
       retainedCard(ctx, cardId);
       const row = byId(ctx, id);
@@ -148,10 +249,15 @@ export function createSavedOutputStore({ all, get, run, transaction, retainedCar
       if (row.status !== 'saved') fail(409, 'This output was not saved.');
       return { output: outputFrom(row), stream: await retained().read(ctx, row.version_id) };
     },
-    // Restart interrupts an in-flight save. Its text remains in the reply.
+    // Restart interrupts an in-flight save. A document's text remains in the
+    // reply; a file can be retried with its verified bytes.
     interrupted(ctx) {
-      transaction(() => run(`UPDATE saved_outputs SET status = 'failed', error = 'Saving was interrupted by a restart. Save it from the reply instead.'
-        WHERE status = 'saving' AND workspace_id = ?`, ctx.workspaceId));
+      transaction(() => {
+        run(`UPDATE saved_outputs SET status = 'failed', error = 'Saving was interrupted by a restart. Save it from the reply instead.'
+          WHERE status = 'saving' AND workspace_id = ? AND json_extract(provenance, '$.file') IS NULL`, ctx.workspaceId);
+        run(`UPDATE saved_outputs SET status = 'failed', error = 'Saving was interrupted by a restart. Retry saving.'
+          WHERE status = 'saving' AND workspace_id = ?`, ctx.workspaceId);
+      });
     },
   };
   return api;

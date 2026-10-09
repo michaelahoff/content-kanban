@@ -174,7 +174,12 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
       ['POST', /^\/api\/cards\/([^/]+)\/chat\/proposals\/[^/]+\/preview$/, (ctx, req, id, url) => store.protection.previewProposal(ctx, id, url.pathname.split('/').at(-2))],
       ['POST', /^\/api\/cards\/([^/]+)\/chat\/outputs\/[^/]+\/adopt$/, (ctx, req, id, url) => store.images.adopt(ctx, id, url.pathname.split('/').at(-2))],
       ['POST', /^\/api\/cards\/([^/]+)\/chat\/outputs\/[^/]+\/retry-save$/, (ctx, req, id, url) => worker.retrySave(id, url.pathname.split('/').at(-2))],
-      ['POST', /^\/api\/cards\/([^/]+)\/chat\/saved-outputs$/, async (ctx, req, id) => store.savedOutputs.saveReply(ctx, id, bodyOf(await read(req))), 201],
+      // Save as document names a reply; Save output names a workspace file.
+      ['POST', /^\/api\/cards\/([^/]+)\/chat\/saved-outputs$/, async (ctx, req, id) => {
+        const input = bodyOf(await read(req));
+        return input.path === undefined ? store.savedOutputs.saveReply(ctx, id, input) : store.savedOutputs.saveWorkspaceFile(ctx, id, input);
+      }, 201],
+      ['POST', /^\/api\/cards\/([^/]+)\/chat\/saved-outputs\/[^/]+\/retry$/, (ctx, req, id, url) => store.savedOutputs.retrySave(ctx, id, decodeURIComponent(url.pathname.split('/').at(-2)))],
       ['GET', /^\/api\/chat-activity$/, (ctx) => ({ cursor: store.workspace(ctx).eventCursor, entries: store.chats.indicators(ctx) })],
       ['POST', /^\/api\/cards\/([^/]+)\/chat\/revoke-grants$/, (ctx, req, id) => store.chats.clearGrants(ctx, id)],
       ['GET', /^\/api\/cards\/([^/]+)\/chat$/, (ctx, req, id) => (worker.flushCard(id), { ...store.chats.snapshot(ctx, id), proposals: store.protection.proposals(ctx, id), savedOutputs: store.savedOutputs.list(ctx, id), outputs: store.images.outputs(ctx, id).map((output) => ({ ...output, available: Boolean(output.imageId) && existsSync(path.join(imagesDir, output.imageId)) })) })],
@@ -326,7 +331,7 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
           let ids;
           try { ids = saved.slice(1).map(decodeURIComponent); } catch { return send(res, 404, { error: 'Not found.' }); }
           const { output, stream: bytes } = await store.savedOutputs.content(currentUser(req), ...ids);
-          return sendRetained(res, { size: output.size, filename: output.filename, bytes, inline: url.searchParams.get('inline') === '1' && { type: 'text/plain; charset=utf-8' } });
+          return sendRetained(res, { size: output.size, filename: output.filename, bytes, inline: url.searchParams.get('inline') === '1' && assetPreview(output.filename, { written: output.kind === 'document' }) });
         }
         if (url.pathname === '/api/images' && req.method === 'POST') {
           const type = req.headers['content-type'];

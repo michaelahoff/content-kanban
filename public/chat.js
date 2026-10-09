@@ -274,17 +274,22 @@ function deliveryMarkup(attempt) {
   if (!attempt.delivery?.length) return '';
   return `<ul class="chat-delivery" aria-label="Delivery">${attempt.delivery.map((entry) => `<li>${escape(entry.filename)} · ${escape(deliveryDescription(entry))} · ${deliveryLabels[entry.status] ?? escape(entry.status)}${entry.reason ? ` · ${escape(entry.reason)}` : ''}</li>`).join('')}</ul>`;
 }
-// Saved documents beside the work that produced them: retained snapshots,
-// downloadable even after Stop, archive or the card's deletion.
-function savedOutputsMarkup(cardId, outputs) {
-  if (!outputs.length) return '';
-  const method = { 'transcript-save': 'Saved from a reply', 'lane-result': 'Saved by the lane result' };
+// Saved outputs beside the work that produced them: retained snapshots,
+// downloadable even after Stop, archive or the card's deletion. A Codex
+// response's finished workspace files are saved only when explicitly named.
+function savedOutputsMarkup(cardId, outputs, attempt, submission) {
+  const method = { 'transcript-save': 'Saved from a reply', 'lane-result': 'Saved by the lane result', 'user-save': 'Saved by you from the workspace' };
+  const kind = { 'rendered-image': 'Rendered image', file: 'File' };
+  const saveFile = submission.provider !== 'claude' && attempt.turnId && !runningStatuses.has(attempt.status)
+    ? `<button class="button small secondary" data-action="chat-save-file" data-id="${escape(attempt.id)}">Save file…</button>` : '';
+  if (!outputs.length) return saveFile ? `<div class="chat-saved-outputs">${saveFile}</div>` : '';
   return `<ul class="chat-saved-outputs" aria-label="Saved outputs">${outputs.map((output) => {
     const content = url(cardId, `saved-outputs/${encodeURIComponent(output.id)}/content`);
-    if (output.status === 'saved') return `<li><strong>${escape(output.filename)}</strong> · ${method[output.creationMethod] ?? 'Saved'}${output.derivation?.declared ? ` · from ${output.derivation.sources.length ? escape(output.derivation.sources.map((source) => source.label).join(', ')) : 'no supplied inputs'}` : ''}<span class="chat-output-actions"><a class="button small secondary" href="${content}?inline=1" target="_blank" rel="noopener">View</a><a class="button small secondary" href="${content}" download>Download</a></span></li>`;
-    if (output.status === 'failed') return `<li class="chat-output-error">${escape(output.filename)} was not saved. ${escape(output.error)}</li>`;
+    const origin = output.file ? ` · ${kind[output.kind] ?? 'File'} from ${escape(output.file.path)}` : '';
+    if (output.status === 'saved') return `<li><strong>${escape(output.filename)}</strong> · ${method[output.creationMethod] ?? 'Saved'}${origin}${output.derivation?.declared ? ` · from ${output.derivation.sources.length ? escape(output.derivation.sources.map((source) => source.label).join(', ')) : 'no supplied inputs'}` : ''}<span class="chat-output-actions"><a class="button small secondary" href="${content}?inline=1" target="_blank" rel="noopener">View</a><a class="button small secondary" href="${content}" download>Download</a></span></li>`;
+    if (output.status === 'failed') return `<li class="chat-output-error">${escape(output.filename)}${origin} was not saved. ${escape(output.error)}${output.file ? ` <button class="button small secondary" data-action="chat-retry-saved-output" data-id="${escape(output.id)}">Retry saving</button>` : ''}</li>`;
     return `<li class="chat-hint">Saving ${escape(output.filename)}…</li>`;
-  }).join('')}</ul>`;
+  }).join('')}</ul>${saveFile}`;
 }
 // The highlighted reply text, saved exactly. Submitting the same filename
 // again (a lost response) reuses its operation, so it is saved once.
@@ -295,6 +300,19 @@ function saveAsDocument(item, sequence, text) {
     if (!operations.has(filename)) operations.set(filename, crypto.randomUUID());
     await send('POST', url(item.id, 'saved-outputs'), { operation: operations.get(filename), sequence, filename, text });
     await refresh(item); toast('Saved as document.');
+  } });
+}
+// Save output: one finished file this response wrote, named by its path in
+// the card workspace. Nothing is listed or discovered; the same path and
+// filename reuse one operation, so a lost response saves it once.
+function saveWorkspaceFile(item, attemptId) {
+  const operations = new Map();
+  smallForm({ title: 'Save file from the workspace', fields: `<label class="form-label" for="chat-file-path">Path in the card workspace</label><input class="form-input" id="chat-file-path" name="path" placeholder="renders/thumbnail.png" required maxlength="4000" autocomplete="off"><label class="form-label" for="chat-file-name">Filename (optional)</label><input class="form-input" id="chat-file-name" name="filename" maxlength="255" autocomplete="off"><p class="chat-hint">Keeps the file's exact current bytes with this response. Later changes to the workspace do not change it. It does not change the card, its gallery or the Library.</p>`, submit: 'Save file', onSubmit: async (data) => {
+    const input = { path: String(data.get('path')).trim(), filename: String(data.get('filename')).trim() || undefined };
+    const key = JSON.stringify(input);
+    if (!operations.has(key)) operations.set(key, crypto.randomUUID());
+    await send('POST', url(item.id, 'saved-outputs'), { operation: operations.get(key), attempt: attemptId, ...input });
+    await refresh(item); toast('File saved.');
   } });
 }
 function outputMarkup(output) {
@@ -348,7 +366,7 @@ function renderTranscript(item) {
         : `<div class="chat-prompt-sent"><span class="chat-speaker">You</span>${escape(submission.prompt)}</div>`;
       return `<article class="chat-submission">${sent}${frozenMarkup(submission)}<p class="chat-status">${escape(({ running: 'In progress', completed: 'Completed', queued: 'Queued', waiting: 'Waiting for provider', held: 'Needs attention', failed: 'Failed', interrupted: 'Stopped', uncertain: 'Check delivery', cancelled: 'Cancelled' })[submission.status] ?? submission.status)}${submission.reason ? ` · ${escape(submission.reason)}` : ''}</p>${attempts.map((attempt) => `${attempt.previousAttemptId ? `<div class="chat-divider">${snapshot.attempts.find((a) => a.id === attempt.previousAttemptId)?.status === 'not-delivered' ? 'Not sent before Codex stopped · sent again with original inputs' : 'Retry · original inputs retained'}</div>` : ''}${deliveryMarkup(attempt)}${attemptMarkup(snapshot.items.filter((entry) => entry.attemptId === attempt.id), attempt.id,
         (entry) => outputMarkup((snapshot.outputs ?? []).find((output) => output.attemptId === entry.attemptId
-          && (output.nativeId === entry.nativeId || output.id === entry.data?.outputId))), runningStatuses.has(attempt.status))}${savedOutputsMarkup(snapshot.cardId, (snapshot.savedOutputs ?? []).filter((output) => output.attemptId === attempt.id))}`).join('')}${recoveryMarkup(submission, attempts)}${['queued', 'waiting', 'held'].includes(submission.status) ? `<button class="button small secondary" data-action="chat-cancel" data-id="${escape(submission.id)}">Cancel submission</button>` : ''}${submission.retryable ? `<button class="button small secondary" data-action="chat-retry" data-id="${escape(submission.id)}">Retry original submission</button>${submission.lane ? '<p class="chat-hint chat-retry-hint">Retry resends this lane run’s original submission exactly as it was sent. To use the current playbook and inputs, choose Run playbook on the card.</p>' : ''}` : ''}</article>`;
+          && (output.nativeId === entry.nativeId || output.id === entry.data?.outputId))), runningStatuses.has(attempt.status))}${savedOutputsMarkup(snapshot.cardId, (snapshot.savedOutputs ?? []).filter((output) => output.attemptId === attempt.id), attempt, submission)}`).join('')}${recoveryMarkup(submission, attempts)}${['queued', 'waiting', 'held'].includes(submission.status) ? `<button class="button small secondary" data-action="chat-cancel" data-id="${escape(submission.id)}">Cancel submission</button>` : ''}${submission.retryable ? `<button class="button small secondary" data-action="chat-retry" data-id="${escape(submission.id)}">Retry original submission</button>${submission.lane ? '<p class="chat-hint chat-retry-hint">Retry resends this lane run’s original submission exactly as it was sent. To use the current playbook and inputs, choose Run playbook on the card.</p>' : ''}` : ''}</article>`;
     }).join('')}`;
   }).join('');
   if (timeline.dataset.rendered !== html) {
@@ -680,6 +698,8 @@ export function initializeChats(callbacks) {
       if (action === 'chat-save-selection') { const { sequence, text } = checkedReply(item); clearReplySelection(item); saveAsDocument(item, sequence, text); }
       if (action === 'chat-adopt') { const result = await send('POST', url(item.id, `outputs/${target.dataset.id}/adopt`), {}); refreshSavedCard(result.card); await refresh(item); toast(result.adopted ? 'Added to gallery. Choose roles in the editor.' : 'Already in the gallery.'); }
       if (action === 'chat-retry-save') { await send('POST', url(item.id, `outputs/${target.dataset.id}/retry-save`), {}); await refresh(item); }
+      if (action === 'chat-save-file') saveWorkspaceFile(item, target.dataset.id);
+      if (action === 'chat-retry-saved-output') { try { await send('POST', url(item.id, `saved-outputs/${target.dataset.id}/retry`), {}); toast('File saved.'); } finally { await refresh(item); } }
       if (action === 'chat-edit-image') {
         // Edit adds this exact version; existing selections stay visible and removable.
         editableComposer(item);
