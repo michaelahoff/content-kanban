@@ -1107,8 +1107,37 @@ These values apply when a card enters this lane.
   await waitFor(`document.querySelector('.chat-delivery')?.textContent.includes('script.md · full text inline · sent')`);
   assert.ok(await evaluate(`document.querySelector('.chat-delivery').textContent.includes('opaque.bin · workspace copy for Codex tools · sent')`), 'History names the copy route per attempt.');
   assert.ok(await evaluate(`document.querySelector('.chat-library ol')?.textContent.includes('script.md')`), 'An ordinary message keeps the selection.');
+  // Drag a folder from the picker onto the composer: it overlaps the selected script, which is previewed once with both selection paths.
+  const thumbnailsFolder = await api('POST', `/api/projects/${chatProject.id}/library/folders`, { name: 'Thumbnails' });
+  const libraryListing = await api('GET', `/api/projects/${chatProject.id}/library`);
+  await api('PATCH', `/api/projects/${chatProject.id}/library/assets/${libraryListing.assets.find((entry) => entry.filename === 'script.md' && !entry.folderId).id}`, { folderId: thumbnailsFolder.id });
+  await click('[data-action="chat-library-add"]');
+  await waitFor(`!!document.querySelector('#small-form [data-library-source="folder:${thumbnailsFolder.id}"]')`);
+  const dragPoints = await evaluate(`(() => {
+    const a = document.querySelector('#small-form [data-library-source="folder:${thumbnailsFolder.id}"]').getBoundingClientRect();
+    const zone = document.querySelector('.chat-library'); zone.scrollIntoView({ block: 'center' });
+    const b = zone.getBoundingClientRect();
+    return { x1: a.left + 20, y1: a.top + a.height / 2, x2: b.left + b.width / 2, y2: b.top + b.height / 2 };
+  })()`);
+  interceptedDrag = null;
+  await send('Input.setInterceptDrags', { enabled: true });
+  try {
+    await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: dragPoints.x1, y: dragPoints.y1 });
+    await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: dragPoints.x1, y: dragPoints.y1, button: 'left', clickCount: 1 });
+    for (let step = 1; step <= 5; step++) await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: dragPoints.x1 + (dragPoints.x2 - dragPoints.x1) * step / 5, y: dragPoints.y1 + (dragPoints.y2 - dragPoints.y1) * step / 5, button: 'left', buttons: 1 });
+    for (let attempt = 0; attempt < 30 && !interceptedDrag; attempt++) await pause(20);
+    assert.ok(interceptedDrag, 'Dragging a picker folder starts a native drag');
+    // The picker lifts away so the composer underneath takes the drop.
+    await waitFor(`document.querySelector('#form-dialog').matches('.lifted') && !document.querySelector('dialog:modal')`);
+    for (const type of ['dragEnter', 'dragOver', 'drop']) await send('Input.dispatchDragEvent', { type, x: dragPoints.x2, y: dragPoints.y2, data: interceptedDrag });
+    await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: dragPoints.x2, y: dragPoints.y2, button: 'left', clickCount: 1 });
+  } finally { await send('Input.setInterceptDrags', { enabled: false }); }
+  await waitFor(`!document.querySelector('#form-dialog').open && document.querySelector('.chat-library ol li:last-child')?.textContent.includes('Thumbnails/')`);
+  await waitFor(`[...document.querySelectorAll('#chat-exact-preview .chat-library-inputs li')].some(node => node.textContent.includes('Thumbnails/script.md') && node.textContent.includes('selected directly · in selected folder Thumbnails/ as script.md'))`);
+  assert.equal(await evaluate(`[...document.querySelectorAll('#chat-exact-preview .chat-library-inputs li')].filter(node => node.textContent.includes('script.md')).length`), 1, 'An overlapping file is previewed once.');
+  await snapshot('chat-library-folder-drop');
   await click('[data-action="close-card"]');
-  console.log('PASS Library script and opaque file selected in the composer, previewed by route, sent and shown frozen with their delivery');
+  console.log('PASS Library script and opaque file selected in the composer, previewed by route, sent and shown frozen with their delivery; a folder dragged from the picker overlaps it once with both selection paths');
   // Global settings and provider combinations use one saved catalog for all cards.
   await click('[data-action="close-card"]');
   await waitFor(`import('/chat.js').then(m => !m.hasUnsentChatChanges())`);

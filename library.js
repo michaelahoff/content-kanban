@@ -419,9 +419,10 @@ export function createLibrary({ retained, metadata, drafts, project, record }) {
     // The current committed versions named by ordered typed selections: an
     // asset, or a folder expanded recursively over its live files in
     // relative-path order. One entry per asset identity, in first-selected
-    // position, keeps every selection that named it (a folder's with the
-    // file's relative path). An unresolvable source is reported by identity,
-    // never resolved empty or substituted by name; an existing empty folder adds nothing.
+    // position, keeps every selection that named it (a folder's with its
+    // captured path and the file's relative path). An unresolvable source is
+    // reported by identity, never resolved empty or substituted by name; an
+    // existing empty folder adds nothing.
     resolve(ctx, projectId, selections) {
       const files = new Map(); const problems = [];
       // Each folder's chain is read once per resolution, however many files share it.
@@ -449,7 +450,7 @@ export function createLibrary({ retained, metadata, drafts, project, record }) {
             const folders = chainOf(asset.folder_id); const at = folders.findIndex((folder) => folder.id === row.id);
             return at < 0 ? [] : [{ asset, relativePath: labels(folders.slice(at + 1)) + asset.filename }];
           }).sort((a, b) => comparePaths(a.relativePath, b.relativePath))
-            .forEach(({ asset, relativePath }) => include(asset, { kind: 'folder', id: row.id, relativePath }));
+            .forEach(({ asset, relativePath }) => include(asset, { kind: 'folder', id: row.id, folderPath: pathOf(row.id), relativePath }));
           continue;
         }
         const row = selection.kind === 'asset' ? metadata.object(ctx, selection.id) : null;

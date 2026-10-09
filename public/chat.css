@@ -107,7 +107,10 @@
 .chat-library li span { overflow-wrap: anywhere; margin-right: 8px; }
 .chat-library small, .chat-library-picker small { color: var(--muted); }
 .chat-library-picker { display: grid; gap: 8px; max-height: 50vh; overflow: auto; margin-bottom: 14px; font-size: 13px; }
-.chat-library-picker label { display: flex; gap: 8px; align-items: baseline; overflow-wrap: anywhere; }
+.chat-library-picker label { display: flex; gap: 8px; align-items: baseline; overflow-wrap: anywhere; cursor: grab; }
+#form-dialog.lifted { opacity: .35; pointer-events: none; }
+#chat-composer.drag-over { outline: 1px dashed var(--accent); outline-offset: 4px; }
+.chat-library-sources { color: var(--muted); }
 .chat-library-inputs, .chat-delivery { margin: 8px 0; padding-left: 18px; display: grid; gap: 6px; overflow-wrap: anywhere; }
 .chat-delivery { font-size: 10px; color: var(--muted); }
 .chat-problems { margin: 10px 0; padding: 8px 10px; border-radius: 6px; background: #371d25; color: #ffb8bd; }

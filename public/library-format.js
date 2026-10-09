@@ -130,3 +130,7 @@ export function deliveryDescription(entry) {
   const name = entry.format === 'text' ? 'large text' : fileFormats[entry.format]?.name ?? (entry.format ? entry.format.toUpperCase() : null);
   return `${name ? `${name} · ` : ''}workspace copy for Codex tools`;
 }
+// Every source that selected a file, as previews and history show it: the
+// file itself, or a folder (by its captured path) that contained it.
+export const selectionPaths = (sources) => sources.map((source) => source.kind === 'folder'
+  ? `in ${source.folderPath ? `selected folder ${source.folderPath}` : 'a selected folder'} as ${source.relativePath}` : 'selected directly');

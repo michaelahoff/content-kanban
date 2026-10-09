@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { assetPreview, availableFilename, deliveryDescription, libraryFilename, previewType, libraryPaths, searchLibrary, folderHolders } from '../public/library-format.js';
+import { assetPreview, availableFilename, deliveryDescription, selectionPaths, libraryFilename, previewType, libraryPaths, searchLibrary, folderHolders } from '../public/library-format.js';
 import { mkdtemp, rm, writeFile, chmod, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -20,6 +20,13 @@ test('Create new picks the first free numeric suffix before the extension', () =
   assert.equal(availableFilename('archive.tar.gz', ['archive.tar.gz']), 'archive.tar (1).gz');
   assert.equal(availableFilename('README', ['README']), 'README (1)');
   assert.equal(availableFilename('.env', ['.env']), '.env (1)');
+});
+
+test('selection paths name every source that selected a file, in selection order', () => {
+  assert.deepEqual(selectionPaths([{ kind: 'asset', id: 'a' }, { kind: 'folder', id: 'f', folderPath: 'Thumbnails/', relativePath: 'refs/logo.png' }, { kind: 'folder', id: 'g', folderPath: 'Thumbnails/refs/', relativePath: 'logo.png' }]),
+    ['selected directly', 'in selected folder Thumbnails/ as refs/logo.png', 'in selected folder Thumbnails/refs/ as logo.png']);
+  // Submissions frozen before folder paths were captured still describe the folder source.
+  assert.deepEqual(selectionPaths([{ kind: 'folder', id: 'f', relativePath: 'logo.png' }]), ['in a selected folder as logo.png']);
 });
 
 test('delivery descriptions name the route and the recognized format without claiming comprehension', () => {
@@ -786,8 +793,8 @@ test('remembered sources resolve to current versions: folders expand recursively
   assert.deepEqual(resolved.files.map((file) => [file.assetId, file.libraryPath]), [
     [logo.asset.id, 'Thumbnails/logo.png'], [b.asset.id, 'Thumbnails/b.png'], [deep.asset.id, 'Thumbnails/refs/a.png'],
     [dot.asset.id, 'Thumbnails/refs.txt'], [script.asset.id, 'script.md']]);
-  assert.deepEqual(resolved.files[0].sources, [{ kind: 'asset', id: logo.asset.id }, { kind: 'folder', id: thumbnails.id, relativePath: 'logo.png' }]);
-  assert.deepEqual(resolved.files[2].sources, [{ kind: 'folder', id: thumbnails.id, relativePath: 'refs/a.png' }]);
+  assert.deepEqual(resolved.files[0].sources, [{ kind: 'asset', id: logo.asset.id }, { kind: 'folder', id: thumbnails.id, folderPath: 'Thumbnails/', relativePath: 'logo.png' }]);
+  assert.deepEqual(resolved.files[2].sources, [{ kind: 'folder', id: thumbnails.id, folderPath: 'Thumbnails/', relativePath: 'refs/a.png' }]);
   assert.deepEqual([resolved.files[4].versionId, resolved.files[4].hash, resolved.files[4].size, resolved.files[4].filename], [script.version.id, sha(Buffer.from('# A')), 3, 'script.md']);
 
   // Replace and move follow the identity; removal leaves the ID unresolved, even after its name is reused.

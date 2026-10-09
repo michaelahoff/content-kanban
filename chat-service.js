@@ -8,6 +8,8 @@ import { sourceKey } from './public/library-format.js';
 import { planInputs, hasShellTool, noShellTool } from './submission-inputs.js';
 
 const fail = (status, message) => { throw Object.assign(new Error(message), { status }); };
+// What a resolution captures for each file: identity, version, label and every selecting source.
+const membership = (files) => JSON.stringify(files.map(({ assetId, versionId, libraryPath, sources }) => [assetId, versionId, libraryPath, sources]));
 const problemMessage = (problems) => `Not sent. ${problems.map((problem) => `${problem.label}: ${problem.reason}`).join(' ')}`;
 export function createChatService({ store, adapter, adapters = { codex: adapter }, providers, dataDir }) {
   const workspace = (cardId) => path.resolve(dataDir, 'workspaces', cardId);
@@ -104,10 +106,11 @@ export function createChatService({ store, adapter, adapters = { codex: adapter 
       if (!discovery.models.some((model) => model.id === captured.model)) fail(400, 'Choose an available model in Settings.');
       if (captured.problems.length) throw Object.assign(new Error(problemMessage(captured.problems)), { status: 409, problems: captured.problems });
       if (settings.revision !== store.providerConfiguration(ctx, start.provider).revision) fail(409, 'Provider settings changed while preparing Send. Review and send again.');
-      // Revalidated synchronously with the commit: a Library file replaced or
-      // removed while preflight read it is never sent at its stale version.
+      // Revalidated synchronously with the commit: a Library file replaced,
+      // renamed, moved, added or removed while preflight read it is never sent
+      // with stale versions, labels or folder membership.
       const current = store.library.resolve(ctx, captured.projectId, store.chats.context(ctx, cardId).librarySelections);
-      if (current.problems.length || current.files.map((file) => file.versionId).join() !== captured.context.library.map((file) => file.versionId).join()) fail(409, 'A selected Library file changed while preparing Send. Review and send again.');
+      if (current.problems.length || membership(current.files) !== membership(captured.context.library)) fail(409, 'A selected Library file changed while preparing Send. Review and send again.');
       return store.chats.queue(ctx, cardId, input, captured, compileConfiguration(settings.selection, discovery, cardTools, captured.provider));
     },
     // A lane run's frozen submission: the playbook's prompt, selections and

@@ -8,6 +8,8 @@ import { DatabaseSync } from 'node:sqlite';
 import { createClaudeAdapter } from '../claude-adapter.js';
 import { createBackup, restoreBackup } from '../backup.js';
 import { createApp } from '../server.js';
+import { openStore } from '../store.js';
+import { createChatService } from '../chat-service.js';
 import { ControlledCodex } from './support/controlled-codex.js';
 import { randomUUID, createHash } from 'node:crypto';
 import { fixture, waitFor } from './support/chat-fixture.js';
@@ -174,6 +176,32 @@ test('a Library file replaced while Send is preparing is captured at its current
   assert.ok((await waitFor(() => f.codex.sends[0])).input[0].text.includes('Script B'));
 });
 
+test('a folder member renamed or moved while Send reads it is refused, never frozen with stale labels or provenance', async (t) => {
+  const f = await libraryFixture(t); const card = await f.card();
+  const library = `/api/projects/${f.projectId}/library`;
+  const thumbnails = await f.ok('POST', `${library}/folders`, { name: 'Thumbnails' });
+  const refs = await f.ok('POST', `${library}/folders`, { name: 'refs', parentId: thumbnails.id });
+  const brief = await f.upload('brief.md', Buffer.from('Brief'), { folder: thumbnails.id });
+  const composer = await f.select(card.id, 'Use the thumbnails', [{ kind: 'folder', id: thumbnails.id }]);
+  await f.close();
+  // The chat service over the same data, with a Library whose preflight read
+  // lets the user rename, then move, the file mid-read.
+  const store = await openStore({ dataDir: f.dataDir });
+  t.after(() => store.close());
+  const ctx = { ...store.owner, actor: `user:${store.owner.userId}` };
+  for (const change of [{ filename: 'brief v2.md' }, { folderId: refs.id }]) {
+    let changed = false;
+    const library = { ...store.library, async inspect(...args) {
+      if (!changed) { changed = true; store.library.updateAsset(ctx, f.projectId, brief.asset.id, change); }
+      return store.library.inspect(...args);
+    } };
+    const service = createChatService({ store: { ...store, library }, adapters: { codex: f.codex }, dataDir: f.dataDir });
+    await assert.rejects(service.queue(ctx, card.id, { id: randomUUID(), composerRevision: composer.revision }), (error) => error.status === 409 && /changed while preparing/.test(error.message));
+    assert.ok(changed);
+  }
+  assert.equal(store.chats.snapshot(ctx, card.id).submissions.length, 0, "nothing was queued");
+});
+
 async function claudeFixture(t) {
   const home = await mkdtemp(path.join(tmpdir(), 'frameboard-claude-'));
   t.after(() => rm(home, { recursive: true, force: true }));
@@ -225,10 +253,14 @@ test('Claude refuses a tool-only file or an unsupported card image for the whole
   assert.equal((await f.chat(withImage.id)).submissions.length, 0);
 });
 
-test('export and restore keep manual Library selections and frozen submissions, and refuse a frozen reference to a missing version', async (t) => {
+test('export and restore keep manual Library selections and frozen submissions with their expanded folder membership, and refuse a frozen reference to a missing version', async (t) => {
   const f = await libraryFixture(t); const card = await f.card();
-  const script = await f.upload('script.md', Buffer.from('Backed up script'));
-  const submission = await f.queue(card.id, await f.select(card.id, 'Use the script', [asset(script)]));
+  const scripts = await f.ok('POST', `/api/projects/${f.projectId}/library/folders`, { name: 'Scripts' });
+  const empty = await f.ok('POST', `/api/projects/${f.projectId}/library/folders`, { name: 'Next episode' });
+  const script = await f.upload('script.md', Buffer.from('Backed up script'), { folder: scripts.id });
+  const selections = [{ kind: 'folder', id: scripts.id }, asset(script), { kind: 'folder', id: empty.id }];
+  const submission = await f.queue(card.id, await f.select(card.id, 'Use the script', selections));
+  assert.deepEqual(submission.context.library[0].sources, [{ kind: 'folder', id: scripts.id, folderPath: 'Scripts/', relativePath: 'script.md' }, asset(script)]);
   f.codex.finish(await waitFor(() => f.codex.sends[0]));
   await waitFor(async () => (await f.chat(card.id)).submissions[0].status === 'completed');
   await f.close();
@@ -247,7 +279,7 @@ test('export and restore keep manual Library selections and frozen submissions, 
   };
   const restored = await ok('GET', `/api/cards/${card.id}/chat`);
   assert.deepEqual(restored.submissions[0].context.library, submission.context.library);
-  assert.deepEqual(restored.composer.selections.library, [asset(script)]);
+  assert.deepEqual(restored.composer.selections.library, selections);
   // A restored conversation is not resumed; new work starts in fresh context.
   const { composer } = await ok('POST', `/api/cards/${card.id}/chat/fresh`, { cancelQueued: true });
   const reselected = await ok('PUT', `/api/cards/${card.id}/chat/composer`, { ...composer, prompt: 'Again', selections: { ...composer.selections, library: [asset(script)] } });
@@ -390,8 +422,8 @@ test('a selected folder sends its files recursively in path order with their pro
   assert.deepEqual(composer.selections.library, [asset(note), folder(thumbnails), folder(empty)], 'folders are remembered selections too');
   const submission = await f.queue(card.id, composer);
   assert.deepEqual(submission.context.library.map((file) => [file.filename, file.libraryPath, file.sources]), [
-    ['note.md', 'Thumbnails/refs/note.md', [asset(note), { ...folder(thumbnails), relativePath: 'refs/note.md' }]],
-    ['brief.md', 'Thumbnails/brief.md', [{ ...folder(thumbnails), relativePath: 'brief.md' }]]], 'an existing empty folder adds nothing');
+    ['note.md', 'Thumbnails/refs/note.md', [asset(note), { ...folder(thumbnails), folderPath: 'Thumbnails/', relativePath: 'refs/note.md' }]],
+    ['brief.md', 'Thumbnails/brief.md', [{ ...folder(thumbnails), folderPath: 'Thumbnails/', relativePath: 'brief.md' }]]], 'an existing empty folder adds nothing, and each folder source keeps its captured path');
   f.codex.finish(await waitFor(() => f.codex.sends[0]), 'failed', 'Provider failed');
   await waitFor(async () => (await f.chat(card.id)).submissions[0].status === 'failed');
 
@@ -412,6 +444,72 @@ test('a selected folder sends its files recursively in path order with their pro
   assert.equal(refused.status, 409);
   assert.deepEqual(refused.body.problems.map(({ key, label, phase }) => ({ key, label, phase })), [
     { key: `asset:${note.asset.id}`, label: 'note.md', phase: 'resolve' }, { key: `folder:${thumbnails.id}`, label: 'Thumbnails/', phase: 'resolve' }]);
+});
+
+test('card images come first once with every label, then folders and files deduplicated only by asset identity', async (t) => {
+  const f = await libraryFixture(t);
+  const library = `/api/projects/${f.projectId}/library`;
+  const image = { id: '00000002-0000-4000-8000-000000000000.png', name: 'portrait.png' };
+  await writeFile(path.join(f.dataDir, 'images', image.id), png);
+  const card = await f.card({ images: [image], imageRoles: { original: image.id } });
+  const thumbnails = await f.ok('POST', `${library}/folders`, { name: 'Thumbnails' });
+  const refs = await f.ok('POST', `${library}/folders`, { name: 'refs', parentId: thumbnails.id });
+  // The same name and bytes in two folders, and the gallery image's bytes uploaded to the Library: three separate assets.
+  const logo = await f.upload('logo.png', png, { folder: thumbnails.id });
+  const refLogo = await f.upload('logo.png', png, { folder: refs.id });
+  const portrait = await f.upload('portrait.png', png);
+  const folder = (entry) => ({ kind: 'folder', id: entry.id });
+  const composer = await f.select(card.id, 'Use every reference', [asset(logo), folder(thumbnails), folder(refs), asset(portrait)], { selections: { images: [image.id] } });
+  const submission = await f.queue(card.id, composer);
+  assert.deepEqual(submission.context.images.map(({ id, labels }) => [id, labels]), [[image.id, ['Original', 'Attachment']]], 'an image chosen by role and attachment is one input with both labels');
+  assert.deepEqual(submission.context.library.map((file) => [file.assetId, file.libraryPath, file.sources.map((source) => source.relativePath ?? 'direct')]), [
+    [logo.asset.id, 'Thumbnails/logo.png', ['direct', 'logo.png']],
+    [refLogo.asset.id, 'Thumbnails/refs/logo.png', ['refs/logo.png', 'logo.png']],
+    [portrait.asset.id, 'portrait.png', ['direct']]]);
+  const send = await waitFor(() => f.codex.sends[0]);
+  const images = send.input.filter((entry) => entry.type === 'localImage').map((entry) => path.relative(path.join(f.dataDir, 'workspaces', card.id), entry.path));
+  assert.equal(images.length, 4, 'one delivery per identity, none merged by name or bytes');
+  assert.ok(images[0].startsWith('references/') && !images[0].startsWith('references/library/'), 'the card image is delivered before Library files');
+  assert.deepEqual(images.slice(1), submission.context.library.map((file) => file.path));
+  assert.equal(send.input[0].text.match(/Original, Attachment: portrait\.png/g).length, 1);
+  const delivery = await waitFor(async () => (await f.chat(card.id)).attempts[0].delivery);
+  assert.deepEqual(delivery.map((entry) => entry.filename), ['portrait.png', 'logo.png', 'logo.png', 'portrait.png']);
+});
+
+test('the preview follows live folder membership until Send freezes it', async (t) => {
+  const f = await libraryFixture(t); const card = await f.card();
+  const library = `/api/projects/${f.projectId}/library`;
+  const scripts = await f.ok('POST', `${library}/folders`, { name: 'Scripts' });
+  await f.upload('a.md', Buffer.from('A'), { folder: scripts.id });
+  const composer = await f.select(card.id, 'Use the scripts', [{ kind: 'folder', id: scripts.id }]);
+  const previewed = async () => (await f.ok('POST', `/api/cards/${card.id}/chat/preview`, {})).context.library.map((file) => file.libraryPath);
+  assert.deepEqual(await previewed(), ['Scripts/a.md']);
+  const b = await f.upload('b.md', Buffer.from('B'), { folder: scripts.id });
+  assert.deepEqual(await previewed(), ['Scripts/a.md', 'Scripts/b.md']);
+  const submission = await f.queue(card.id, composer);
+  await f.ok('PATCH', `${library}/assets/${b.asset.id}`, { filename: 'b2.md' });
+  await f.upload('c.md', Buffer.from('C'), { folder: scripts.id });
+  assert.deepEqual(await previewed(), ['Scripts/a.md', 'Scripts/b2.md', 'Scripts/c.md']);
+  assert.deepEqual((await f.chat(card.id)).submissions.find((row) => row.id === submission.id).context.library.map((file) => file.libraryPath), ['Scripts/a.md', 'Scripts/b.md'], 'the queued membership and labels stay frozen');
+});
+
+test('Send reports every unresolved, damaged and unsupported folder member at once and delivers no subset', async (t) => {
+  const f = await claudeFixture(t); const card = await f.card();
+  const library = `/api/projects/${f.projectId}/library`;
+  const media = await f.ok('POST', `${library}/folders`, { name: 'Media' });
+  const pdf = await f.upload('brief.pdf', Buffer.from('%PDF-1.7\n\u0000binary'), { folder: media.id });
+  const zip = await f.upload('fonts.zip', Buffer.from([0x50, 0x4b, 3, 4, 0, 0, 0, 0]), { folder: media.id });
+  const damaged = await f.upload('notes.md', Buffer.from('Notes'), { folder: media.id });
+  await f.upload('usable.md', Buffer.from('Usable'), { folder: media.id });
+  const gone = await f.upload('old.md', Buffer.from('Old'));
+  await f.ok('DELETE', `${library}/assets/${gone.asset.id}`);
+  await rm(path.join(f.dataDir, 'retained', 'versions', damaged.version.id));
+  await f.select(card.id, 'Use the media', [{ kind: 'folder', id: media.id }, asset(gone)], { provider: 'claude', model: 'sonnet' });
+  const refused = await f.call('POST', `/api/cards/${card.id}/chat/submissions`, { id: randomUUID(), composerRevision: (await f.chat(card.id)).composer.revision });
+  assert.equal(refused.status, 409);
+  assert.deepEqual(refused.body.problems.map(({ key, phase }) => [key, phase]).sort(), [
+    [`asset:${gone.asset.id}`, 'resolve'], [`asset:${damaged.asset.id}`, 'integrity'], [`asset:${pdf.asset.id}`, 'capability'], [`asset:${zip.asset.id}`, 'capability']].sort());
+  assert.equal((await f.chat(card.id)).submissions.length, 0, 'nothing is queued, so no usable subset is sent');
 });
 
 test('a Codex setup with its shell tool off refuses a tool-only file by name and still sends text and images', async (t) => {
