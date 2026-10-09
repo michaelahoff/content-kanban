@@ -2,7 +2,7 @@
 // native sandbox has been relaxed by a permission approval or Full grant.
 import { spawn } from 'node:child_process';
 import { lstat, realpath, readdir, mkdir, mkdtemp, rm } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { accessSync, constants, existsSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -19,7 +19,7 @@ function collect(child) {
     child.on('close', (code) => resolve({ code, stdout, stderr }));
   });
 }
-async function independentTree(root) {
+async function rejectHardLinks(root) {
   let info;
   try { info = await lstat(root); }
   catch (error) { if (error.code === 'ENOENT') return; throw error; }
@@ -29,7 +29,16 @@ async function independentTree(root) {
   let names;
   try { names = await readdir(root); }
   catch (error) { if (error.code === 'ENOENT') return; throw error; }
-  for (const name of names) await independentTree(path.join(root, name));
+  for (const name of names) await rejectHardLinks(path.join(root, name));
+}
+// Home and temporary directories are masked inside the boundary, so a harness
+// installed there (for example an npm global under nvm) is bound by its real path.
+function resolveCommand(command, env) {
+  const candidates = command.includes('/') ? [command] : (env.PATH ?? '').split(':').filter(Boolean).map((dir) => path.join(dir, command));
+  for (const candidate of candidates) {
+    try { accessSync(candidate, constants.X_OK); return realpathSync(candidate); } catch { /* Next PATH entry. */ }
+  }
+  return command;
 }
 export async function createNativeBoundary({ dataDir, nativeHome, testPorts = [] }) {
   if (process.platform !== 'linux' || process.arch !== 'x64') throw held('This OS/architecture is unproven. Use Linux x64 with bubblewrap, a C compiler and Landlock ABI 10+.');
@@ -48,17 +57,19 @@ export async function createNativeBoundary({ dataDir, nativeHome, testPorts = []
       snapshot: { policy: 'linux-retained-v1', supported: true, fullAccess: true },
       async check() {
         if (await realpath(dataDir) !== dataDir || await realpath(workspaces) !== workspaces || await realpath(nativeHome) !== nativeHome) throw held('A protected directory was replaced by a link. Restore the directory and restart Frameboard.');
-        await independentTree(workspaces); await independentTree(nativeHome);
+        await rejectHardLinks(workspaces); await rejectHardLinks(nativeHome);
       },
       launch(command, args, { cwd, env = process.env, ...options } = {}) {
-        const guardArgs = [process.execPath, path.join(appRoot, 'scripts/native-proxy-client.mjs'), command, ...args];
+        const executable = resolveCommand(command, env);
+        const guardArgs = [process.execPath, path.join(appRoot, 'scripts/native-proxy-client.mjs'), executable, ...args];
         // Credentials come from native sign-in, never the application's env.
         const cleanEnv = Object.fromEntries(['PATH', 'HOME', 'USER', 'LANG', 'LC_ALL', 'TERM', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'SSL_CERT_FILE', 'SSL_CERT_DIR'].filter((key) => env[key] !== undefined).map((key) => [key, env[key]]));
         cleanEnv.TMPDIR = '/tmp';
+        const readable = [path.dirname(path.dirname(process.execPath)), ...(path.isAbsolute(executable) ? [path.dirname(executable)] : []), appRoot];
         const child = spawn('bwrap', ['--die-with-parent', '--new-session', '--unshare-user', '--unshare-pid', '--unshare-ipc', '--unshare-uts', '--unshare-net',
           '--cap-drop', 'ALL', '--ro-bind', '/', '/', '--proc', '/proc', '--dev', '/dev',
           ...['/home', '/root', '/run', '/tmp', '/var/tmp'].filter(existsSync).flatMap((dir) => ['--tmpfs', dir]),
-          '--ro-bind', path.dirname(process.execPath), path.dirname(process.execPath), '--ro-bind', appRoot, appRoot,
+          ...readable.flatMap((dir) => ['--ro-bind', dir, dir]),
           '--ro-bind', dataDir, dataDir, '--ro-bind', build, build, '--bind', nativeHome, nativeHome, '--bind', workspaces, workspaces,
           '--chdir', cwd ?? appRoot, '--', guard, ...guardArgs], { ...options, stdio: [...(options.stdio ?? ['pipe', 'pipe', 'pipe']), 'pipe'], cwd: appRoot, env: cleanEnv });
         attachNativeProxy(child.stdio[3], { testPorts });
@@ -75,6 +86,6 @@ export async function createNativeBoundary({ dataDir, nativeHome, testPorts = []
     return api;
   } catch (error) {
     await rm(build, { recursive: true, force: true });
-    throw error.kind ? error : held('Install bubblewrap, a C compiler and Linux headers, and enable Landlock ABI 10+.');
+    throw error.kind ? error : held(`Install bubblewrap, a C compiler and Linux headers, and enable Landlock ABI 10+. Setup failed: ${error.message}`);
   }
 }

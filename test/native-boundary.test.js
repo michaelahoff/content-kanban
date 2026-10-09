@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile, readFile, rm, symlink, link } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rm, symlink, link, chmod } from 'node:fs/promises';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 import { createNativeBoundary } from '../native-boundary.js';
@@ -73,4 +73,19 @@ test('native commands cannot use host HTTP or UNIX sockets or the proxy to bypas
   assert.equal(result.code, 0, result.stderr);
   assert.match(result.stdout, /All host mutation routes blocked/);
   assert.equal(calls, 0);
+});
+
+test('a harness installed under a masked home or temporary directory launches by its real path', { skip: !enabled }, async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'frameboard-install-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const dataDir = path.join(root, 'data'); const home = path.join(root, 'native');
+  const install = path.join(root, 'install'); const bin = path.join(root, 'bin');
+  await mkdir(path.join(dataDir, 'workspaces'), { recursive: true }); await mkdir(home); await mkdir(install); await mkdir(bin);
+  await writeFile(path.join(install, 'fb-harness'), '#!/bin/sh\necho HARNESS_OK\n'); await chmod(path.join(install, 'fb-harness'), 0o755);
+  await symlink(path.join(install, 'fb-harness'), path.join(bin, 'fb-harness'));
+  const boundary = await createNativeBoundary({ dataDir, nativeHome: home });
+  t.after(() => boundary.close());
+  const result = await boundary.run('fb-harness', [], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } });
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stdout, /HARNESS_OK/);
 });

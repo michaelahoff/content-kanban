@@ -20,7 +20,8 @@ export function createCodexAdapter({
   let retainedDataDir = null; let boundaryTask = null;
   const boundary = () => {
     if (!retainedDataDir) return null;
-    boundaryTask ??= createNativeBoundary({ dataDir: retainedDataDir, nativeHome: env.CODEX_HOME || path.join(env.HOME || homedir(), '.codex'), testPorts: retainedTestPorts });
+    // A failed setup is retried, so a corrected installation applies on refresh.
+    boundaryTask ??= createNativeBoundary({ dataDir: retainedDataDir, nativeHome: env.CODEX_HOME || path.join(env.HOME || homedir(), '.codex'), testPorts: retainedTestPorts }).catch((error) => { boundaryTask = null; throw error; });
     return boundaryTask;
   };
   const listeners = new Map();
@@ -180,7 +181,7 @@ export function createCodexAdapter({
         current.request('plugin/installed', {}), pages('mcpServerStatus/list', {}), current.request('configRequirements/read', null),
       ]);
       return {
-        ...((await boundary()) ? { protection: (await boundary()).snapshot } : {}),
+        ...(retainedDataDir ? { protection: (await boundary()).snapshot } : {}),
         cwd: work, harness: { userAgent: harness.userAgent, codexHome: harness.codexHome },
         models: models.filter((m) => !m.hidden).map((m) => ({ id: m.id, displayName: m.displayName, isDefault: m.isDefault })),
         skills: skills.data.flatMap((entry) => entry.skills).map((s) => ({ id: s.path, name: s.name, description: s.description, scope: s.scope })),

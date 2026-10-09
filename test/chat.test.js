@@ -22,7 +22,7 @@ test('an unproven retained-data boundary holds a prompt with no images before op
   assert.equal(f.codex.threads.size, 0);
 });
 
-test('inherited native actions hold even when the opt-in mode and an old frozen inventory remain unchanged', async (t) => {
+test('inherited native actions discovered during preparation run inside the retained-data boundary without holding', async (t) => {
   const f = await fixture(t); const card = await f.card();
   await f.ok('PUT', '/api/providers/codex', { revision: 0, selection: { inherited: true, selected: [], instructions: '' } });
   const discover = f.codex.discover.bind(f.codex); let hooks = [];
@@ -33,12 +33,10 @@ test('inherited native actions hold even when the opt-in mode and an old frozen 
   hooks = [{ key: 'local-writer' }]; open();
   const outcome = await waitFor(async () => {
     const row = (await f.chat(card.id)).submissions.find((row) => row.id === submission.id);
-    return ['held', 'running'].includes(row.status) && row;
+    return ['held', 'running', 'completed'].includes(row.status) && row;
   });
-  assert.equal(outcome.status, 'held');
-  assert.match(outcome.reason, /inherited hook local-writer is unproven/);
-  assert.equal(f.codex.sends.length, 0);
-  assert.equal((await f.ok('GET', '/api/providers/codex')).selection.inherited, true);
+  assert.notEqual(outcome.status, 'held', outcome.reason);
+  assert.equal(f.codex.sends.length, 1);
 });
 
 test('a terminal-only Codex user agent change resumes the saved conversation without holding a follow-up', async (t) => {

@@ -25,7 +25,8 @@ export function createClaudeAdapter({ command = 'claude', args = [], env = proce
   let retainedDataDir = null; let boundaryTask = null;
   const boundary = () => {
     if (!retainedDataDir) return null;
-    boundaryTask ??= createNativeBoundary({ dataDir: retainedDataDir, nativeHome });
+    // A failed setup is retried, so a corrected installation applies on refresh.
+    boundaryTask ??= createNativeBoundary({ dataDir: retainedDataDir, nativeHome }).catch((error) => { boundaryTask = null; throw error; });
     return boundaryTask;
   };
   const historyPath = (work, id) => path.join(nativeHome, 'projects', work.replace(/[^a-zA-Z0-9]/g, '-'), `${id}.jsonl`);

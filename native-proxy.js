@@ -47,6 +47,7 @@ export function attachNativeProxy(pipe, { testPorts = [] } = {}) {
       let message;
       try { message = JSON.parse(line); }
       catch { pipe.destroy(); return; }
+      if (!message || typeof message !== 'object') { pipe.destroy(); return; }
       receive(message).catch(() => send({ id: message.id, type: 'close' }));
     }
   });

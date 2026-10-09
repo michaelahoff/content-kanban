@@ -52,9 +52,6 @@ export function compileConfiguration(selection, discovery, dynamicTools = []) {
   const selected = inherited ? [] : [...new Set(selection.selected ?? [])].sort();
   const reasons = [];
   if (discovery.protection?.supported === false) reasons.push(discovery.protection.reason);
-  if (discovery.protection && inherited) for (const item of discovery.items) {
-    if (['mcp', 'plugin', 'hook'].includes(item.kind)) reasons.push(`Retained-data protection for inherited ${item.kind} ${item.name} is unproven. Disable that native integration outside Frameboard or use a configuration without it, then refresh and resubmit.`);
-  }
   const items = discovery.items;
   for (const id of selected) {
     const item = items.find((entry) => entry.id === id);
