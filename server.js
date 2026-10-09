@@ -29,12 +29,13 @@ function assert(value, message) {
 
 // Library uploads carry metadata in the query string and bytes in the body.
 // Frameboard computes hashes, sizes and storage locations itself.
-const uploadParameters = new Set(['filename', 'operation', 'collision', 'asset']);
+const uploadParameters = new Set(['filename', 'operation', 'collision', 'asset', 'folder']);
 function uploadInput(url) {
-  for (const key of url.searchParams.keys()) assert(uploadParameters.has(key), 'Uploads take only a filename, operation and collision choice. Frameboard computes hashes and storage locations itself.');
+  for (const key of url.searchParams.keys()) assert(uploadParameters.has(key), 'Uploads take only a filename, folder, operation and collision choice. Frameboard computes hashes and storage locations itself.');
   const operation = url.searchParams.get('operation');
   assert(/^[\w-]{1,100}$/.test(operation || ''), 'Each upload needs an operation ID.');
-  return { filename: url.searchParams.get('filename'), operationId: operation, collision: url.searchParams.get('collision') || undefined, assetId: url.searchParams.get('asset') || undefined };
+  return { filename: url.searchParams.get('filename'), operationId: operation, collision: url.searchParams.get('collision') || undefined,
+    assetId: url.searchParams.get('asset') || undefined, folderId: url.searchParams.get('folder') || null };
 }
 // Stops a publication when the uploading client disconnects.
 function uploadSignal(req) {
@@ -187,6 +188,13 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
       ['GET', /^\/api\/projects\/([^/]+)\/library$/, (ctx, req, id) => store.library.list(ctx, id)],
       ['POST', /^\/api\/projects\/([^/]+)\/library\/uploads$/, (ctx, req, id, url) => store.library.upload(ctx, id, uploadInput(url), req, { signal: uploadSignal(req) }), 201],
       ['GET', /^\/api\/projects\/([^/]+)\/library\/assets\/[^/]+$/, (ctx, req, id, url) => store.library.asset(ctx, id, url.pathname.split('/').at(-1))],
+      ['PATCH', /^\/api\/projects\/([^/]+)\/library\/assets\/[^/]+$/, async (ctx, req, id, url) => store.library.updateAsset(ctx, id, url.pathname.split('/').at(-1), await read(req))],
+      ['DELETE', /^\/api\/projects\/([^/]+)\/library\/assets\/[^/]+$/, (ctx, req, id, url) => store.library.removeAsset(ctx, id, url.pathname.split('/').at(-1))],
+      ['GET', /^\/api\/projects\/([^/]+)\/library\/removed$/, (ctx, req, id) => store.library.removed(ctx, id)],
+      ['POST', /^\/api\/projects\/([^/]+)\/library\/folders$/, async (ctx, req, id) => store.library.createFolder(ctx, id, await read(req)), 201],
+      ['POST', /^\/api\/projects\/([^/]+)\/library\/folders\/paths$/, async (ctx, req, id) => store.library.ensureFolders(ctx, id, await read(req))],
+      ['PATCH', /^\/api\/projects\/([^/]+)\/library\/folders\/[^/]+$/, async (ctx, req, id, url) => store.library.updateFolder(ctx, id, url.pathname.split('/').at(-1), await read(req))],
+      ['DELETE', /^\/api\/projects\/([^/]+)\/library\/folders\/[^/]+$/, (ctx, req, id, url) => store.library.removeFolder(ctx, id, url.pathname.split('/').at(-1))],
       ['POST', /^\/api\/projects\/([^/]+)\/library\/versions\/[^/]+\/verify$/, (ctx, req, id, url) => store.library.verify(ctx, id, url.pathname.split('/').at(-2))],
       ['POST', /^\/api\/projects\/([^/]+)\/library\/versions\/[^/]+\/repair$/, (ctx, req, id, url) => store.library.repair(ctx, id, url.pathname.split('/').at(-2), req, { signal: uploadSignal(req) })],
       ['POST', /^\/api\/projects\/([^/]+)\/library\/drafts$/, async (ctx, req, id) => store.library.createDraft(ctx, id, bodyOf(await read(req))), 201],

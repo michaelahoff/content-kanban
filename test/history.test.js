@@ -60,6 +60,7 @@ test('upgrading an already-versioned database repairs legacy move foreign keys a
     DROP TABLE library_drafts;
     DROP TABLE retained_versions;
     DROP TABLE retained_objects;
+    DROP TABLE library_folders;
     DROP TABLE lane_runs;
     UPDATE meta SET value = '11' WHERE key = 'schema_version';`);
   db.close();

@@ -4,16 +4,17 @@ import { state, locateCard, flushCards, saveStatus, refreshSavedCard } from './s
 import { contextFields } from './chat-context.js';
 import { attemptMarkup, progressState, runningStatuses } from './chat-transcript.js';
 import { formatSize } from './library.js';
+import { comparePaths, libraryPaths, sourceKey } from './library-format.js';
 
 const chats = new Map();
-// Each project's Library files, for naming manual selections and the picker.
+// Each project's Library files and folders, for naming manual selections and the picker.
 // One load per project at a time; a failed load is shown, not retried by render.
 const libraries = new Map();
 function loadLibrary(projectId) {
   const entry = libraries.get(projectId);
   if (entry?.loading) return entry.loading;
-  const loading = request(`/api/projects/${encodeURIComponent(projectId)}/library`).then(({ assets }) => {
-    libraries.set(projectId, { assets }); return assets;
+  const loading = request(`/api/projects/${encodeURIComponent(projectId)}/library`).then(({ assets, folders }) => {
+    libraries.set(projectId, { assets, folders }); return { assets, folders };
   }, (error) => { libraries.set(projectId, { error: error.message }); throw error; });
   libraries.set(projectId, { loading });
   return loading;
@@ -199,23 +200,31 @@ function libraryMarkup(item) {
   const projectId = locateCard(item.id).project.id;
   const library = libraries.get(projectId);
   if (!library) void loadLibrary(projectId).then(() => { if (selected === item.id) renderComposer(item); }, () => { if (selected === item.id) renderComposer(item); });
-  const assets = library?.assets;
+  const loaded = Boolean(library?.assets);
+  const paths = loaded && libraryPaths(library);
   const chosen = item.composer.selections.library ?? [];
   return `<fieldset class="chat-selections chat-library"><legend>Library files</legend>${library?.error ? `<p class="chat-hint">Library files could not be loaded: ${escape(library.error)}</p>` : ''}${chosen.length ? `<ol>${chosen.map((entry, index) => {
-    const asset = assets?.find((candidate) => candidate.id === entry.id);
-    return `<li><span>${asset ? escape(asset.filename) : assets ? `<strong>Unavailable file</strong> <small>${escape(entry.id)}</small>` : escape(entry.id)}</span><button type="button" class="button small secondary" data-action="chat-library-remove" data-index="${index}" aria-label="Remove ${escape(asset?.filename ?? 'this file')}">Remove</button></li>`;
+    // A folder sends every file in it; a removed or unknown source stays listed until removed here.
+    const name = loaded && (entry.kind === 'folder' ? paths.folders.get(entry.id) : paths.assets.get(entry.id));
+    const noun = entry.kind === 'folder' ? 'folder' : 'file';
+    return `<li><span>${name ? escape(name) : loaded ? `<strong>Unavailable ${noun}</strong> <small>${escape(entry.id)}</small>` : escape(entry.id)}</span><button type="button" class="button small secondary" data-action="chat-library-remove" data-index="${index}" aria-label="Remove ${escape(name || `this ${noun}`)}">Remove</button></li>`;
   }).join('')}</ol>` : ''}<button type="button" class="button small secondary" data-action="chat-library-add">Add Library files…</button></fieldset>`;
 }
 function pickLibraryFiles(item) {
   editableComposer(item);
   libraries.delete(locateCard(item.id).project.id);
-  void loadLibrary(locateCard(item.id).project.id).then((assets) => {
-    const chosen = new Set((item.composer.selections.library ?? []).map((entry) => entry.id));
-    const available = assets.filter((asset) => !chosen.has(asset.id));
-    smallForm({ title: 'Add Library files', description: available.length ? 'Selected files are sent as reference material, in the order chosen.' : 'Every Library file is already selected, or the Library is empty.',
-      fields: `<div class="chat-library-picker">${available.map((asset) => `<label><input type="checkbox" name="asset" value="${escape(asset.id)}">${escape(asset.filename)} <small>v${asset.current.number} · ${formatSize(asset.current.size)}${asset.current.available ? '' : ' · unavailable'}</small></label>`).join('')}</div>`,
-      submit: 'Add files', onSubmit: async (data) => {
-        const added = data.getAll('asset').map((id) => ({ kind: 'asset', id: String(id) }));
+  void loadLibrary(locateCard(item.id).project.id).then((listing) => {
+    const chosen = new Set((item.composer.selections.library ?? []).map(sourceKey));
+    const paths = libraryPaths(listing);
+    // Files and folders by path; a folder sends all of its files, in path order.
+    const available = [
+      ...listing.folders.map((folder) => ({ source: { kind: 'folder', id: folder.id }, label: paths.folders.get(folder.id), detail: 'folder · every file in it' })),
+      ...listing.assets.map((asset) => ({ source: { kind: 'asset', id: asset.id }, label: paths.assets.get(asset.id), detail: `v${asset.current.number} · ${formatSize(asset.current.size)}${asset.current.available ? '' : ' · unavailable'}` })),
+    ].filter((entry) => !chosen.has(sourceKey(entry.source))).sort((a, b) => comparePaths(a.label, b.label));
+    smallForm({ title: 'Add Library files', description: available.length ? 'Selected files and folders are sent as reference material, in the order chosen.' : 'Everything in the Library is already selected, or the Library is empty.',
+      fields: `<div class="chat-library-picker">${available.map((entry) => `<label><input type="checkbox" name="source" value="${escape(sourceKey(entry.source))}">${escape(entry.label)} <small>${escape(entry.detail)}</small></label>`).join('')}</div>`,
+      submit: 'Add', onSubmit: async (data) => {
+        const added = data.getAll('source').map((key) => available.find((entry) => sourceKey(entry.source) === key).source);
         item.composer.selections.library = [...(item.composer.selections.library ?? []), ...added];
         item.view.preview = true; composerChanged(item); renderComposer(item);
       } });
@@ -224,7 +233,7 @@ function pickLibraryFiles(item) {
 const methods = { text: 'full text', image: 'native image', copy: 'workspace copy for tools' };
 function libraryContextMarkup(context) {
   const library = context.library ?? [];
-  return `${library.length ? `<ul class="chat-library-inputs">${library.map((file) => `<li><strong>${escape(file.filename)}</strong> <small>v${file.number} · ${formatSize(file.size)} · ${methods[file.method]}${file.sources.length > 1 ? ` · selected ${file.sources.length} times` : ''}<br>Version ${escape(file.versionId)} · SHA-256 ${escape(file.hash)}</small></li>`).join('')}</ul>` : ''}${(context.warnings ?? []).map((warning) => `<p class="chat-hint">${escape(warning)}</p>`).join('')}`;
+  return `${library.length ? `<ul class="chat-library-inputs">${library.map((file) => `<li><strong>${escape(file.libraryPath ?? file.filename)}</strong> <small>v${file.number} · ${formatSize(file.size)} · ${methods[file.method]}${file.sources.length > 1 ? ` · selected ${file.sources.length} times` : ''}<br>Version ${escape(file.versionId)} · SHA-256 ${escape(file.hash)}</small></li>`).join('')}</ul>` : ''}${(context.warnings ?? []).map((warning) => `<p class="chat-hint">${escape(warning)}</p>`).join('')}`;
 }
 const deliveryLabels = { sending: 'sending, not confirmed', sent: 'sent', 'not-sent': 'not sent', uncertain: 'delivery uncertain', failed: 'failed' };
 function deliveryMarkup(attempt) {

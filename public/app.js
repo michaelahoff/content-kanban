@@ -4,7 +4,7 @@ import { retry } from './api.js';
 import { templates, fieldInputId } from './card-template.js';
 import { state, project, locateCard, cardCount, loadWorkspace, loadCards, cardChanged, flushCards, createCard, moveCard, deleteCard, deleteLane, deleteProject, archiveProject, unarchiveProject, saveStatus, hasUnsavedWork, onStatusChange, useSavedCard, undoLastMove, loadPlaybooks, applyStages } from './state.js';
 import { view, selectProject, renderApp, renderBoard, renderStatus, editProject, editLane, editProjectPrompt, toggleCards, showTab } from './board.js';
-import { uploadLibraryFiles, libraryActivity, hasLibraryUploads } from './library.js';
+import { dropLibraryItems, libraryActivity, hasLibraryUploads } from './library.js';
 import { openCard, closeCard, cardPanelOpen, renderImages, copyText, copyTrifecta, fetchYoutube, addImages, originalVideoMarkup, videoLinkMarkup } from './editor.js';
 import { openPlaybooks, playbooksChanged } from './playbook-editor.js';
 import { renderBar, cardPlaybookActivity, hasUnsavedNotes } from './card-playbook.js';
@@ -328,7 +328,7 @@ document.addEventListener('drop', (event) => {
   clearDrag();
   if (formDialog.open || imageDialog.open) return;
   if (cardPanelOpen() && files.length) { addImages(files, state.cardId); return; }
-  if (files.length && event.target.closest('#library')) { uploadLibraryFiles(files); return; }
+  if (files.length && event.target.closest('#library')) { dropLibraryItems(event.dataTransfer, files); return; }
   if (!lane) return;
   event.preventDefault();
   if (files.length) {

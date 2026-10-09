@@ -1,10 +1,10 @@
 # Library selection for manual prompts
 
-Implements [#56](https://github.com/michaelahoff/content-kanban/issues/56) against the approved [project-assets specification](https://github.com/michaelahoff/content-kanban/blob/f7149d373a8c8284cdd6b046049d6d54a3c35c57/docs/specs/project-assets.md), acceptance cases 4, 6, 15 and 16 for manual card chat prompts. Folders ([#53](https://github.com/michaelahoff/content-kanban/issues/53)) and playbook selections are later tickets, so the only selectable source kind is `asset`.
+Implements [#56](https://github.com/michaelahoff/content-kanban/issues/56) against the approved [project-assets specification](https://github.com/michaelahoff/content-kanban/blob/f7149d373a8c8284cdd6b046049d6d54a3c35c57/docs/specs/project-assets.md), acceptance cases 4, 6, 15 and 16 for manual card chat prompts. Playbook selections are a later ticket. Folders ([#53](https://github.com/michaelahoff/content-kanban/issues/53), [Library folders](library-folders.md)) added the `folder` source kind.
 
 ## Selection
 
-The composer's `selections.library` is an ordered list of typed source IDs (`{ kind: 'asset', id }`, at most 200, duplicates collapsed). It is validated for shape only: a removed or foreign source may stay selected, and Send refuses it by name until it is corrected. Ordinary messages keep the selection. Fresh context clears it (bumping the composer revision). A primary-provider change clears the earlier choices but keeps any made in the same save. A model change keeps them; every Send rechecks the chosen model's capabilities. Frameboard has no temporary provider override yet, so there is nothing else to preserve.
+The composer's `selections.library` is an ordered list of typed source IDs (`{ kind: 'asset' | 'folder', id }`, at most 200, duplicates collapsed). It is validated for shape only: a removed or foreign source may stay selected, and Send refuses it by name until it is corrected. Ordinary messages keep the selection. Fresh context clears it (bumping the composer revision). A primary-provider change clears the earlier choices but keeps any made in the same save. A model change keeps them; every Send rechecks the chosen model's capabilities. Frameboard has no temporary provider override yet, so there is nothing else to preserve.
 
 ## Resolution, preflight and capture
 
@@ -44,10 +44,10 @@ Parallel code review (Standards and Spec axes). Fixed, each new behavior with a 
 - Previews showed Library files before card context, although they are sent after it.
 
 Duplicated guards, keys, limits and parses were consolidated, and Library loading in the composer now shows its errors. The archive fence was kept when discovery moved ahead of preflight. Kept deliberately:
-- Repeating the same asset selection collapses to one source; distinct provenance arrives with folders (#53).
+- Repeating the same selection collapses to one source; a file reached through a folder and directly keeps both as provenance (#53).
 - A provider change keeps only choices made in the same save; the browser clears them anyway.
 - The commit-time re-resolve guards the preflight's own reads, a window HTTP tests cannot pause deterministically.
-- A shutdown between the harness accepting a turn and recording it leaves `sending`, shown as not confirmed, rather than a guess. Rename and removal are set directly in the database by tests until their Library routes land (#53).
+- A shutdown between the harness accepting a turn and recording it leaves `sending`, shown as not confirmed, rather than a guess.
 
 A verification round on the fixes found two remaining gaps: attempts stopped or held after preparing inputs, and missing card images, recorded no delivery outcome. Both now record one, with tests observed failing first. `sourceKey` moved into Library vocabulary (`public/library-format.js`), and a duplicated comment and a repeated context read were removed.
 

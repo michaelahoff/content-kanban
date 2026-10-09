@@ -28,7 +28,8 @@ export function selectedContext(card, selections, versions, outputs = []) {
 }
 export const referencePath = (image) => `references/${image.hash}.${image.id.split('.').pop()}`;
 const libraryEntry = (file, texts) => {
-  const label = `${file.filename} (asset ${file.assetId}, version ${file.versionId}, SHA-256 ${file.hash}, ${file.size} bytes)`;
+  // Submissions frozen before folders captured only a filename.
+  const label = `${file.libraryPath ?? file.filename} (asset ${file.assetId}, version ${file.versionId}, SHA-256 ${file.hash}, ${file.size} bytes)`;
   if (file.method === 'text') return `Library file ${label}:\n----- BEGIN LIBRARY FILE ${file.versionId} -----\n${texts.get(file.versionId)}\n----- END LIBRARY FILE ${file.versionId} -----`;
   if (file.method === 'image') return `Library image ${label}, attached at ${file.path}`;
   return `Library file ${label}, an independent copy at ${file.path}. Read it with your tools; Frameboard has not checked that this format can be interpreted.`;

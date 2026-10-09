@@ -284,10 +284,8 @@ test('Retry keeps the frozen label and bytes after the source is renamed and rem
   const submission = await f.queue(card.id, await f.select(card.id, 'Use the script', [asset(script)]));
   f.codex.finish(await waitFor(() => f.codex.sends[0]), 'failed', 'Provider failed');
   await waitFor(async () => (await f.chat(card.id)).submissions[0].status === 'failed');
-  await f.close();
-  const db = new DatabaseSync(path.join(f.dataDir, 'frameboard.db'));
-  try { db.prepare("UPDATE retained_objects SET filename = 'renamed.md', removed_at = ? WHERE id = ?").run(new Date().toISOString(), script.asset.id); }
-  finally { db.close(); }
+  await f.ok('PATCH', `/api/projects/${f.projectId}/library/assets/${script.asset.id}`, { filename: 'renamed.md' });
+  await f.ok('DELETE', `/api/projects/${f.projectId}/library/assets/${script.asset.id}`);
   await f.restart();
   await f.ok('POST', `/api/cards/${card.id}/chat/retry`, { submissionId: submission.id });
   const retried = (await waitFor(() => f.codex.sends[1])).input[0].text;
@@ -376,4 +374,41 @@ test('a saved written document is sent as its saved version; an unsaved draft ed
   assert.deepEqual(submission.context.library.map(({ versionId, method }) => [versionId, method]), [[saved.version.id, 'text']]);
   const text = (await waitFor(() => f.codex.sends[0])).input[0].text;
   assert.ok(text.includes('Saved guidance') && !text.includes('Unsaved draft guidance'));
+});
+
+test('a selected folder sends its files recursively in path order with their provenance; Retry keeps that membership, and a removed folder blocks a new Send', async (t) => {
+  const f = await libraryFixture(t); const card = await f.card();
+  const library = `/api/projects/${f.projectId}/library`;
+  const thumbnails = await f.ok('POST', `${library}/folders`, { name: 'Thumbnails' });
+  const refs = await f.ok('POST', `${library}/folders`, { name: 'refs', parentId: thumbnails.id });
+  const empty = await f.ok('POST', `${library}/folders`, { name: 'Next episode' });
+  const brief = await f.upload('brief.md', Buffer.from('Brief'), { folder: thumbnails.id });
+  const note = await f.upload('note.md', Buffer.from('Note'), { folder: refs.id });
+  const folder = (entry) => ({ kind: 'folder', id: entry.id });
+  const composer = await f.select(card.id, 'Use the thumbnails', [asset(note), folder(thumbnails), folder(empty)]);
+  assert.deepEqual(composer.selections.library, [asset(note), folder(thumbnails), folder(empty)], 'folders are remembered selections too');
+  const submission = await f.queue(card.id, composer);
+  assert.deepEqual(submission.context.library.map((file) => [file.filename, file.libraryPath, file.sources]), [
+    ['note.md', 'Thumbnails/refs/note.md', [asset(note), { ...folder(thumbnails), relativePath: 'refs/note.md' }]],
+    ['brief.md', 'Thumbnails/brief.md', [{ ...folder(thumbnails), relativePath: 'brief.md' }]]], 'an existing empty folder adds nothing');
+  f.codex.finish(await waitFor(() => f.codex.sends[0]), 'failed', 'Provider failed');
+  await waitFor(async () => (await f.chat(card.id)).submissions[0].status === 'failed');
+
+  // Later folder changes never rewrite the queued membership.
+  await f.upload('late.md', Buffer.from('Late'), { folder: thumbnails.id });
+  await f.ok('PATCH', `${library}/assets/${brief.asset.id}`, { folderId: null });
+  await f.ok('DELETE', `${library}/folders/${thumbnails.id}`);
+  await f.ok('POST', `${library}/folders`, { name: 'Thumbnails' });
+  await f.restart();
+  await f.ok('POST', `/api/cards/${card.id}/chat/retry`, { submissionId: submission.id });
+  const retried = (await waitFor(() => f.codex.sends[1])).input[0].text;
+  assert.ok(retried.includes('Note') && retried.includes('Brief') && !retried.includes('Late'));
+  assert.ok(retried.includes('Library file Thumbnails/refs/note.md (asset') && retried.includes('Library file Thumbnails/brief.md (asset'), 'files are labeled with their captured paths');
+  f.codex.finish(f.codex.sends[1]);
+  await waitFor(async () => (await f.chat(card.id)).submissions[0].status === 'completed');
+  const again = await f.compose(card.id, 'Again');
+  const refused = await f.call('POST', `/api/cards/${card.id}/chat/submissions`, { id: randomUUID(), composerRevision: again.revision });
+  assert.equal(refused.status, 409);
+  assert.deepEqual(refused.body.problems.map(({ key, label, phase }) => ({ key, label, phase })), [
+    { key: `asset:${note.asset.id}`, label: 'note.md', phase: 'resolve' }, { key: `folder:${thumbnails.id}`, label: 'Thumbnails/', phase: 'resolve' }]);
 });

@@ -13,7 +13,7 @@ import { parseDocument, playbookSettings, describeSettings } from './public/play
 import { chatMigration, recoveryMigration, createChatStore, archivedMessage } from './store-chat.js';
 import { protectionMigration, createProtectionStore } from './store-protection.js';
 import { imagesMigration, createImageStore } from './store-images.js';
-import { retainedMigration, createRetainedMetadata } from './store-retained.js';
+import { retainedMigration, foldersMigration, createRetainedMetadata } from './store-retained.js';
 import { createRetainedStorage } from './retained-storage.js';
 import { createLibrary } from './library.js';
 import { libraryDraftsMigration, createDraftStore } from './store-drafts.js';
@@ -59,11 +59,15 @@ export function inspectBackupDatabase(filename) {
     const table = (name) => Boolean(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
     // Every committed version is required, including superseded, removed and
     // unavailable ones; unfinished publications are not retained content.
+    // Library locations exist from the folders migration; older databases have none.
+    const foldered = table('library_folders');
+    const folders = foldered ? db.prepare('SELECT id, project_id, parent_id, name, removed_at FROM library_folders ORDER BY rowid').all()
+      .map((row) => ({ id: row.id, projectId: row.project_id, parentId: row.parent_id, name: row.name, removed: row.removed_at !== null })) : [];
     const retained = table('retained_versions') ? db.prepare(`SELECT v.id, v.object_id, o.project_id, o.kind, o.filename AS label, v.filename, v.hash, v.size, v.base_version_id,
-      o.current_version_id = v.id AS current, o.removed_at IS NOT NULL AS removed FROM retained_versions v JOIN retained_objects o ON o.id = v.object_id
+      o.current_version_id = v.id AS current, o.removed_at IS NOT NULL AS removed${foldered ? ', o.folder_id' : ''} FROM retained_versions v JOIN retained_objects o ON o.id = v.object_id
       WHERE v.state = 'committed' ORDER BY v.rowid`).all().map((row) => ({ versionId: row.id, objectId: row.object_id, projectId: row.project_id, kind: row.kind,
-      label: row.label, filename: row.filename, path: `retained/versions/${row.id}`, size: row.size, sha256: row.hash, current: Boolean(row.current), removed: Boolean(row.removed),
-      baseVersionId: row.base_version_id })) : [];
+      label: row.label, ...(foldered ? { folderId: row.folder_id } : {}), filename: row.filename, path: `retained/versions/${row.id}`, size: row.size, sha256: row.hash,
+      current: Boolean(row.current), removed: Boolean(row.removed), baseVersionId: row.base_version_id })) : [];
     for (const version of retained) if (!/^[a-f0-9-]{36}$/.test(version.versionId) || !/^[a-f0-9]{64}$/.test(version.sha256 ?? '') || !Number.isSafeInteger(version.size)) throw new Error('The database contains an invalid retained version.');
     // Frozen submissions name the exact Library versions they captured; each
     // must be a retained committed version with the recorded hash and size.
@@ -83,7 +87,7 @@ export function inspectBackupDatabase(filename) {
       .map((row) => ({ outputId: row.id, cardId: row.card_id, attemptId: row.attempt_id, importStatus: row.import_status, imageId: row.image_id,
         savedPath: JSON.parse(row.provenance).native?.savedPath ?? null })) : [];
     for (const output of outputs) if (output.importStatus === 'imported' && !images.has(output.imageId)) throw new Error(`Saved output ${output.outputId} has no retained image version.`);
-    return { schemaVersion: db.prepare('SELECT value FROM meta WHERE key = ?').get('schema_version')?.value, images: [...images.values()], nativeThreads, retained, projects, tables, outputs };
+    return { schemaVersion: db.prepare('SELECT value FROM meta WHERE key = ?').get('schema_version')?.value, images: [...images.values()], nativeThreads, retained, folders, projects, tables, outputs };
   } finally { db.close(); }
 }
 
@@ -231,7 +235,7 @@ const migrations = [`
 `, libraryDraftsMigration, `
   -- What each delivery attempt actually did with a submission's inputs.
   ALTER TABLE chat_attempts ADD COLUMN delivery TEXT;
-`];
+`, foldersMigration];
 
 // The newest schema this version can open; restore refuses newer backups.
 export const supportedSchemaVersion = migrations.length;

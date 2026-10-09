@@ -116,7 +116,7 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
     // Library choices are ordered typed source IDs. A removed or foreign
     // source may stay selected; Send refuses it by name until corrected.
     const library = selections.library ?? [];
-    check(Array.isArray(library) && library.length <= 200 && library.every((entry) => object(entry) && entry.kind === 'asset' && validId(entry.id)), 'Invalid Library selections.');
+    check(Array.isArray(library) && library.length <= 200 && library.every((entry) => object(entry) && ['asset', 'folder'].includes(entry.kind) && validId(entry.id)), 'Invalid Library selections.');
     return { prompt: value.prompt, provider: value.provider ?? 'codex', model: value.model, selections: { fields: [...new Set(selections.fields)], roles: [...new Set(selections.roles)], images: [...new Set(selections.images)],
       library: [...new Map(library.map((entry) => [sourceKey(entry), { kind: entry.kind, id: entry.id }])).values()] },
       authority: { fields: [...new Set(value.authority.fields)] } };

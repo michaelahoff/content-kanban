@@ -207,7 +207,7 @@ async function exportWorkspace({ dataDir, output, codexHome, signal, checkpoint 
     await checkpoint('scanned');
     snapshotDatabase(path.join(dataDir, 'frameboard.db'), path.join(staging, 'frameboard.db'));
     await chmod(path.join(staging, 'frameboard.db'), 0o600);
-    const { schemaVersion, images, nativeThreads: threads, retained, projects, tables, outputs } = inspectBackupDatabase(path.join(staging, 'frameboard.db'));
+    const { schemaVersion, images, nativeThreads: threads, retained, folders, projects, tables, outputs } = inspectBackupDatabase(path.join(staging, 'frameboard.db'));
     // Database references are required coverage, not just files that were found.
     for (const image of images) if (!before.files.has(`images/${image.id}`)) fail(`Missing image: ${image.id}`);
     for (const version of retained) if (!before.files.has(version.path)) fail(`Missing retained version: ${version.versionId}. Repair it with its exact original bytes before exporting.`);
@@ -265,7 +265,7 @@ async function exportWorkspace({ dataDir, output, codexHome, signal, checkpoint 
     const manifest = { format: 'frameboard-backup', version: 2, createdAt, appRevision, schemaVersion, coverage,
       nativeResume: 'not verified', label: 'History-only backup; native resume not verified.',
       nativeResumeReason: 'Native index dependencies are not copied; restored exact resume has not been proved.',
-      nativeMissing, inventory: { projects, tables, images: images.map((image) => ({ ...image, path: `images/${image.id}` })), retained, outputs: outputInventory }, directories: before.directories, files: entries };
+      nativeMissing, inventory: { projects, tables, images: images.map((image) => ({ ...image, path: `images/${image.id}` })), retained, folders, outputs: outputInventory }, directories: before.directories, files: entries };
     const manifestFile = await open(path.join(staging, 'manifest.json'), 'wx', 0o600);
     try { await manifestFile.writeFile(JSON.stringify(manifest, null, 2) + '\n'); await manifestFile.sync(); } finally { await manifestFile.close(); }
     await syncDirectory(staging);
@@ -297,11 +297,13 @@ async function verifyBackupFile(root, entry) {
 }
 
 // Compares the manifest's inventory with the staged database's own.
-function sameInventory(recorded, { projects, tables, retained, images, outputs }) {
+function sameInventory(recorded, { projects, tables, retained, folders, images, outputs }) {
   const output = ({ outputId, cardId, attemptId, importStatus, path }) => ({ outputId, cardId, attemptId, importStatus, path });
   // Format 2 bundles exported before Library labels were inventoried omit them.
   if (recorded?.retained?.every((entry) => !Object.hasOwn(entry, 'label'))) retained = retained.map(({ label, ...entry }) => entry);
+  // Bundles from before Library folders have no folder table, so no folders or locations.
   return isDeepStrictEqual(recorded?.projects, projects) && isDeepStrictEqual(recorded?.tables, tables) && isDeepStrictEqual(recorded?.retained, retained)
+    && isDeepStrictEqual(recorded?.folders ?? [], folders)
     && isDeepStrictEqual(recorded?.images, images.map((image) => ({ ...image, path: `images/${image.id}` })))
     && isDeepStrictEqual(recorded?.outputs?.map(output), outputs.map((value) => output({ ...value, path: value.importStatus === 'imported' ? `images/${value.imageId}` : null })));
 }
