@@ -215,7 +215,7 @@ export function assetSources(value) {
 // the Library picker edits it. Every other byte stays: other settings, the
 // body, comments, quoting and line endings. A kept block-list item keeps its
 // line and the comments just above it; a removed item's comments move to the
-// end of the list. A draft whose settings cannot be read is refused rather
+// end of the list, and a repeated item's join its first copy. A draft whose settings cannot be read is refused rather
 // than rewritten, so raw Markdown stays the way to fix it.
 export function withAssets(text, sources) {
   const original = String(text ?? '');
@@ -245,7 +245,9 @@ export function withAssets(text, sources) {
         const groups = new Map(); let pending = [];
         for (let index = key + 1; index <= items.at(-1); index++) {
           if (!items.includes(index)) { pending.push(lines[index]); continue; }
-          groups.set(String(scalar(bare(lines[index]).trim().slice(1))).trim(), [...pending, lines[index]]);
+          const token = String(scalar(bare(lines[index]).trim().slice(1))).trim();
+          // A repeated item is written once; its comments join the first copy.
+          groups.set(token, groups.has(token) ? [...groups.get(token), ...pending] : [...pending, lines[index]]);
           pending = [];
         }
         const prefix = bare(lines[items[0]]).match(/^\s*-\s*/)[0];

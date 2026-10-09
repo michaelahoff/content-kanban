@@ -52,6 +52,8 @@ test('picker edits keep a block list\'s indentation and the comments beside the 
   assert.equal(withAssets('---\r\nlane: drafting\r\nassets:\r\n  - asset:script-1\r\n---\r\nBody\r\n', [script, guide]),
     '---\r\nlane: drafting\r\nassets:\r\n  - asset:script-1\r\n  - asset:guide-3\r\n---\r\nBody\r\n', 'Windows line endings stay');
   assert.equal(withAssets('---\nlane: drafting\nassets:\n  - asset:script-1\n---\nBody', []), '---\nlane: drafting\nassets: []\n---\nBody');
+  assert.equal(withAssets('---\nassets:\n  # first note\n  - asset:a\n  # second note\n  - asset:a\n  - asset:b\n---\nBody', [{ kind: 'asset', id: 'a' }]),
+    '---\nassets:\n  # first note\n  - asset:a\n  # second note\n---\nBody', 'a repeated item is written once, and the comments of both copies stay');
 });
 
 test('picker edits refuse a draft they cannot change safely and leave it to raw Markdown', () => {
@@ -141,6 +143,9 @@ test('unresolved sources save visibly, block the lane run by identity without a 
   const here = await f.ok('GET', `/api/flows/${f.flowId}/playbooks/assets?${new URLSearchParams({ sources: tokens.join(',') })}`);
   assert.deepEqual(here.selections, [{ kind: 'asset', id: kept.id, path: 'script.md' }]);
   assert.equal(here.problems.length, 3);
+  assert.equal((await f.call('GET', `/api/flows/not-a-flow/playbooks/assets?sources=asset:${kept.id}`)).status, 404);
+  await f.ok('DELETE', `/api/projects/${(other.project ?? other).id}`);
+  assert.equal((await f.call('GET', `/api/flows/${otherFlow.id}/playbooks/assets?sources=asset:${kept.id}`)).status, 404, 'a flow whose project is gone');
 });
 
 test('export and restore keep a playbook\'s selections as written, resolving to the same Library sources', async (t) => {
@@ -162,4 +167,22 @@ test('export and restore keep a playbook\'s selections as written, resolving to 
   assert.deepEqual(check.selections, [{ kind: 'folder', id: thumbs.id, path: 'Thumbnails/' }]);
   assert.deepEqual(check.files.map((file) => file.assetId), [logo.id]);
   assert.deepEqual(check.problems.map((problem) => problem.key), ['asset:gone'], 'the unresolved ID is still unresolved, not dropped');
+});
+
+test('an empty selection adds no Library inputs and keeps every gallery photo, the map and named skills', async (t) => {
+  const f = await laneFixture(t);
+  await f.upload('voice.md', Buffer.from('LIBRARY VOICE'));
+  await f.ok('PUT', `/api/flows/${f.flowId}/playbooks`, { path: 'skills/voice.md', text: '# Skill voice: be warm.', baseHash: null });
+  await setPlaybook(f.ok, f.flowId, f.stages[0], { run: 'manual', model: 'test-model', assets: [] }, 'Use skills/voice.md and voice.md.');
+  const images = ['00000001-0000-4000-8000-000000000000.png', '00000002-0000-4000-8000-000000000000.png'].map((id, index) => ({ id, name: `photo-${index}.png` }));
+  for (const image of images) await writeFile(path.join(f.dataDir, 'images', image.id), png);
+  const card = await f.card({ images });
+  await f.ok('POST', `/api/cards/${card.id}/lane-runs`, {});
+  const send = await waitFor(() => f.codex.sends[0]);
+  const submission = (await f.chat(card.id)).submissions[0];
+  assert.deepEqual(submission.context.images.map((image) => image.id), images.map((image) => image.id));
+  assert.deepEqual(submission.context.library, []);
+  const sent = send.input.filter((entry) => entry.type === 'text').map((entry) => entry.text).join('\n');
+  assert.ok(sent.includes('## Project map (MAP.md)') && sent.includes('# Skill voice: be warm.'));
+  assert.ok(!sent.includes('LIBRARY VOICE'));
 });

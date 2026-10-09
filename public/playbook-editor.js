@@ -5,8 +5,8 @@ import { $, escape, icon, toast, smallForm } from './ui.js';
 import { project, loadPlaybooks, savePlaybook, deletePlaybook, previewLaneRun, checkPlaybookAssets, loadLibraryListing } from './state.js';
 import { renderBoard } from './board.js';
 import { parseDocument, playbookSettings, describeSettings, playbookTemplate, skillTemplate, setFields, skillName, withAssets } from './playbook-format.js';
-import { comparePaths, deliveryDescription, libraryPaths, parseSourceKey, sourceKey } from './library-format.js';
-import { formatSize } from './library.js';
+import { deliveryDescription, parseSourceKey, sourceKey } from './library-format.js';
+import { libraryChoices } from './library.js';
 import { contextFields } from './chat-context.js';
 import { defaultTemplate } from './card-template.js';
 
@@ -85,7 +85,7 @@ function renderMain() {
   const main = $('.playbook-main', dialog);
   if (previewing) {
     main.innerHTML = `<div class="playbook-preview-head"><div><strong>Prompt preview</strong><span>${escape(previewing.card)} · ${escape(previewing.provider === 'claude' ? 'Claude' : previewing.provider === 'codex' ? 'Codex' : '')} ${escape(previewing.model ?? '')}</span></div>${control('close-preview', 'Back to editing', 'left')}</div>
-      ${previewing.path && dirty(previewing.path) ? `<p class="playbook-unsaved-note" role="note"><i class="playbook-unsaved"></i>Unsaved changes are not in this preview. It shows the saved ${escape(previewing.path)}.</p>` : ''}
+      ${previewNote()}
       ${previewing.error ? `<p class="playbook-error">${escape(previewing.error)}</p>` : ''}
       ${previewing.library?.length ? `<ul class="playbook-preview-library" aria-label="Library files sent">${previewing.library.map((file) => `<li>${escape(file.libraryPath ?? file.filename)} <small>v${file.number} · ${escape(deliveryDescription(file))}</small></li>`).join('')}</ul>` : ''}
       <pre class="playbook-preview" tabindex="0">${escape(previewing.prompt)}</pre>`;
@@ -102,6 +102,15 @@ function renderMain() {
   if (focused) { $('#playbook-text').focus(); $('#playbook-text').setSelectionRange(...focused); }
 }
 
+// A preview uses the file as saved now, which may differ from the editor's
+// draft, or from the copy it loaded before another editor changed the file.
+function previewNote() {
+  const path = previewing.path;
+  if (!path) return '';
+  const reason = dirty(path) ? `Unsaved changes are not in this preview. It shows the saved ${escape(path)}.`
+    : previewing.newer ? `${escape(path)} changed on disk since you opened it. The preview and the editor now show the newer file.` : '';
+  return reason ? `<p class="playbook-unsaved-note" role="note"><i class="playbook-unsaved"></i>${reason}</p>` : '';
+}
 function list(items) { return items.length ? items.map((entry) => `<li>${entry}</li>`).join('') : '<li class="muted">None</li>'; }
 function renderInspector() {
   const inspector = $('.playbook-inspector', dialog);
@@ -192,15 +201,11 @@ function setAssets(path, sources) {
 const draftAssets = (path) => playbookSettings(parseDocument(textOf(path)), defaultTemplate).assets;
 async function pickAssets() {
   const path = currentPath();
+  // Refuse an unreadable draft before listing the Library.
   withAssets(textOf(path), draftAssets(path));
   const listing = await loadLibraryListing(project());
   resolutions = new Map();
-  const paths = libraryPaths(listing);
-  const chosen = new Set(draftAssets(path).map(sourceKey));
-  const available = [
-    ...listing.folders.map((folder) => ({ source: { kind: 'folder', id: folder.id }, label: paths.folders.get(folder.id), detail: 'folder · every file in it' })),
-    ...listing.assets.map((asset) => ({ source: { kind: 'asset', id: asset.id }, label: paths.assets.get(asset.id), detail: `v${asset.current.number} · ${formatSize(asset.current.size)}${asset.current.available ? '' : ' · unavailable'}` })),
-  ].filter((entry) => !chosen.has(sourceKey(entry.source))).sort((a, b) => comparePaths(a.label, b.label));
+  const available = libraryChoices(listing, new Set(draftAssets(path).map(sourceKey)));
   smallForm({ title: 'Add Library files', description: available.length ? 'Chosen files and folders join the end of this playbook\'s assets: list. Each run sends their current versions.' : 'Everything in the Library is already selected, or the Library is empty.',
     fields: `<div class="chat-library-picker">${available.map((entry) => `<label><input type="checkbox" name="source" value="${escape(sourceKey(entry.source))}">${escape(entry.label)} <small>${escape(entry.detail)}</small></label>`).join('')}</div>`,
     submit: 'Add', onSubmit: async (data) => {
@@ -332,7 +337,10 @@ dialog.addEventListener('click', async (event) => {
       const cardId = $('#playbook-preview-card').value;
       const card = project().lanes.flatMap((lane) => lane.cards).find((item) => item.id === cardId);
       const result = await previewLaneRun(cardId);
-      previewing = { card: card?.title || 'Untitled card', ...result };
+      // With no draft to keep, a newer saved file replaces the editor's copy.
+      const newer = Boolean(result.path && result.hash && !dirty(result.path) && saved.get(result.path)?.hash !== result.hash);
+      previewing = { card: card?.title || 'Untitled card', ...result, newer };
+      if (newer) await reloadFromDisk().catch(() => {});
       render();
     }
     if (action === 'close-preview') { previewing = null; render(); }

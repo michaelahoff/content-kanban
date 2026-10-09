@@ -819,6 +819,7 @@ These values apply when a card enters this lane.
     await waitFor(`document.querySelector('#playbook-status').textContent.startsWith('Saved')`);
     const { lanes: documents } = await call('GET', `/api/flows/${board.flowId}/playbooks`);
     const file = path.join(temporary, 'data', 'flows', board.flowId, documents.find((entry) => entry.laneId === lane.id).path);
+    assert.equal(await readFile(file, 'utf8'), picked.replace(`[asset:${hook.id}]`, `[asset:${hook.id}, asset:not-in-library]`), 'One save writes the new instructions and the selection together');
     // Another editor changes the file; the picker's removal stays a draft through the conflict.
     await appendFile(file, '\nEdited elsewhere.\n');
     await click('[data-playbook-action="remove-asset"][data-key="asset:not-in-library"]');
@@ -840,6 +841,13 @@ These values apply when a card enters this lane.
     await click('[data-playbook-action="save"]');
     await waitFor(`document.querySelector('#playbook-status').textContent.startsWith('Saved')`);
     assert.equal(await readFile(file, 'utf8'), picked);
+    // With no draft, a preview of a file changed elsewhere says it is newer than the editor's copy.
+    await writeFile(file, `${picked}Edited elsewhere again.\n`);
+    await click('[data-playbook-action="preview"]');
+    await waitFor(`!!document.querySelector('.playbook-preview')?.textContent.includes('Edited elsewhere again')`);
+    assert.match(await evaluate(`document.querySelector('.playbook-unsaved-note')?.textContent ?? ''`), /changed on disk/);
+    await click('[data-playbook-action="close-preview"]');
+    assert.ok(await evaluate(`document.querySelector('#playbook-text').value.includes('Edited elsewhere again')`), 'The editor shows the newer file');
     await click('[data-playbook-action="delete"]');
     await waitFor(`document.querySelector('#form-dialog').open`);
     await click('#small-form [type="submit"]');

@@ -6,7 +6,7 @@
 // types; only Save publishes.
 import { $, escape, icon, button, iconButton, toast, smallForm, id } from './ui.js';
 import { request, send as sendJSON } from './api.js';
-import { assetPreview, comparePaths, libraryFilename, libraryPaths, searchLibrary, folderHolders, nameConflict, splitExtension } from './library-format.js';
+import { assetPreview, comparePaths, libraryFilename, libraryPaths, searchLibrary, folderHolders, nameConflict, splitExtension, sourceKey } from './library-format.js';
 import { project, state } from './state.js';
 
 const dialog = $('#library-dialog');
@@ -24,6 +24,15 @@ export function formatSize(size) {
   let value = size; let unit = 0;
   while (value >= 1024 && unit < units.length - 1) { value /= 1024; unit++; }
   return unit ? `${value.toFixed(value < 10 ? 1 : 0)} ${units[unit]}` : `${size} ${size === 1 ? 'byte' : 'bytes'}`;
+}
+// A picker's choices: the Library's folders and files by path, without the
+// sources already chosen. A folder sends every file in it, in path order.
+export function libraryChoices(listing, chosen) {
+  const paths = libraryPaths(listing);
+  return [
+    ...listing.folders.map((folder) => ({ source: { kind: 'folder', id: folder.id }, label: paths.folders.get(folder.id), detail: 'folder · every file in it' })),
+    ...listing.assets.map((asset) => ({ source: { kind: 'asset', id: asset.id }, label: paths.assets.get(asset.id), detail: `v${asset.current.number} · ${formatSize(asset.current.size)}${asset.current.available ? '' : ' · unavailable'}` })),
+  ].filter((entry) => !chosen.has(sourceKey(entry.source))).sort((a, b) => comparePaths(a.label, b.label));
 }
 const savedAt = (value) => new Date(value).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 const extension = (filename) => splitExtension(filename)[1].slice(0, 5).toUpperCase() || 'FILE';

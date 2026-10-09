@@ -242,6 +242,7 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
       // never rebound by name.
       ['GET', /^\/api\/flows\/([^/]+)\/playbooks\/assets$/, (ctx, req, id, url) => {
         const project = store.workspace(ctx).projects.find((entry) => entry.flowId === flowFor(ctx, id).id);
+        if (!project) throw Object.assign(new Error('This project no longer exists. Reload the page.'), { status: 404 });
         const { files, selections, problems } = store.library.resolve(ctx, project.id, assetSources(url.searchParams.get('sources') ?? '').sources);
         return { selections, problems, files: files.map(({ assetId, libraryPath, sources }) => ({ assetId, libraryPath, sources })) };
       }],

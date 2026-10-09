@@ -3,7 +3,7 @@
 // and freezes all of it into one prompt. The chat worker delivers it.
 import { composeLanePrompt, parseLaneResult, setFields } from './public/playbook-format.js';
 import { submissionText } from './public/chat-context.js';
-import { problemMessage } from './chat-service.js';
+import { problemMessage } from './submission-inputs.js';
 
 const providerName = (provider) => (provider === 'claude' ? 'Claude' : 'Codex');
 

@@ -3,8 +3,8 @@ import { request, send, enqueue } from './api.js';
 import { state, locateCard, flushCards, saveStatus, refreshSavedCard } from './state.js';
 import { contextFields } from './chat-context.js';
 import { attemptMarkup, progressState, runningStatuses } from './chat-transcript.js';
-import { formatSize } from './library.js';
-import { comparePaths, deliveryDescription, libraryPaths, parseSourceKey, selectionPaths, selectionSummary, sourceKey } from './library-format.js';
+import { formatSize, libraryChoices } from './library.js';
+import { deliveryDescription, libraryPaths, parseSourceKey, selectionPaths, selectionSummary, sourceKey } from './library-format.js';
 
 const chats = new Map();
 // Each project's Library files and folders, for naming manual selections and the picker.
@@ -214,13 +214,7 @@ function pickLibraryFiles(item) {
   editableComposer(item);
   libraries.delete(locateCard(item.id).project.id);
   void loadLibrary(locateCard(item.id).project.id).then((listing) => {
-    const chosen = new Set((item.composer.selections.library ?? []).map(sourceKey));
-    const paths = libraryPaths(listing);
-    // Files and folders by path; a folder sends all of its files, in path order.
-    const available = [
-      ...listing.folders.map((folder) => ({ source: { kind: 'folder', id: folder.id }, label: paths.folders.get(folder.id), detail: 'folder · every file in it' })),
-      ...listing.assets.map((asset) => ({ source: { kind: 'asset', id: asset.id }, label: paths.assets.get(asset.id), detail: `v${asset.current.number} · ${formatSize(asset.current.size)}${asset.current.available ? '' : ' · unavailable'}` })),
-    ].filter((entry) => !chosen.has(sourceKey(entry.source))).sort((a, b) => comparePaths(a.label, b.label));
+    const available = libraryChoices(listing, new Set((item.composer.selections.library ?? []).map(sourceKey)));
     smallForm({ title: 'Add Library files', description: available.length ? 'Check files and folders, or drag one onto the prompt. They are sent as reference material, in the order chosen.' : 'Everything in the Library is already selected, or the Library is empty.',
       fields: `<div class="chat-library-picker">${available.map((entry) => `<label draggable="true" data-library-source="${escape(sourceKey(entry.source))}"><input type="checkbox" name="source" value="${escape(sourceKey(entry.source))}">${escape(entry.label)} <small>${escape(entry.detail)}</small></label>`).join('')}</div>`,
       submit: 'Add', onSubmit: async (data) => addLibrarySources(item, data.getAll('source').map(parseSourceKey)) });
