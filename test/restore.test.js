@@ -310,7 +310,8 @@ test('a damaged database, linked bundle directory or unsupported manifest is ref
   // A destination reached through a link may not land inside the backup.
   const inside = await fresh();
   await symlink(inside, path.join(f.root, 'via-link'));
-  await assert.rejects(restoreBackup({ backupDir: inside, dataDir: path.join(f.root, 'via-link', 'restored'), codexHome: path.join(f.root, 'native') }), /outside the backup folder/);
+  await assert.rejects(restoreBackup({ backupDir: inside, dataDir: path.join(f.root, 'via-link', 'new', 'deep', 'restored'), codexHome: path.join(f.root, 'native') }), /outside the backup folder/);
+  await assert.rejects(stat(path.join(inside, 'new')), { code: 'ENOENT' }, 'A refused restore creates nothing inside the backup');
   await rm(path.join(f.root, 'via-link'));
 
   const unsupported = await fresh();

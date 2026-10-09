@@ -338,9 +338,13 @@ async function restoreWorkspace({ backupDir, dataDir, codexHome, checkpoint = as
   const existing = await optional(dataDir);
   const emptyDestination = 'Restore needs a new or empty app data directory. Existing app data will not be overwritten.';
   if (existing && (!existing.isDirectory() || (await readdir(dataDir)).length)) fail(emptyDestination);
-  await mkdir(path.dirname(dataDir), { recursive: true, mode: 0o700 });
-  const parent = await realpath(path.dirname(dataDir)); dataDir = path.join(parent, path.basename(dataDir));
+  // Resolve links in the nearest existing ancestor before creating anything,
+  // so a refused restore never creates folders inside the backup.
+  let ancestor = path.dirname(dataDir); const missing = [];
+  while (!await optional(ancestor)) { missing.unshift(path.basename(ancestor)); ancestor = path.dirname(ancestor); }
+  const parent = path.join(await realpath(ancestor), ...missing); dataDir = path.join(parent, path.basename(dataDir));
   if (dataDir === backupDir || dataDir.startsWith(backupDir + path.sep) || backupDir.startsWith(dataDir + path.sep)) fail('Choose a restore location outside the backup folder.');
+  await mkdir(parent, { recursive: true, mode: 0o700 });
   await reclaimAbandonedStaging(parent);
   const { staging, release } = await claimStaging(parent, `${new Date().toISOString().replaceAll(':', '-')}-${randomUUID().slice(0, 8)}`);
   const nativeRoot = path.resolve(codexHome); const nativeCopied = []; const nativeSkipped = [];
@@ -355,7 +359,7 @@ async function restoreWorkspace({ backupDir, dataDir, codexHome, checkpoint = as
     await checkpoint('verifying');
     const database = path.join(staging, 'frameboard.db');
     let inspected;
-    try { inspected = inspectBackupDatabase(database); } catch (error) { fail(`The backup database is damaged or unsupported: ${error.message}`); }
+    try { inspected = inspectBackupDatabase(database); } catch (error) { fail(/^The backup database/.test(error.message) ? error.message : `The backup database is damaged or unsupported: ${error.message}`); }
     const { schemaVersion, images, nativeThreads: threads, retained } = inspected;
     if (!(Number(schemaVersion) >= 1)) fail('The backup database is damaged or unsupported: it has no schema version.');
     if (Number(schemaVersion) > supportedSchemaVersion) fail('This backup was saved by a newer version of Frameboard. Update Frameboard, then restore it.');

@@ -54,7 +54,7 @@ const unfinishedSubmissions = "('queued', 'waiting', 'held', 'dispatching', 'run
 const unsettledAttempts = "('dispatching', 'accepted', 'running', 'interrupt-requested', 'uncertain')";
 export const archivedMessage = 'This project is archived. Unarchive it to make changes.';
 const restoredRetryMessage = 'This work was restored from a backup, so it cannot be retried. Send a new prompt or Run playbook instead.';
-const restoredHoldReason = 'Restored from a backup and held. It is not sent again: review its retained output, then cancel it and send new work.';
+const restoredHoldReason = 'Restored from a backup and held. It is not sent again, but the old workspace may already have delivered it: review its retained output before sending new work, then cancel it.';
 const restoredRunReason = 'Restored from a backup and held. It does not run or apply a result; Run playbook to start new work.';
 const fail = (status, message) => { throw Object.assign(new Error(message), { status }); };
 const check = (value, message) => { if (!value) fail(400, message); };

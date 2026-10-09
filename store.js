@@ -38,7 +38,7 @@ export function markRestored(filename, details) {
 export function inspectBackupDatabase(filename) {
   const db = new DatabaseSync(filename, { readOnly: true });
   try {
-    if (db.prepare('PRAGMA integrity_check').get().integrity_check !== 'ok' || db.prepare('PRAGMA foreign_key_check').all().length) throw new Error('The backup database is damaged.');
+    if (db.prepare('PRAGMA integrity_check').get().integrity_check !== 'ok' || db.prepare('PRAGMA foreign_key_check').all().length) throw new Error('The backup database is damaged: its integrity or foreign-key check failed.');
     const images = new Map(db.prepare('SELECT id, hash FROM image_versions').all().map((image) => [image.id, image]));
     const include = (references) => {
       for (const image of references ?? []) {
@@ -487,7 +487,7 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
     const legacy = await readLegacyBoard(legacyFile);
     transaction(() => {
       for (const sql of migrations) db.exec(sql);
-      run("INSERT INTO meta (key, value) VALUES ('schema_version', ?)", String(migrations.length));
+      run("INSERT INTO meta (key, value) VALUES ('schema_version', ?)", String(supportedSchemaVersion));
       const workspaceId = randomUUID();
       const userId = randomUUID();
       run('INSERT INTO workspaces (id, name, created_at) VALUES (?, ?, ?)', workspaceId, 'Personal workspace', now());
@@ -521,7 +521,7 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
     if (version < supportedSchemaVersion) transaction(() => {
       for (const sql of migrations.slice(version)) db.exec(sql);
       recordMissingBaselines();
-      run("UPDATE meta SET value = ? WHERE key = 'schema_version'", String(migrations.length));
+      run("UPDATE meta SET value = ? WHERE key = 'schema_version'", String(supportedSchemaVersion));
     });
   } catch (error) {
     db.close();
