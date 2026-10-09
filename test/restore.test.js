@@ -173,6 +173,31 @@ async function storeFixture(t) {
 const sha = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const streamed = async (stream) => { const chunks = []; for await (const chunk of stream) chunks.push(chunk); return Buffer.concat(chunks); };
 
+test('a failed lane run keeps Retry across a restart but not into a restored workspace, where Run playbook starts new work', async (t) => {
+  const f = await fixture(t);
+  const workspace = await f.ok('GET', '/api/workspace');
+  await setPlaybook(f.ok, workspace.projects[0].flowId, workspace.flows[0].stages[0], { run: 'manual', model: 'test-model' }, 'Write an intro.');
+  const card = await f.card();
+  await f.ok('POST', `/api/cards/${card.id}/lane-runs`, {});
+  f.codex.finish(await waitFor(() => f.codex.sends[0]), 'failed');
+  const failed = await waitFor(async () => (await f.ok('GET', `/api/cards/${card.id}/lane-runs`)).runs.find((run) => run.status === 'failed'));
+  assert.equal(failed.retryable, true);
+  await f.restart();
+  assert.equal((await f.ok('GET', `/api/cards/${card.id}/lane-runs`)).runs[0].retryable, true, 'a restart keeps Retry eligibility');
+
+  const r = await restoreInto(t, f);
+  await settle();
+  const [restored] = (await r.ok('GET', `/api/cards/${card.id}/lane-runs`)).runs;
+  assert.deepEqual([restored.id, restored.status, restored.retryable], [failed.id, 'failed', false]);
+  assert.equal((await r.chat(card.id)).submissions[0].retryable, false, 'history offers no Retry');
+  assert.match((await r.call('POST', `/api/cards/${card.id}/chat/retry`, { submissionId: failed.submissionId })).body.error, /restored from a backup/i);
+  assert.deepEqual(r.codex.sends, []);
+
+  const requested = await r.ok('POST', `/api/cards/${card.id}/lane-runs`, {});
+  assert.notEqual(requested.id, failed.id);
+  assert.match((await waitFor(() => r.codex.sends[0])).input[0].text, /Write an intro\./);
+});
+
 test('restore round-trips the complete identity, hash and relationship inventory of every store into an empty destination', async (t) => {
   const f = await storeFixture(t);
   const projectId = f.store.workspace(f.ctx).projects[0].id;

@@ -472,7 +472,11 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
   const laneRunFrom = (row) => row && ({ id: row.id, cardId: row.card_id, stageId: row.stage_id, moveId: row.move_id, trigger: row.trigger,
     status: row.status, reason: row.reason, submissionId: row.submission_id, result: row.result ? JSON.parse(row.result) : null,
     createdAt: row.created_at, updatedAt: row.updated_at,
-    submissionStatus: row.submission_id ? get('SELECT status FROM chat_submissions WHERE id = ?', row.submission_id)?.status ?? null : null });
+    submissionStatus: row.submission_id ? get('SELECT status FROM chat_submissions WHERE id = ?', row.submission_id)?.status ?? null : null,
+    // Retry resends this run's frozen submission. A run that failed before
+    // queueing has none, so only Run playbook starts new work.
+    retryable: Boolean(row.submission_id) && chats.retryable(row.submission_id),
+    possiblyDelivered: Boolean(row.submission_id) && chats.possiblyDelivered(row.submission_id) });
   function requestLaneRun(ctx, card, stage, trigger, moveId = null) {
     const found = playbooks.settings(stage.flowId, stage.id, card.template);
     if (!found) return null;
