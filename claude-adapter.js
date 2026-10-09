@@ -43,7 +43,7 @@ export function createClaudeAdapter({ command = 'claude', args = [], env = proce
       ...(model ? ['--model', model] : []), ...(instructions ? ['--append-system-prompt', instructions] : [])],
     { cwd: work, env, stdio: ['pipe', 'pipe', 'pipe'] });
     // A new session has no native history file until its first turn.
-    const session = { id, work, child, turnId: null, ended: false, unused: !resume, buffer: '', items: new Map(), controls: new Map(), streamed: new Map(), completed: new Map() };
+    const session = { id, work, child, turnId: null, ended: false, turnless: !resume, buffer: '', items: new Map(), controls: new Map(), streamed: new Map(), completed: new Map() };
     processes.add(session);
     let resolveInit; let rejectInit;
     const ready = new Promise((resolve, reject) => { resolveInit = resolve; rejectInit = reject; });
@@ -93,12 +93,13 @@ export function createClaudeAdapter({ command = 'claude', args = [], env = proce
         }
       } else if (session.turnId && message.type === 'assistant') {
         // Claude Code reports a document the API rejected as a synthetic error
-        // message, removes it and lets the model answer without it. That reply
-        // would use a subset of the submission, so the turn is stopped and fails.
-        const apiError = message.is_api_error_message && (message.message?.content ?? []).find((block) => block.type === 'text' && /\bdocument\b/i.test(block.text));
-        if (apiError && !session.rejected) {
-          session.rejected = `Claude could not process a PDF in this prompt (it may be damaged, encrypted or over the page limit) and removed it, so the turn was stopped rather than continue without it. Claude Code reported: ${apiError.text}`;
-          emit(session, { type: 'input-rejected', reason: session.rejected });
+        // message, removes it and lets the model answer without it. In a turn
+        // that sent PDFs that reply would use a subset of the submission, so the
+        // turn is stopped and fails.
+        const removal = session.sentPdf && message.is_api_error_message && (message.message?.content ?? []).find((block) => block.type === 'text' && /\bdocument\b/i.test(block.text));
+        if (removal && !session.pdfRemoved) {
+          session.pdfRemoved = `Claude could not process a PDF in this prompt (it may be damaged, encrypted or over the page limit) and removed it, so the turn was stopped rather than continue without it. Claude Code reported: ${removal.text}`;
+          emit(session, { type: 'input-rejected', reason: session.pdfRemoved });
           session.control({ subtype: 'interrupt' }).catch(() => {});
         }
         for (const [index, block] of (message.message?.content ?? []).entries()) if (block.type === 'text') {
@@ -106,13 +107,13 @@ export function createClaudeAdapter({ command = 'claude', args = [], env = proce
           emit(session, { type: 'item-completed', item: { id: itemId, type: 'agentMessage', text: block.text } });
         }
       } else if (session.turnId && message.type === 'result') {
-        const status = session.rejected ? 'failed' : session.interrupted ? 'interrupted' : message.is_error ? 'failed' : 'completed';
+        const status = session.pdfRemoved ? 'failed' : session.interrupted ? 'interrupted' : message.is_error ? 'failed' : 'completed';
         if (message.session_id && message.session_id !== session.id) {
           emit(session, { type: 'target-unavailable', error: error('binding-mismatch', 'Claude returned a different session. Nothing will be resent automatically.') });
         } else {
-          emit(session, { type: 'turn-completed', status, error: session.rejected ? { message: session.rejected } : message.is_error ? { message: (message.errors ?? [message.result ?? 'Claude could not complete this prompt.']).join(' ') } : undefined });
+          emit(session, { type: 'turn-completed', status, error: session.pdfRemoved ? { message: session.pdfRemoved } : message.is_error ? { message: (message.errors ?? [message.result ?? 'Claude could not complete this prompt.']).join(' ') } : undefined });
         }
-        session.turnId = null; session.interrupted = false; session.rejected = null;
+        session.turnId = null; session.interrupted = false; session.pdfRemoved = null;
       }
     }
     child.stdout.setEncoding('utf8');
@@ -152,9 +153,9 @@ export function createClaudeAdapter({ command = 'claude', args = [], env = proce
         const models = session.info.models;
         if (!Array.isArray(models) || !models.length) throw error('configuration-unavailable', 'Claude Code returned no available models. Update Claude Code and refresh.');
         const version = retainedDataDir ? null : await harnessVersion(); const account = accountKind(session.info.account);
-        const pdf = (model) => claudePdfRoute({ harness: version, model, account, retainedDataProtection: Boolean(retainedDataDir) }, pdfEvidence);
+        const pdfRoute = (model) => claudePdfRoute({ harness: version, model, account, retainedDataProtection: Boolean(retainedDataDir) }, pdfEvidence);
         return { cwd: work, harness: { userAgent: 'Claude Code', claudeHome: nativeHome, version, account },
-          models: models.map((model) => ({ id: model.value, displayName: model.displayName ?? model.value, resolvedModel: model.resolvedModel, pdf: pdf(model.resolvedModel ?? model.value) })), items: [], errors: [],
+          models: models.map((model) => ({ id: model.value, displayName: model.displayName ?? model.value, resolvedModel: model.resolvedModel, pdf: pdfRoute(model.resolvedModel ?? model.value) })), items: [], errors: [],
           ...(retainedDataDir ? { protection: { supported: false, reason: 'Retained-data protection for Claude is unproven. Use the verified Codex configuration until a Claude native gate is available.' } } : {}) };
       } finally { await stop(session); }
     },
@@ -200,7 +201,7 @@ export function createClaudeAdapter({ command = 'claude', args = [], env = proce
           content.push({ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: bytes.toString('base64') } });
         }
       }
-      session.turnId = clientUserMessageId; session.unused = false; session.items.clear(); session.streamed = new Map(); session.completed = new Map();
+      session.turnId = clientUserMessageId; session.turnless = false; session.sentPdf = content.some((block) => block.type === 'document'); session.items.clear(); session.streamed = new Map(); session.completed = new Map();
       session.write({ type: 'user', uuid: clientUserMessageId, session_id: threadId, message: { role: 'user', content }, parent_tool_use_id: null });
       emit(session, { type: 'turn-started' });
       return { turnId: session.turnId };
@@ -217,7 +218,7 @@ export function createClaudeAdapter({ command = 'claude', args = [], env = proce
       if (!session) throw error('native-unavailable', 'Claude native history needs its exact workspace binding.');
       let text;
       try { text = await readFile(historyPath(session.work, threadId), 'utf8'); } catch (cause) {
-        if (cause.code === 'ENOENT' && session.unused) return { data: [], nextCursor: null };
+        if (cause.code === 'ENOENT' && session.turnless) return { data: [], nextCursor: null };
         if (cause.code === 'ENOENT') throw error('native-unavailable', 'Claude session history is unavailable.'); throw cause;
       }
       const turns = []; let turn; const counters = new Map();

@@ -19,9 +19,9 @@ Claude discovery now reports `harness.version` (from `claude --version`, which i
 
 `claude-adapter.js` translates a `localDocument` input explicitly: it reads the verified workspace copy, which is rebuilt from the retained original before each attempt, checks its PDF signature and sends the exact bytes as one `{ type: 'document', source: { type: 'base64', media_type: 'application/pdf' } }` block. The message labels the PDF with filename, IDs, hash and size, and says it is attached as a document. It gives no path.
 
-Known limits: each PDF counts base64 encoded toward Claude's 32 MB request limit with the images and text, and the request is blocked above it. Page counts and PDF tokens cannot be estimated without parsing the file, which Frameboard does not do. So every preview with a PDF warns about this and names the model's documented page limit (600 pages, or 100 for the 200K-context Haiku 4.5). The native attempt decides.
+Known limits: each PDF counts base64 encoded toward Claude's 32 MB request limit with the images and text, and the request is blocked above it. Page counts and PDF tokens cannot be estimated without parsing the file, which Frameboard does not do. So every preview with a PDF warns about this and names the model's documented Claude limit (600 pages, or 100 for the 200K-context Haiku 4.5). That limit includes PDFs from earlier messages in the conversation, which Frameboard does not count either. Claude decides.
 
-Native rejection is the case that matters. The live probes showed that Claude Code 2.1.291 does not report an unprocessable, damaged or over-limit PDF as an error result. It emits a synthetic `is_api_error_message` assistant message ("a document in the conversation could not be processed and was removed"), removes the document and lets the model answer without it, with `is_error: false`. That is a silent subset delivery. The adapter detects the message, interrupts the turn and reports it as `failed`, and the worker records the PDF `failed` with the reason (`input-rejected`), while the other inputs stay `sent`. Any reply text that streamed before the interrupt stays visible in history. It does not count as a completed reply.
+Native rejection is the case that matters. The live probes showed that Claude Code 2.1.291 does not report an unprocessable, damaged or over-limit PDF as an error result. It emits a synthetic `is_api_error_message` assistant message ("a document in the conversation could not be processed and was removed"), removes the document and lets the model answer without it, with `is_error: false`. That is a silent subset delivery. In a turn that sent PDFs, the adapter detects the message, interrupts the turn and reports it as `failed`. The worker records the PDF `failed` with the reason (`input-rejected`), while the other inputs stay `sent`. Claude does not say which of several PDFs it removed, so with more than one each is recorded `uncertain`. A turn that sent no PDF is left alone, even if Claude Code removes a document from an earlier turn. Any reply text that streamed before the interrupt stays visible in history. It does not count as a completed reply.
 
 ## Provenance
 
@@ -36,7 +36,7 @@ A Claude session opened by this process that has never had a turn now lists no t
 1. sends a two-page PDF whose random codes exist only as rendered page text, and requires the reply to give both codes in order;
 2. sends a PDF the API cannot process, and requires the turn to fail through the native rejection handling above.
 
-`-- --record` writes one record per passing model. On 2026-10-09, Claude Code 2.1.291 on a Claude Pro (`firstParty`) account passed both checks for all eleven offered models: Sonnet 5.5, Opus 5.5, Fable 5.1, Haiku 4.5, Sonnet 5, Opus 5, Fable 5, Opus 4.8, Opus 4.7, Opus 4.6 and Sonnet 4.6. One earlier run failed to select Opus 4.6 ("Couldn't confirm model") and passed on rerun; a failed model is reported and not recorded. Records claim delivery and comprehension of a simple text PDF only, not of scanned, image-only or complex documents.
+`-- --record` writes one record per passing model. The gate's rejection check uses a damaged PDF. A one-off manual probe before the gate was written sent a 101-page PDF to Haiku 4.5 (100-page limit) and got the same synthetic removal message, so over-limit PDFs take the same path; the gate does not repeat that check. On 2026-10-09, Claude Code 2.1.291 on a Claude Pro (`firstParty`) account passed both checks for all eleven offered models: Sonnet 5.5, Opus 5.5, Fable 5.1, Haiku 4.5, Sonnet 5, Opus 5, Fable 5, Opus 4.8, Opus 4.7, Opus 4.6 and Sonnet 4.6. One earlier run failed to select Opus 4.6 ("Couldn't confirm model") and passed on rerun; a failed model is reported and not recorded. Records claim delivery and comprehension of a simple text PDF only, not of scanned, image-only or complex documents.
 
 ## Acceptance evidence
 
@@ -46,3 +46,17 @@ A Claude session opened by this process that has never had a turn now lists no t
 - `node --disable-warning=ExperimentalWarning --test test/chat-library.test.js` (stream-json fixture): Claude receives a selected PDF as a native document with frozen representation and delivery; a PDF Claude removes fails the attempt and is recorded as failed; a route lost before delivery fails the attempt naming the PDF, sends nothing, and Retry delivers the frozen PDF once it is back; without evidence Send refuses the PDF for the whole union.
 - `npm run test:claude-pdf`: the live gate above.
 - `npm run test:browser`: unchanged composer and history flows still pass.
+
+## Review
+
+Parallel code review (Standards and Spec axes). Fixed, with failing tests first:
+- Rejection detection fired on any removed-document message, so a text-only turn after an earlier PDF could fail with a PDF reason. It now applies only to turns that sent a PDF.
+- One removal marked every PDF failed. With several PDFs each is now `uncertain`, because Claude does not say which it removed.
+
+Also fixed: the glossary-avoided "attachments" became `nativeInputs`; the gate and the script share one `sameSetup` predicate; the page warning now says the limit is the documented one and includes earlier PDFs; the glossary gained **Claude PDF route**; and state names now say what they hold (`pdfRemoved`, `turnless`, `sentPdf`).
+
+Kept deliberately:
+- Detection matches Claude Code 2.1.291's synthetic `is_api_error_message` text mentioning a document. Evidence records pin that exact version, so another version has no route until the gate passes on it.
+- Earlier PDFs and images in a resumed conversation are not added to the request size check. Images already worked this way, and the warning says so.
+- A PDF that is entirely valid UTF-8 still goes as full text inline, labeled so, as decided in #58.
+- `claude --version` runs on each Claude discovery outside protection; it is what makes evidence version-pinned.

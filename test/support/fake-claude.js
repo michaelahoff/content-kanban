@@ -28,7 +28,7 @@ for await (const line of readline.createInterface({ input: process.stdin })) {
     const prompt = message.message.content.filter((block) => block.type === 'text').map((block) => block.text).join('\n');
     // Like Claude Code 2.1.291 when the API rejects a document: a synthetic
     // error message, then the turn carries on without it.
-    if (message.message.content.some((block) => block.type === 'document' && Buffer.from(block.source.data, 'base64').includes('unprocessable'))) {
+    if (message.message.content.some((block) => (block.type === 'document' && Buffer.from(block.source.data, 'base64').includes('unprocessable')) || block.text === 'earlier document removed')) {
       output({ type: 'assistant', uuid: 'api-error-' + message.uuid, error: 'invalid_request', is_api_error_message: true, message: { id: 'synthetic-' + message.uuid, model: '<synthetic>', role: 'assistant', stop_reason: 'stop_sequence',
         content: [{ type: 'text', text: 'API Error: a document in the conversation could not be processed and was removed. Re-read the file with a different approach if you still need it.' }] } });
     }

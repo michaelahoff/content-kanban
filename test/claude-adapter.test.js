@@ -79,6 +79,15 @@ test('a PDF Claude removes as unprocessable fails the turn, never letting it cou
   assert.equal(completed.status, 'failed');
   assert.match(completed.error.message, /removed it/);
 });
+test('a removed-document error in a turn that sent no PDF leaves that turn to complete', async (t) => {
+  const { adapter, directory } = await fixture(t);
+  const opened = await adapter.openThread({ cwd: directory, model: 'sonnet', threadConfig: { developerInstructions: '' } });
+  const events = []; adapter.subscribe(opened.threadId, { onEvent: (event) => events.push(event) });
+  await adapter.startTurn({ threadId: opened.threadId, model: 'sonnet', clientUserMessageId: randomUUID(), input: [{ type: 'text', text: 'earlier document removed' }] });
+  const completed = await waitFor(() => events.find((event) => event.type === 'turn-completed'));
+  assert.equal(completed.status, 'completed');
+  assert.ok(!events.some((event) => event.type === 'input-rejected'));
+});
 test('a Claude session opened here that has had no turn yet lists no turns instead of reporting its history missing', async (t) => {
   const { adapter, directory } = await fixture(t);
   const opened = await adapter.openThread({ cwd: directory, model: 'sonnet', threadConfig: { developerInstructions: '' } });

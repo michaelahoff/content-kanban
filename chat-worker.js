@@ -133,7 +133,7 @@ export function createChatWorker({ store, adapter, adapters = { codex: adapter }
       if (event.status === 'completed' && work.submission.lane && live.get(work.submission.cardId) === work) laneResult(work);
       end(work, event.status === 'completed' ? 'completed' : event.status === 'interrupted' ? 'interrupted' : 'failed', failureReason(event.error));
     } else if (event.type === 'input-rejected') {
-      work.rejected = event.reason; deliver(work, work.deliveryStatus ?? 'sent');
+      work.pdfRemoved = event.reason; deliver(work, work.deliveryStatus ?? 'sent');
     } else if (event.type === 'process-exited' || event.type === 'target-unavailable') {
       end(work, 'uncertain', event.error?.message ?? 'The selected target changed. Reconcile this conversation before continuing.', { exited: event.type === 'process-exited' });
     } else if (event.type === 'request-invalidated') {
@@ -188,11 +188,14 @@ export function createChatWorker({ store, adapter, adapters = { codex: adapter }
     } catch (error) { return { success: false, contentItems: [{ type: 'inputText', text: error.message }] }; }
   }
   // A PDF the target removed after accepting the turn stays failed, whatever
-  // happened to the attempt's other inputs.
+  // happened to the attempt's other inputs. Claude does not say which of
+  // several PDFs it removed, so each of them is then uncertain.
   const deliver = (work, status) => {
     work.deliveryStatus = status;
-    if (work.delivery?.length) store.chats.delivered(ctx, work.attempt.id, work.delivery.map((entry) => work.rejected && entry.method === 'document'
-      ? { ...entry, status: 'failed', reason: work.rejected } : { ...entry, status }));
+    if (!work.delivery?.length) return;
+    const pdfs = work.delivery.filter((entry) => entry.method === 'document').length;
+    const removed = pdfs > 1 ? { status: 'uncertain', reason: `${work.pdfRemoved} It did not say which of the ${pdfs} PDFs it removed.` } : { status: 'failed', reason: work.pdfRemoved };
+    store.chats.delivered(ctx, work.attempt.id, work.delivery.map((entry) => work.pdfRemoved && entry.method === 'document' ? { ...entry, ...removed } : { ...entry, status }));
   };
   // Before sending, a Stop or archive ends the attempt rather than leaving it
   // waiting for a native interruption that can never come.
@@ -243,7 +246,7 @@ export function createChatWorker({ store, adapter, adapters = { codex: adapter }
       deliver(work, 'sending');
       const started = await adapter.startTurn({ threadId: opened.threadId, model: submission.model,
         fullAccess: store.chats.requestGrants(ctx, submission.cardId).some((grant) => grant.kind === 'full'),
-        clientUserMessageId: attempt.id, input: [{ type: 'text', text: submissionText(submission, inputs.texts) }, ...inputs.attachments] });
+        clientUserMessageId: attempt.id, input: [{ type: 'text', text: submissionText(submission, inputs.texts) }, ...inputs.nativeInputs] });
       work.accepted = true;
       if (closed) return;
       deliver(work, 'sent');

@@ -17,6 +17,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createClaudeAdapter } from '../claude-adapter.js';
+import { sameSetup } from '../claude-pdf-gate.js';
 
 const evidenceFile = fileURLToPath(new URL('../claude-pdf-evidence.json', import.meta.url));
 // Documented pages per request: 100 for 200K-context models, 600 otherwise
@@ -92,9 +93,7 @@ try {
 }
 console.log(JSON.stringify(records, null, 2));
 if (process.argv.includes('--record')) {
-  const same = (a, b) => a.harness === b.harness && a.model === b.model && a.retainedDataProtection === b.retainedDataProtection
-    && a.account.apiProvider === b.account.apiProvider && a.account.subscriptionType === b.account.subscriptionType;
-  const kept = JSON.parse(await readFile(evidenceFile, 'utf8')).filter((old) => !records.some((record) => same(old, record)));
+  const kept = JSON.parse(await readFile(evidenceFile, 'utf8')).filter((old) => !records.some((record) => sameSetup(old, record)));
   await writeFile(evidenceFile, JSON.stringify([...kept, ...records], null, 2) + '\n');
   console.log(`Recorded ${records.length} passing setups in claude-pdf-evidence.json.`);
 }

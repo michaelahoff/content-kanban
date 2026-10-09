@@ -297,6 +297,17 @@ test('a PDF Claude removes as unprocessable fails the attempt and is recorded as
   assert.match(delivery[1].reason, /removed it/);
 });
 
+test('when Claude removes one of several PDFs without saying which, each PDF is recorded as uncertain rather than guessed', async (t) => {
+  const f = await claudeFixture(t, { pdfEvidence: fixturePdfEvidence }); const card = await f.card();
+  const good = await f.upload('brief.pdf', briefPdf);
+  const broken = await f.upload('broken.pdf', Buffer.concat([briefPdf, Buffer.from('unprocessable')]));
+  const submission = await f.queue(card.id, await f.select(card.id, 'Compare them', [asset(good), asset(broken)], { provider: 'claude', model: 'sonnet' }));
+  await waitFor(async () => (await f.chat(card.id)).submissions.find((row) => row.id === submission.id && row.status === 'failed'));
+  const delivery = (await f.chat(card.id)).attempts.at(-1).delivery;
+  assert.deepEqual(delivery.map(({ filename, status }) => [filename, status]), [['brief.pdf', 'uncertain'], ['broken.pdf', 'uncertain']]);
+  assert.match(delivery[0].reason, /did not say which/);
+});
+
 test('an attempt whose Claude PDF route is gone by delivery fails naming the PDF and sends nothing; Retry delivers the frozen PDF once it is back', async (t) => {
   const evidence = [...fixturePdfEvidence];
   const f = await claudeFixture(t, { pdfEvidence: evidence }); const card = await f.card();

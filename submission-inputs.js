@@ -69,6 +69,6 @@ export function planInputs(provider, items, { textBytes, model = null, shellTool
   else if (text > limits.warnTextBytes) warnings.push(`This request has about ${Math.ceil(text / 4).toLocaleString('en-US')} tokens of text, which may exceed the model's context. Frameboard cannot check this model's limit, so the provider decides.`);
   // A PDF's pages and tokens cannot be counted without parsing it, which
   // Frameboard does not do; Claude decides, and may remove a PDF it rejects.
-  if (inputs.some((input) => input.method === 'document')) warnings.push(`Frameboard cannot count PDF pages or estimate their tokens. Claude accepts up to ${model.pdf.pages} pages per request with this model; the provider decides.`);
+  if (inputs.some((input) => input.method === 'document')) warnings.push(`Frameboard cannot count PDF pages or estimate their tokens. The documented Claude limit for this model is ${model.pdf.pages} pages per request, including PDFs from earlier messages in this conversation; Claude decides.`);
   return { inputs, problems, warnings };
 }
