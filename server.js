@@ -22,7 +22,7 @@ import { assetSources } from './public/playbook-format.js';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const imageTypes = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif', 'image/avif': 'avif' };
-const staticTypes = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml' };
+const staticTypes = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.woff2': 'font/woff2' };
 
 function assert(value, message) {
   if (!value) throw Object.assign(new Error(message), { status: 400 });
@@ -370,7 +370,7 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
           const file = publicFiles.get(url.pathname);
           if (!file) return send(res, 404, { error: 'Not found.' });
           bytes = await readFile(path.join(root, 'public', file));
-          type = `${staticTypes[path.extname(file)]}; charset=utf-8`;
+          type = path.extname(file) === '.woff2' ? staticTypes['.woff2'] : `${staticTypes[path.extname(file)]}; charset=utf-8`;
           res.setHeader('Cache-Control', 'no-cache');
         }
         res.writeHead(200, { 'Content-Type': type, 'Content-Length': bytes.length });

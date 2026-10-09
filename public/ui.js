@@ -27,6 +27,8 @@ const icons = {
   download: '<path d="M12 3v13m-5-5 5 5 5-5M4 15v6h16v-6"/>',
   folder: '<path d="M3 6a2 2 0 0 1 2-2h4l2 3h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>',
   external: '<path d="M14 3h7v7M21 3 11 13M10 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-5"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
+  moon: '<path d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5Z"/>',
 };
 export const icon = (name, cls = '') => `<svg class="icon ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icons[name] || icons.board}</svg>`;
 export const button = (action, label, symbol, cls = '', attrs = '') => `<button type="button" class="${cls}" data-action="${action}" ${attrs}>${symbol ? icon(symbol) : ''}${label}</button>`;
@@ -38,6 +40,24 @@ const editedDateFormat = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium
 const formDialog = document.querySelector('#form-dialog');
 let toastTimer;
 
+// Light and dark mirror YouTube's, so thumbnails can be judged in both. public/theme.js applies the saved choice on load.
+export const currentTheme = () => document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light';
+export const themeSwitchMarkup = () => `<div class="theme-switch" role="group" aria-label="Theme">${[['light', 'Light', 'sun'], ['dark', 'Dark', 'moon']].map(([theme, label, symbol]) => `<button type="button" class="chip" data-action="set-theme" data-theme="${theme}" aria-pressed="${currentTheme() === theme}">${icon(symbol)}${label}</button>`).join('')}</div>`;
+export const accents = [['blue', 'Blue', '#2260f3', '#4d8dff'], ['cyan', 'Cyan', '#00a3fd', '#38b6ff'], ['red', 'Red', '#cc0000', '#ff6a62'], ['mint', 'Mint', '#00a86b', '#34c76a']];
+export const currentAccent = () => document.documentElement.dataset.accent || 'blue';
+export const accentSwitchMarkup = () => `<div class="accent-switch" role="group" aria-label="Accent color">${accents.map(([accent, label, light, dark]) => `<button type="button" class="accent-dot" data-action="set-accent" data-accent="${accent}" style="--dot: ${currentTheme() === 'dark' ? dark : light}" aria-label="${label} accent" title="${label}" aria-pressed="${currentAccent() === accent}"></button>`).join('')}</div>`;
+export function setAccent(accent) {
+  document.documentElement.dataset.accent = accent;
+  try { localStorage.setItem('frameboard-accent', accent); } catch { /* Optional display preference. */ }
+  document.querySelectorAll('[data-action="set-accent"]').forEach((node) => node.setAttribute('aria-pressed', String(node.dataset.accent === accent)));
+}
+export function setTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  try { localStorage.setItem('frameboard-theme', theme); } catch { /* Optional display preference. */ }
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'dark' ? '#0f0f0f' : '#ffffff');
+  document.querySelectorAll('[data-action="set-theme"]').forEach((node) => node.setAttribute('aria-pressed', String(node.dataset.theme === theme)));
+  document.querySelectorAll('[data-action="set-accent"]').forEach((node) => { const option = accents.find(([accent]) => accent === node.dataset.accent); node.style.setProperty('--dot', theme === 'dark' ? option[3] : option[2]); });
+}
 export function wordCount(text) { return text.trim() ? text.trim().split(/\s+/u).length : 0; }
 export function lastEditedMarkup(card) {
   if (!card.updatedAt) return `${icon('clock')}<span>Last edit not recorded</span>`;

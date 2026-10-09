@@ -1377,7 +1377,7 @@ These values apply when a card enters this lane.
   await click('[data-action="close-card"]');
   await waitFor(`import('/state.js').then(m => !m.hasUnsavedWork())`);
   await send('Page.navigate', { url: base + '/settings.html' });
-  await waitFor(`document.querySelector('#backup-output').value.endsWith('backups')`);
+  await waitFor(`document.querySelector('#backup-output')?.value.endsWith('backups')`);
   await fill('#backup-output', path.join(temporary, 'browser-backups'));
   await click('#backup-start');
   await waitFor(`document.querySelector('#backup-status').textContent.includes('Backup saved to')`);

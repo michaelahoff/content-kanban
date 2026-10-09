@@ -84,7 +84,7 @@ function crumbs(paths) {
 }
 // A new document's draft is not a Library file until its first Save.
 function draftMarkup(draft) {
-  return `<li class="library-item"><button class="library-asset draft" data-action="library-edit-draft" data-id="${escape(draft.id)}" aria-label="Edit draft ${escape(draft.filename)}"><div class="library-thumb draft"><span>DRAFT</span></div>
+  return `<li class="library-item"><button class="library-asset draft" data-action="library-edit-draft" data-id="${escape(draft.id)}" aria-label="Edit draft ${escape(draft.filename)}"><div class="library-thumb draft"><span>Draft</span></div>
     <span class="library-name">${escape(draft.filename)}</span><span class="library-meta">Unsaved draft</span></button></li>`;
 }
 const uploadState = {

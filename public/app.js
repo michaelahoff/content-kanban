@@ -1,5 +1,5 @@
 // Starts the app and routes clicks, typing, pasting, and dragging to the board and editor.
-import { $, escape, iconButton, imageURL, toast, wordCount, confirmDelete, smallForm } from './ui.js';
+import { $, escape, iconButton, imageURL, toast, wordCount, confirmDelete, smallForm, setTheme, setAccent } from './ui.js';
 import { retry } from './api.js';
 import { templates, fieldInputId } from './card-template.js';
 import { state, project, locateCard, cardCount, loadWorkspace, loadCards, cardChanged, flushCards, createCard, moveCard, deleteCard, deleteLane, deleteProject, archiveProject, unarchiveProject, saveStatus, hasUnsavedWork, onStatusChange, useSavedCard, undoLastMove, loadPlaybooks, applyStages } from './state.js';
@@ -45,6 +45,8 @@ document.addEventListener('click', (event) => {
   if (action === 'edit-project') editProject();
   if (action === 'switch-project') switchProject(targetId);
   if (action === 'toggle-sidebar') $('.sidebar').classList.toggle('mobile-open');
+  if (action === 'set-theme') setTheme(target.dataset.theme);
+  if (action === 'set-accent') setAccent(target.dataset.accent);
   if (action === 'set-project-prompt') editProjectPrompt();
   if (action === 'toggle-cards') toggleCards();
   if (action === 'show-board') showTab('board');
