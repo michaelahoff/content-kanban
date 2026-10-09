@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { assetPreview, availableFilename, libraryFilename, previewType } from '../public/library-format.js';
+import { assetPreview, availableFilename, libraryFilename, previewType, libraryPaths, searchLibrary, folderHolders } from '../public/library-format.js';
 import { mkdtemp, rm, writeFile, chmod, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -28,6 +28,21 @@ test('library filenames are labels, never paths', () => {
   for (const bad of ['', '   ', '.', '..', 'a/b.png', '../x', 'a\\b', 'nul\0.bin', 'tab\there', 'x'.repeat(256), 42, null]) {
     assert.throws(() => libraryFilename(bad), (error) => error.status === 400, String(bad));
   }
+});
+
+test('Library paths, search and folder-local name holders, as the browser computes them', () => {
+  const listing = {
+    folders: [{ id: 'thumbs', name: 'Thumbnails', parentId: null }, { id: 'refs', name: 'References', parentId: 'thumbs' }, { id: 'scripts', name: 'Scripts', parentId: null }],
+    assets: [{ id: 'a', filename: 'logo.png', folderId: null }, { id: 'b', filename: 'logo.png', folderId: 'refs' }, { id: 'c', filename: 'Episode.md', folderId: 'scripts' }],
+  };
+  const paths = libraryPaths(listing);
+  assert.deepEqual([paths.folders.get('refs'), paths.assets.get('b'), paths.assets.get('a')], ['Thumbnails/References/', 'Thumbnails/References/logo.png', 'logo.png']);
+  // Search matches whole paths, case-insensitively, folders first.
+  assert.deepEqual(searchLibrary(listing, 'thumbnails/ref').map((entry) => [entry.kind, entry.id]), [['folder', 'refs'], ['asset', 'b']]);
+  assert.deepEqual(searchLibrary(listing, 'LOGO').map((entry) => entry.id), ['a', 'b']);
+  assert.deepEqual(searchLibrary(listing, 'episode').map((entry) => entry.path), ['Scripts/Episode.md']);
+  assert.deepEqual(folderHolders(listing, 'thumbs'), [{ kind: 'folder', id: 'refs', filename: 'References' }]);
+  assert.deepEqual(folderHolders(listing, null).map((entry) => entry.filename), ['Thumbnails', 'Scripts', 'logo.png']);
 });
 
 async function fixture(t) {
@@ -278,7 +293,7 @@ test('complete export and restore carry every Library identity, label, version a
   const logo = (await f.ok('GET', f.library)).assets.find((asset) => asset.filename === 'logo.png');
   await f.upload('logo.png', Buffer.from('replacement'), { collision: 'replace', asset: logo.id });
   await f.upload('logo.png', Buffer.from([137, 80, 78, 71]), { collision: 'create' });
-  const before = (await f.ok('GET', f.library)).assets;
+  const listing = await f.ok('GET', f.library); const before = listing.assets;
   const details = await Promise.all(before.map((asset) => f.ok('GET', `${f.library}/assets/${asset.id}`)));
 
   const root = await mkdtemp(path.join(tmpdir(), 'frameboard-library-restore-'));
@@ -294,7 +309,7 @@ test('complete export and restore carry every Library identity, label, version a
   await new Promise((resolve) => restored.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise((resolve) => restored.close(resolve)));
   const base = `http://127.0.0.1:${restored.address().port}`;
-  assert.deepEqual(await (await fetch(`${base}${f.library}`)).json(), { assets: before, drafts: [] });
+  assert.deepEqual(await (await fetch(`${base}${f.library}`)).json(), listing);
   for (const asset of details) {
     assert.deepEqual(await (await fetch(`${base}${f.library}/assets/${asset.id}`)).json(), asset);
     for (const version of asset.versions) {
@@ -631,4 +646,264 @@ test('previews and editing follow the current versionâ€™s content, not the fileâ
   assert.equal(assetPreview('README', binary.asset.current), null);
   assert.equal(assetPreview('ref.png', { written: true }).kind, 'text', 'a written document named like an image is text');
   assert.equal(assetPreview('ref.png', { written: false }).kind, 'image');
+});
+
+test('nested folders scope names: the same filename coexists in different folders, and a collision is folder-local', async (t) => {
+  const f = await fixture(t);
+  const thumbnails = f.library.createFolder(f.ctx, f.projectId, { name: 'Thumbnails' });
+  const references = f.library.createFolder(f.ctx, f.projectId, { name: 'References', parentId: thumbnails.id });
+  assert.deepEqual([references.name, references.parentId], ['References', thumbnails.id]);
+  assert.throws(() => f.library.createFolder(f.ctx, f.projectId, { name: 'Thumbnails' }), (error) => error.status === 409);
+  assert.throws(() => f.library.createFolder(f.ctx, f.projectId, { name: 'a/b' }), (error) => error.status === 400);
+
+  const root = await f.upload('logo.png', Buffer.from('root logo'));
+  const nested = await f.upload('logo.png', Buffer.from('root logo'), { folderId: references.id });
+  assert.equal(nested.outcome, 'created'); assert.equal(nested.asset.filename, 'logo.png');
+  assert.notEqual(nested.asset.id, root.asset.id);
+  assert.equal(nested.asset.folderId, references.id);
+  await assert.rejects(f.upload('logo.png', Buffer.from('x'), { folderId: references.id }), (error) => error.status === 409
+    && assert.deepEqual(error.conflict, { assetId: nested.asset.id, filename: 'logo.png', suggested: 'logo (1).png' }) === undefined);
+  // A folder holds its name in its parent too.
+  await assert.rejects(f.upload('References', Buffer.from('x'), { folderId: thumbnails.id }), (error) => error.status === 409 && !error.conflict.assetId);
+
+  await f.restart();
+  const { folders, assets } = f.library.list(f.ctx, f.projectId);
+  assert.deepEqual(folders.map((folder) => [folder.id, folder.name, folder.parentId]), [[references.id, 'References', thumbnails.id], [thumbnails.id, 'Thumbnails', null]]);
+  assert.deepEqual(assets.map((asset) => [asset.id, asset.folderId]), [[root.asset.id, null], [nested.asset.id, references.id]]);
+  await assert.rejects(f.upload('x.png', Buffer.from('x'), { folderId: randomUUID() }), (error) => error.status === 404);
+});
+
+test('rename and move keep identities and every version, refuse a taken name in the destination and never merge', async (t) => {
+  const f = await fixture(t);
+  const brand = f.library.createFolder(f.ctx, f.projectId, { name: 'Brand' });
+  const old = f.library.createFolder(f.ctx, f.projectId, { name: 'Old', parentId: brand.id });
+  const logo = await f.upload('logo.png', Buffer.from('v1'));
+  await f.upload('logo.png', Buffer.from('v2'), { collision: 'replace', assetId: logo.asset.id });
+  const twin = await f.upload('logo.png', Buffer.from('v1'), { folderId: brand.id });
+
+  // Same bytes and name in the destination: refused, not merged.
+  assert.throws(() => f.library.updateAsset(f.ctx, f.projectId, logo.asset.id, { folderId: brand.id }), (error) => error.status === 409 && /logo\.png/.test(error.message));
+  assert.throws(() => f.library.updateAsset(f.ctx, f.projectId, logo.asset.id, { filename: 'Brand' }), (error) => error.status === 409);
+  const moved = f.library.updateAsset(f.ctx, f.projectId, logo.asset.id, { filename: 'mark.png', folderId: old.id });
+  assert.deepEqual([moved.id, moved.filename, moved.folderId, moved.versionCount], [logo.asset.id, 'mark.png', old.id, 2]);
+  const renamed = f.library.updateAsset(f.ctx, f.projectId, twin.asset.id, { filename: 'mark.png' });
+  assert.deepEqual([renamed.id, renamed.folderId], [twin.asset.id, brand.id], 'the same name coexists one folder up');
+  assert.equal(f.library.updateAsset(f.ctx, f.projectId, logo.asset.id, { filename: 'mark.png' }).id, logo.asset.id, 'keeping its own name is not a conflict');
+  assert.deepEqual(f.library.asset(f.ctx, f.projectId, logo.asset.id).versions.map((version) => version.number), [2, 1]);
+
+  // Folders move with their contents; a folder cannot move into itself or below.
+  assert.throws(() => f.library.updateFolder(f.ctx, f.projectId, brand.id, { parentId: old.id }), (error) => error.status === 409);
+  assert.throws(() => f.library.updateFolder(f.ctx, f.projectId, brand.id, { parentId: brand.id }), (error) => error.status === 409);
+  f.library.createFolder(f.ctx, f.projectId, { name: 'Old' });
+  assert.throws(() => f.library.updateFolder(f.ctx, f.projectId, old.id, { parentId: null }), (error) => error.status === 409);
+  const archive = f.library.updateFolder(f.ctx, f.projectId, old.id, { name: 'Archive', parentId: null });
+  assert.deepEqual([archive.id, archive.name, archive.parentId], [old.id, 'Archive', null]);
+  assert.equal(f.library.asset(f.ctx, f.projectId, logo.asset.id).folderId, old.id, 'contents keep their folder identity');
+  assert.throws(() => f.library.updateAsset(f.ctx, f.projectId, logo.asset.id, { filename: '../x' }), (error) => error.status === 400);
+  assert.throws(() => f.library.updateAsset(f.ctx, f.projectId, logo.asset.id, { folderId: randomUUID() }), (error) => error.status === 404);
+
+  const { project: other } = f.store.createProject(f.ctx, { name: 'Other' });
+  const foreign = f.library.createFolder(f.ctx, other.id, { name: 'Elsewhere' });
+  assert.throws(() => f.library.updateAsset(f.ctx, f.projectId, logo.asset.id, { folderId: foreign.id }), (error) => error.status === 404);
+  assert.throws(() => f.library.updateAsset(f.ctx, other.id, logo.asset.id, { filename: 'stolen.png' }), (error) => error.status === 404);
+  assert.throws(() => f.library.updateFolder(f.ctx, other.id, brand.id, { name: 'Stolen' }), (error) => error.status === 404);
+});
+
+test('removal hides sources but keeps every version readable; folder removal is recursive and a former name never revives an identity', async (t) => {
+  const f = await fixture(t);
+  const thumbnails = f.library.createFolder(f.ctx, f.projectId, { name: 'Thumbnails' });
+  const references = f.library.createFolder(f.ctx, f.projectId, { name: 'References', parentId: thumbnails.id });
+  const script = await f.upload('script.md', Buffer.from('v1'));
+  const v2 = await f.upload('script.md', Buffer.from('v2'), { collision: 'replace', assetId: script.asset.id });
+  const cover = await f.upload('cover.png', Buffer.from('cover'), { folderId: thumbnails.id });
+  const deep = await f.upload('deep.png', Buffer.from('deep'), { folderId: references.id });
+  const kept = await f.upload('kept.png', Buffer.from('kept'));
+
+  const broken = Readable.from((async function* () { yield Buffer.from('partial'); throw new Error('upload disconnected'); })());
+  await assert.rejects(f.upload('script.md', broken, { collision: 'replace', assetId: script.asset.id, operationId: 'replace-before-removal' }), /disconnected/);
+  f.library.removeAsset(f.ctx, f.projectId, script.asset.id);
+  assert.deepEqual(f.library.list(f.ctx, f.projectId).assets.map((asset) => asset.filename), ['cover.png', 'deep.png', 'kept.png']);
+  await assert.rejects(f.upload('script.md', Buffer.from('v3'), { collision: 'replace', assetId: script.asset.id, operationId: 'replace-before-removal' }),
+    (error) => error.status === 409 && /removed/.test(error.message));
+  const removed = f.library.asset(f.ctx, f.projectId, script.asset.id);
+  assert.ok(removed.removedAt);
+  assert.deepEqual(removed.versions.map((version) => version.id), [v2.version.id, script.version.id]);
+  assert.deepEqual(await collect((await f.library.read(f.ctx, f.projectId, script.version.id)).stream), Buffer.from('v1'));
+  assert.throws(() => f.library.updateAsset(f.ctx, f.projectId, script.asset.id, { filename: 'back.md' }), (error) => error.status === 404);
+  await assert.rejects(f.upload('script.md', Buffer.from('v3'), { collision: 'replace', assetId: script.asset.id }), (error) => error.status === 409);
+  const reused = await f.upload('script.md', Buffer.from('new source'));
+  assert.equal(reused.outcome, 'created'); assert.notEqual(reused.asset.id, script.asset.id, 'the former name holds a new identity');
+
+  // An upload in progress inside a folder being removed saves nothing.
+  let release;
+  const slow = Readable.from((async function* () { yield Buffer.from('half'); await new Promise((resolve) => { release = resolve; }); yield Buffer.from('rest'); })());
+  const pending = f.upload('late.png', slow, { folderId: references.id });
+  while (!release) await new Promise((resolve) => setImmediate(resolve));
+  f.library.removeFolder(f.ctx, f.projectId, thumbnails.id);
+  release();
+  await assert.rejects(pending, (error) => error.status === 409);
+
+  await f.restart();
+  const listing = f.library.list(f.ctx, f.projectId);
+  assert.deepEqual(listing.folders, []);
+  assert.deepEqual(listing.assets.map((asset) => asset.filename), ['kept.png', 'script.md']);
+  assert.deepEqual(f.library.removed(f.ctx, f.projectId).assets.map((asset) => [asset.id, asset.path]).sort(),
+    [[cover.asset.id, 'Thumbnails/cover.png'], [deep.asset.id, 'Thumbnails/References/deep.png'], [script.asset.id, 'script.md']].sort());
+  assert.deepEqual(await collect((await f.library.read(f.ctx, f.projectId, deep.version.id)).stream), Buffer.from('deep'));
+  await assert.rejects(f.upload('x.png', Buffer.from('x'), { folderId: references.id }), (error) => error.status === 404);
+  assert.throws(() => f.library.createFolder(f.ctx, f.projectId, { name: 'x', parentId: thumbnails.id }), (error) => error.status === 404);
+  assert.throws(() => f.library.removeFolder(f.ctx, f.projectId, thumbnails.id), (error) => error.status === 404);
+  // A removed folder's name is free again, for a new folder identity.
+  assert.notEqual(f.library.createFolder(f.ctx, f.projectId, { name: 'Thumbnails' }).id, thumbnails.id);
+  assert.ok(f.library.list(f.ctx, f.projectId).assets.find((asset) => asset.id === kept.asset.id));
+});
+
+test('remembered sources resolve to current versions: folders expand recursively in path order, overlaps keep first position, removed sources stay unresolved', async (t) => {
+  const f = await fixture(t);
+  const thumbnails = f.library.createFolder(f.ctx, f.projectId, { name: 'Thumbnails' });
+  const references = f.library.createFolder(f.ctx, f.projectId, { name: 'refs', parentId: thumbnails.id });
+  const empty = f.library.createFolder(f.ctx, f.projectId, { name: 'Next episode' });
+  const script = await f.upload('script.md', Buffer.from('# A'));
+  const b = await f.upload('b.png', Buffer.from('b'), { folderId: thumbnails.id });
+  const deep = await f.upload('a.png', Buffer.from('a'), { folderId: references.id });
+  const dot = await f.upload('refs.txt', Buffer.from('r'), { folderId: thumbnails.id });
+  const logo = await f.upload('logo.png', Buffer.from('logo'), { folderId: thumbnails.id });
+
+  const selection = [{ kind: 'asset', id: logo.asset.id }, { kind: 'folder', id: thumbnails.id }, { kind: 'asset', id: script.asset.id }, { kind: 'folder', id: empty.id }];
+  const resolved = f.library.resolve(f.ctx, f.projectId, selection);
+  assert.deepEqual(resolved.sources.map((source) => [source.kind, source.id, source.status, source.path]), [
+    ['asset', logo.asset.id, 'resolved', 'Thumbnails/logo.png'], ['folder', thumbnails.id, 'resolved', 'Thumbnails/'],
+    ['asset', script.asset.id, 'resolved', 'script.md'], ['folder', empty.id, 'resolved', 'Next episode/']]);
+  // logo.png keeps its first position; the folder adds the rest in relative-path
+  // order, compared segment by segment, so refs/a.png sorts before refs.txt.
+  assert.deepEqual(resolved.assets.map((asset) => [asset.id, asset.path]), [
+    [logo.asset.id, 'Thumbnails/logo.png'], [b.asset.id, 'Thumbnails/b.png'], [deep.asset.id, 'Thumbnails/refs/a.png'],
+    [dot.asset.id, 'Thumbnails/refs.txt'], [script.asset.id, 'script.md']]);
+  assert.deepEqual(resolved.assets[0].selectedBy, [{ source: 0, relativePath: 'logo.png' }, { source: 1, relativePath: 'logo.png' }]);
+  assert.deepEqual(resolved.assets[2].selectedBy, [{ source: 1, relativePath: 'refs/a.png' }]);
+  assert.deepEqual([resolved.assets[4].versionId, resolved.assets[4].hash, resolved.assets[4].size], [script.version.id, sha(Buffer.from('# A')), 3]);
+
+  // Replace and move follow the identity; removal leaves the ID unresolved, even after its name is reused.
+  const v2 = await f.upload('script.md', Buffer.from('# B'), { collision: 'replace', assetId: script.asset.id });
+  f.library.updateAsset(f.ctx, f.projectId, script.asset.id, { folderId: empty.id });
+  assert.deepEqual(f.library.resolve(f.ctx, f.projectId, [selection[3]]).assets.map((asset) => [asset.id, asset.versionId, asset.path]), [[script.asset.id, v2.version.id, 'Next episode/script.md']]);
+  f.library.updateAsset(f.ctx, f.projectId, script.asset.id, { folderId: null });
+  f.library.removeAsset(f.ctx, f.projectId, script.asset.id);
+  f.library.removeFolder(f.ctx, f.projectId, thumbnails.id);
+  await f.upload('script.md', Buffer.from('impostor'));
+  f.library.createFolder(f.ctx, f.projectId, { name: 'Thumbnails' });
+  const { project: other } = f.store.createProject(f.ctx, { name: 'Other' });
+  const foreign = f.library.createFolder(f.ctx, other.id, { name: 'Elsewhere' });
+  const after = f.library.resolve(f.ctx, f.projectId, [...selection, { kind: 'folder', id: foreign.id }, { kind: 'folder', id: logo.asset.id }]);
+  assert.deepEqual(after.sources.map((source) => [source.id, source.status]), [
+    [logo.asset.id, 'removed'], [thumbnails.id, 'removed'], [script.asset.id, 'removed'], [empty.id, 'resolved'], [foreign.id, 'missing'], [logo.asset.id, 'missing']]);
+  assert.deepEqual(after.assets, [], 'an existing empty folder adds no files, and nothing substitutes for removed sources');
+  assert.throws(() => f.library.resolve(f.ctx, f.projectId, [{ kind: 'path', id: 'script.md' }]), (error) => error.status === 400);
+});
+
+test('a dropped folder path reuses live folders, steps around a file holding its name, and repeats exactly on retry', async (t) => {
+  const f = await fixture(t);
+  const existing = f.library.createFolder(f.ctx, f.projectId, { name: 'Thumbnails' });
+  await f.upload('refs', Buffer.from('a file named like the folder'), { folderId: existing.id });
+  const leaf = f.library.ensureFolders(f.ctx, f.projectId, { parentId: null, names: ['Thumbnails', 'refs', 'Deep'] });
+  const suffixed = f.library.list(f.ctx, f.projectId).folders.find((folder) => folder.id === leaf.parentId);
+  assert.deepEqual([suffixed.name, suffixed.parentId], ['refs (1)', existing.id]);
+  assert.equal(leaf.name, 'Deep');
+  assert.equal(f.library.ensureFolders(f.ctx, f.projectId, { parentId: null, names: ['Thumbnails', 'refs', 'Deep'] }).id, leaf.id, 'a retry finds the same folders');
+  assert.equal(f.library.list(f.ctx, f.projectId).folders.length, 3);
+  assert.throws(() => f.library.ensureFolders(f.ctx, f.projectId, { parentId: null, names: [] }), (error) => error.status === 400);
+  assert.throws(() => f.library.ensureFolders(f.ctx, f.projectId, { parentId: null, names: ['ok', '..'] }), (error) => error.status === 400);
+  assert.equal(f.library.list(f.ctx, f.projectId).folders.length, 3, 'an invalid path creates nothing');
+  f.store.archiveProject(f.ctx, f.projectId);
+  assert.throws(() => f.library.ensureFolders(f.ctx, f.projectId, { parentId: null, names: ['New'] }), (error) => error.status === 409 && /archived/i.test(error.message));
+  for (const attempt of [() => f.library.createFolder(f.ctx, f.projectId, { name: 'New' }), () => f.library.updateFolder(f.ctx, f.projectId, existing.id, { name: 'Renamed' }),
+    () => f.library.removeFolder(f.ctx, f.projectId, existing.id)]) assert.throws(attempt, (error) => error.status === 409 && /archived/i.test(error.message));
+  assert.equal(f.library.list(f.ctx, f.projectId).folders.length, 3, 'archived Libraries stay readable');
+});
+
+test('over HTTP, folders nest, uploads land in a folder, and rename, move and removal keep identities and versions', async (t) => {
+  const f = await httpFixture(t);
+  const folder = (body) => f.call('POST', `${f.library}/folders`, body);
+  const created = await folder({ name: 'Thumbnails' });
+  assert.equal(created.status, 201);
+  const thumbnails = created.body;
+  assert.equal((await folder({ name: 'Thumbnails' })).status, 409);
+  const old = await f.ok('POST', `${f.library}/folders/paths`, { parentId: thumbnails.id, names: ['refs', 'old'] });
+  const refs = (await f.ok('GET', f.library)).folders.find((entry) => entry.id === old.parentId);
+  assert.deepEqual([refs.name, refs.parentId, old.name], ['refs', thumbnails.id, 'old']);
+  const uploaded = await f.upload('logo.png', Buffer.from('logo'), { folder: thumbnails.id });
+  assert.equal(uploaded.status, 201, JSON.stringify(uploaded.body));
+  assert.equal(uploaded.body.asset.folderId, thumbnails.id);
+  const root = await f.upload('logo.png', Buffer.from('logo'));
+  assert.equal(root.status, 201, 'the same name coexists at the root');
+  assert.equal((await f.upload('logo.png', Buffer.from('logo'), { folder: thumbnails.id })).status, 409);
+
+  assert.equal((await f.call('PATCH', `${f.library}/assets/${root.body.asset.id}`, { folderId: thumbnails.id })).status, 409);
+  const moved = await f.ok('PATCH', `${f.library}/assets/${root.body.asset.id}`, { filename: 'mark.png', folderId: refs.id });
+  assert.deepEqual([moved.id, moved.filename, moved.folderId], [root.body.asset.id, 'mark.png', refs.id]);
+  assert.equal((await f.call('PATCH', `${f.library}/folders/${thumbnails.id}`, { parentId: refs.id })).status, 409);
+  assert.equal((await f.ok('PATCH', `${f.library}/folders/${refs.id}`, { name: 'References' })).name, 'References');
+
+  await f.ok('DELETE', `${f.library}/assets/${uploaded.body.asset.id}`);
+  await f.ok('DELETE', `${f.library}/folders/${thumbnails.id}`);
+  assert.deepEqual(await f.ok('GET', f.library), { folders: [], assets: [], drafts: [] });
+  const removed = (await f.ok('GET', `${f.library}/removed`)).assets;
+  assert.deepEqual(removed.map((asset) => asset.path).sort(), ['Thumbnails/References/mark.png', 'Thumbnails/logo.png']);
+  assert.ok((await f.ok('GET', `${f.library}/assets/${uploaded.body.asset.id}`)).removedAt);
+  assert.equal((await f.raw(`${f.library}/versions/${uploaded.body.version.id}/content`)).status, 200, 'removed versions stay downloadable');
+  assert.equal((await f.call('DELETE', `${f.library}/folders/${thumbnails.id}`)).status, 404);
+  assert.equal((await f.upload('late.png', Buffer.from('x'), { folder: thumbnails.id })).status, 404);
+
+  // Archive and maintenance refuse every organizing change.
+  const kept = await f.ok('POST', `${f.library}/folders`, { name: 'Kept' });
+  await f.ok('POST', `/api/projects/${f.projectId}/archive`, {});
+  for (const [method, url, body] of [['POST', `${f.library}/folders`, { name: 'New' }], ['PATCH', `${f.library}/folders/${kept.id}`, { name: 'X' }], ['DELETE', `${f.library}/folders/${kept.id}`],
+    ['POST', `${f.library}/folders/paths`, { names: ['New'] }]]) {
+    const response = await f.call(method, url, body);
+    assert.equal(response.status, 409, `${method} ${url}`);
+  }
+  await f.ok('POST', `/api/projects/${f.projectId}/unarchive`, {});
+  const output = await mkdtemp(path.join(tmpdir(), 'frameboard-library-export-'));
+  t.after(() => rm(output, { recursive: true, force: true }));
+  await f.ok('POST', '/api/maintenance/export', { output });
+  assert.equal((await f.call('PATCH', `${f.library}/folders/${kept.id}`, { name: 'Paused' })).status, 503);
+  await waitFor(async () => !(await f.ok('GET', '/api/maintenance')).active);
+  assert.deepEqual((await f.ok('GET', f.library)).folders.map((entry) => entry.name), ['Kept']);
+});
+
+test('export and restore carry nested folders, locations and removals, and the manifest inventories them', async (t) => {
+  const f = await httpFixture(t);
+  const thumbnails = await f.ok('POST', `${f.library}/folders`, { name: 'Thumbnails' });
+  const refs = await f.ok('POST', `${f.library}/folders`, { name: 'refs', parentId: thumbnails.id });
+  const gone = await f.ok('POST', `${f.library}/folders`, { name: 'Gone' });
+  await f.ok('POST', `${f.library}/folders`, { name: 'Empty' });
+  const deep = (await f.upload('a.png', Buffer.from('a'), { folder: refs.id })).body;
+  const removed = (await f.upload('old.md', Buffer.from('old'), { folder: gone.id })).body;
+  await f.upload('script.md', Buffer.from('script'));
+  await f.ok('DELETE', `${f.library}/folders/${gone.id}`);
+  const listing = await f.ok('GET', f.library); const removedListing = await f.ok('GET', `${f.library}/removed`);
+
+  const root = await mkdtemp(path.join(tmpdir(), 'frameboard-library-folders-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await f.close();
+  const { backupDir } = await createBackup({ dataDir: f.dataDir, output: path.join(root, 'backups'), codexHome: path.join(root, 'native') });
+  const manifestFile = path.join(backupDir, 'manifest.json');
+  const manifest = JSON.parse(await readFile(manifestFile, 'utf8'));
+  assert.deepEqual(manifest.inventory.folders.map((folder) => [folder.name, folder.parentId === thumbnails.id ? 'Thumbnails' : folder.parentId, folder.removed]).sort(),
+    [['Empty', null, false], ['Gone', null, true], ['Thumbnails', null, false], ['refs', 'Thumbnails', false]]);
+  const inventoried = new Map(manifest.inventory.retained.map((entry) => [entry.objectId, entry]));
+  assert.deepEqual([inventoried.get(deep.asset.id).folderId, inventoried.get(removed.asset.id).folderId, inventoried.get(removed.asset.id).removed], [refs.id, gone.id, true]);
+
+  const dataDir = path.join(root, 'restored');
+  await restoreBackup({ backupDir, dataDir, codexHome: path.join(root, 'native') });
+  const restored = await createApp({ dataDir, codexAdapter: new ControlledCodex(path.join(root, 'native')) });
+  await new Promise((resolve) => restored.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise((resolve) => restored.close(resolve)));
+  const base = `http://127.0.0.1:${restored.address().port}`;
+  assert.deepEqual(await (await fetch(`${base}${f.library}`)).json(), listing);
+  assert.deepEqual(await (await fetch(`${base}${f.library}/removed`)).json(), removedListing);
+
+  manifest.inventory.folders.find((folder) => folder.id === refs.id).name = 'renamed';
+  await writeFile(manifestFile, JSON.stringify(manifest));
+  await assert.rejects(restoreBackup({ backupDir, dataDir: path.join(root, 'tampered'), codexHome: path.join(root, 'native') }), /inventory does not match/);
 });

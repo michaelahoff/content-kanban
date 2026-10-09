@@ -49,7 +49,7 @@ test('export bundles every committed retained version, including superseded and 
     assert.deepEqual(manifest.files.find((entry) => entry.path === relative), { path: relative, size: bytes.length, sha256: sha(bytes), mode: 0o444 });
   }
   const retained = Object.fromEntries(manifest.inventory.retained.map((entry) => [entry.versionId, entry]));
-  assert.deepEqual(retained[first.id], { versionId: first.id, objectId: first.objectId, projectId: f.projectId, kind: 'asset', label: 'opaque.bin', filename: 'opaque.bin',
+  assert.deepEqual(retained[first.id], { versionId: first.id, objectId: first.objectId, projectId: f.projectId, kind: 'asset', label: 'opaque.bin', folderId: null, filename: 'opaque.bin',
     path: `retained/versions/${first.id}`, size: 11, sha256: sha('first bytes'), current: false, removed: false, baseVersionId: null });
   assert.equal(retained[second.id].current, true);
   assert.equal(retained[second.id].baseVersionId, first.id);

@@ -1,14 +1,16 @@
-// The project Library tab: upload files or write documents, inspect and
-// download their exact retained versions, and resolve name collisions
-// explicitly. Document drafts are kept as the user types; only Save publishes.
+// The project Library tab: organize files in nested folders, upload files and
+// folders or write documents, inspect and download their exact retained
+// versions, and resolve name collisions explicitly. Rename, move and removal
+// keep identities. Document drafts are kept as the user types; only Save publishes.
 import { $, escape, icon, button, iconButton, toast, smallForm, id } from './ui.js';
-import { request } from './api.js';
-import { assetPreview, libraryFilename, nameConflict, splitExtension } from './library-format.js';
+import { request, send as sendJSON } from './api.js';
+import { assetPreview, comparePaths, libraryFilename, libraryPaths, searchLibrary, folderHolders, nameConflict, splitExtension } from './library-format.js';
 import { project } from './state.js';
 
 const dialog = $('#library-dialog');
 const previewBytes = 64 * 1024;
-const library = { projectId: null, assets: [], drafts: [], loaded: false, error: '', query: '', uploads: [] };
+// folder is the open folder's ID; null is the Library root.
+const library = { projectId: null, folders: [], assets: [], drafts: [], folder: null, loaded: false, error: '', query: '', uploads: [] };
 let inspected = null;
 // The open document editor: its draft as last kept on the server, plus local state.
 let editing = null;
@@ -28,11 +30,13 @@ const archived = () => Boolean(project()?.archivedAt);
 async function load() {
   const projectId = project()?.id;
   if (!projectId) return;
-  if (library.projectId !== projectId) Object.assign(library, { projectId, assets: [], drafts: [], loaded: false, error: '', query: '', uploads: [] });
+  if (library.projectId !== projectId) Object.assign(library, { projectId, folders: [], assets: [], drafts: [], folder: null, loaded: false, error: '', query: '', uploads: [] });
   try {
-    const { assets, drafts } = await request(base(projectId));
+    const { folders, assets, drafts } = await request(base(projectId));
     if (library.projectId !== projectId) return;
-    Object.assign(library, { assets, drafts, loaded: true, error: '' });
+    Object.assign(library, { folders, assets, drafts, loaded: true, error: '' });
+    // The open folder was removed, perhaps in another tab.
+    if (!folders.some((folder) => folder.id === library.folder)) library.folder = null;
   } catch (error) { library.error = error.message; }
 }
 
@@ -51,13 +55,25 @@ function thumbnail(asset) {
   if (preview?.kind === 'image') return `<div class="library-thumb"><img src="${contentURL(asset.current.id, true)}" alt="" loading="lazy" draggable="false"></div>`;
   return `<div class="library-thumb file"><span>${escape(extension(asset.filename))}</span></div>`;
 }
-function assetMarkup(asset) {
-  return `<li><button class="library-asset" data-action="library-inspect" data-id="${escape(asset.id)}" aria-label="Inspect ${escape(asset.filename)}">${thumbnail(asset)}
-    <span class="library-name">${escape(asset.filename)}</span><span class="library-meta">v${asset.current.number} · ${formatSize(asset.current.size)}${asset.current.available ? '' : ' · <strong>Unavailable</strong>'}${draftFor(asset) ? ' · <em>Draft</em>' : ''}</span></button></li>`;
+const manage = (kind, item, name) => archived() ? '' : `<button type="button" class="library-manage" data-action="library-manage" data-kind="${kind}" data-id="${escape(item.id)}" aria-label="Manage ${escape(name)}" title="Rename, move or remove">${icon('more')}</button>`;
+// While searching, a tile shows where it lives.
+function assetMarkup(asset, path) {
+  return `<li class="library-item"><button class="library-asset" data-action="library-inspect" data-id="${escape(asset.id)}" aria-label="Inspect ${escape(asset.filename)}">${thumbnail(asset)}
+    <span class="library-name">${escape(asset.filename)}</span><span class="library-meta">${path ? `${escape(path)} · ` : ''}v${asset.current.number} · ${formatSize(asset.current.size)}${asset.current.available ? '' : ' · <strong>Unavailable</strong>'}${draftFor(asset) ? ' · <em>Draft</em>' : ''}</span></button>${manage('asset', asset, asset.filename)}</li>`;
+}
+function folderMarkup(folder, paths, path) {
+  const files = library.assets.filter((asset) => paths.assets.get(asset.id).startsWith(paths.folders.get(folder.id))).length;
+  return `<li class="library-item"><button class="library-asset library-folder" data-action="library-open-folder" data-id="${escape(folder.id)}" aria-label="Open folder ${escape(folder.name)}"><div class="library-thumb folder">${icon('folder')}</div>
+    <span class="library-name">${escape(folder.name)}</span><span class="library-meta">${path ? `${escape(path)} · ` : ''}${files} ${files === 1 ? 'file' : 'files'}</span></button>${manage('folder', folder, folder.name)}</li>`;
+}
+function crumbs(paths) {
+  const chain = [];
+  for (let folder = library.folders.find((entry) => entry.id === library.folder); folder; folder = library.folders.find((entry) => entry.id === folder.parentId)) chain.unshift(folder);
+  return `<nav class="library-crumbs" aria-label="Folder">${button('library-open-folder', 'Library', null, 'library-crumb', 'data-id=""')}${chain.map((folder) => `<span aria-hidden="true">/</span>${button('library-open-folder', escape(folder.name), null, 'library-crumb', `data-id="${escape(folder.id)}" title="${escape(paths.folders.get(folder.id))}"`)}`).join('')}</nav>`;
 }
 // A new document's draft is not a Library file until its first Save.
 function draftMarkup(draft) {
-  return `<li><button class="library-asset draft" data-action="library-edit-draft" data-id="${escape(draft.id)}" aria-label="Edit draft ${escape(draft.filename)}"><div class="library-thumb draft"><span>DRAFT</span></div>
+  return `<li class="library-item"><button class="library-asset draft" data-action="library-edit-draft" data-id="${escape(draft.id)}" aria-label="Edit draft ${escape(draft.filename)}"><div class="library-thumb draft"><span>DRAFT</span></div>
     <span class="library-name">${escape(draft.filename)}</span><span class="library-meta">Unsaved draft</span></button></li>`;
 }
 const uploadState = {
@@ -65,29 +81,39 @@ const uploadState = {
   saved: (entry) => entry.message, failed: (entry) => entry.error,
 };
 function uploadMarkup(entry) {
-  return `<li class="library-upload ${entry.status}" data-upload="${entry.id}"><span class="library-upload-name">${escape(entry.file.name)}</span>
+  return `<li class="library-upload ${entry.status}" data-upload="${entry.id}"><span class="library-upload-name">${escape(entry.label)}</span>
     <span class="library-upload-state" role="status">${escape(uploadState[entry.status](entry))}</span>${entry.status === 'failed' && entry.retryable ? button('library-retry-upload', 'Retry', null, 'button small secondary', `data-id="${entry.id}"`) : ''}</li>`;
 }
 function paint() {
   const container = $('#library');
   if (!container) return;
-  const search = library.query.toLocaleLowerCase().trim();
-  const assets = library.assets.filter((asset) => asset.filename.toLocaleLowerCase().includes(search));
-  const drafts = library.drafts.filter((draft) => !draft.assetId && draft.filename.toLocaleLowerCase().includes(search));
+  const search = library.query.trim();
+  const paths = libraryPaths(library);
+  // Search covers every folder and file path; otherwise show the open folder.
+  const tiles = search
+    ? searchLibrary(library, search).map((entry) => entry.kind === 'folder' ? folderMarkup(entry.item, paths, paths.folders.get(entry.item.parentId) || 'Library') : assetMarkup(entry.item, paths.folders.get(entry.item.folderId) || 'Library'))
+    : [...library.folders.filter((folder) => folder.parentId === library.folder).map((folder) => folderMarkup(folder, paths)),
+      ...library.assets.filter((asset) => asset.folderId === library.folder).map((asset) => assetMarkup(asset))];
+  // A new document's draft is saved at the root, so it shows there and in search.
+  const drafts = library.drafts.filter((draft) => !draft.assetId && (search ? draft.filename.toLocaleLowerCase().includes(search.toLocaleLowerCase()) : library.folder === null));
   const finished = library.uploads.length && library.uploads.every((entry) => !['waiting', 'uploading'].includes(entry.status));
-  container.innerHTML = `<div class="library-head"><p class="library-hint">${archived() ? 'This project is archived. Its files stay readable and downloadable.' : 'Upload any file or write a document. Frameboard keeps the exact original and every saved version.'}</p>
-      <div class="library-tools"><label class="search">${icon('search')}<input id="library-search" type="search" placeholder="Find a file…" aria-label="Find a file" value="${escape(library.query)}"></label>
-      ${archived() ? '' : `${button('library-write', 'Write document', 'edit', 'button secondary')}<label class="button primary library-pick">${icon('upload')}Upload files<input id="library-files" type="file" multiple></label>`}</div></div>
+  container.innerHTML = `<div class="library-head"><p class="library-hint">${archived() ? 'This project is archived. Its files stay readable and downloadable.' : 'Upload any file or folder, or write a document. Frameboard keeps the exact original and every saved version.'}</p>
+      <div class="library-tools"><label class="search">${icon('search')}<input id="library-search" type="search" placeholder="Find a file or folder…" aria-label="Find a file or folder" value="${escape(library.query)}"></label>
+      ${button('library-removed', 'Removed files', null, 'button secondary')}
+      ${archived() ? '' : `${button('library-write', 'Write document', 'edit', 'button secondary')}${button('library-new-folder', 'New folder', 'folder', 'button secondary')}<label class="button secondary library-pick">${icon('folder')}Upload folder<input id="library-folder-files" type="file" webkitdirectory multiple></label>
+      <label class="button primary library-pick">${icon('upload')}Upload files<input id="library-files" type="file" multiple></label>`}</div></div>
     ${library.uploads.length ? `<section class="library-uploads" aria-label="Uploads"><div class="library-uploads-head"><h2>Uploads</h2>${finished ? button('library-clear-uploads', 'Clear', null, 'button small secondary') : ''}</div><ul>${library.uploads.map(uploadMarkup).join('')}</ul></section>` : ''}
     ${library.error ? `<p class="library-error" role="alert">${escape(library.error)}</p>` : ''}
+    ${search ? '' : crumbs(paths)}
     <div class="library-drop" data-library-drop>${!library.loaded && !library.error ? '<p class="library-empty">Loading files…</p>'
-      : assets.length || drafts.length ? `<ul class="library-grid">${drafts.map(draftMarkup).join('')}${assets.map(assetMarkup).join('')}</ul>`
-        : `<div class="library-empty">${icon(search ? 'search' : 'upload')}<p>${search ? 'No matching files' : 'No files yet'}</p><span>${search ? 'Try another search.' : archived() ? '' : 'Drop files here or choose Upload files.'}</span></div>`}</div>`;
+      : tiles.length || drafts.length ? `<ul class="library-grid">${drafts.map(draftMarkup).join('')}${tiles.join('')}</ul>`
+        : `<div class="library-empty">${icon(search ? 'search' : 'upload')}<p>${search ? 'No matching files or folders' : library.folder ? 'This folder is empty' : 'No files yet'}</p><span>${search ? 'Try another search.' : archived() ? '' : 'Drop files or folders here, or choose Upload.'}</span></div>`}</div>`;
 }
 
 // Uploads stream the File itself, so large files never load into memory.
 function send(entry) {
   const query = new URLSearchParams({ filename: entry.filename, operation: entry.operation });
+  if (entry.folderId) query.set('folder', entry.folderId);
   if (entry.collision) query.set('collision', entry.collision);
   if (entry.assetId) query.set('asset', entry.assetId);
   return new Promise((resolve) => {
@@ -112,7 +138,7 @@ function chooseCollision(conflict, holder, skip = 'Skip this file.') {
     smallForm({
       title: `A file named ${conflict.filename} already exists`,
       description: 'Library',
-      fields: `<fieldset class="collision-options"><legend class="sr-only">What to do with this upload</legend>${option('create', 'Create new', `Saves as ${conflict.suggested} · a separate file`, true)}${option('replace', 'Replace', holder ? `Saves v${holder.current.number + 1} of ${conflict.filename}; older versions are kept.` : 'The file with this name is still uploading.', false, !holder)}${option('cancel', 'Cancel', skip)}</fieldset>`,
+      fields: `<fieldset class="collision-options"><legend class="sr-only">What to do with this upload</legend>${option('create', 'Create new', `Saves as ${conflict.suggested} · a separate file`, true)}${option('replace', 'Replace', holder ? `Saves v${holder.current.number + 1} of ${conflict.filename}; older versions are kept.` : conflict.assetId ? 'The file with this name is still uploading.' : 'A folder has this name; only a file can be replaced.', false, !holder)}${option('cancel', 'Cancel', skip)}</fieldset>`,
       submit: 'Continue',
       onSubmit: (data) => { choice = data.get('collision'); },
     });
@@ -120,9 +146,18 @@ function chooseCollision(conflict, holder, skip = 'Skip this file.') {
   });
 }
 
+// Finds or creates a dropped folder path inside parentId; repeating it finds the same folders.
+const ensureFolderPath = async (projectId, parentId, names) => (await sendJSON('POST', `${base(projectId)}/folders/paths`, { parentId, names })).id;
 async function upload(entry) {
+  // A dropped folder's files land in the same folders, found or created once
+  // per path. A retry keeps the folder its first attempt chose.
+  if (entry.folderId === undefined) {
+    try { entry.folderId = entry.folderNames.length ? await ensureFolderPath(entry.projectId, entry.parentId, entry.folderNames) : entry.parentId; }
+    catch (error) { Object.assign(entry, { status: 'failed', error: error.message, retryable: !error.status || error.status >= 500 }); return; }
+    await load();
+  }
   // Asking before sending avoids streaming a large file only to be refused.
-  let conflict = !entry.collision && nameConflict(entry.filename, library.assets);
+  let conflict = !entry.collision && nameConflict(entry.filename, folderHolders(library, entry.folderId));
   for (;;) {
     if (conflict) {
       entry.status = 'waiting'; paint();
@@ -159,17 +194,52 @@ const enqueue = (entries) => {
   });
   return uploading;
 };
-export function uploadLibraryFiles(files) {
+// Items carry a path relative to the open folder ("Thumbnails/refs/a.png").
+// Each file publishes atomically with its own collision choice and retry;
+// dropped folders holding no files are still created.
+function uploadLibraryItems(items, folderPaths = []) {
   if (archived()) return toast('Unarchive this project to upload files.');
-  const projectId = library.projectId;
-  const entries = [...files].map((file) => {
-    const entry = { id: id(), file, projectId, operation: id(), status: 'waiting' };
-    try { entry.filename = libraryFilename(file.name); } catch (error) { Object.assign(entry, { status: 'failed', error: error.message }); }
+  const projectId = library.projectId; const parentId = library.folder;
+  const entries = items.map(({ file, path }) => {
+    const parts = path.split('/').filter(Boolean);
+    const entry = { id: id(), file, label: parts.join('/'), projectId, parentId, operation: id(), status: 'waiting' };
+    try { entry.filename = libraryFilename(parts.pop()); entry.folderNames = parts.map((name) => libraryFilename(name, 'folder')); }
+    catch (error) { Object.assign(entry, { status: 'failed', error: error.message }); }
     return entry;
   });
+  const empty = folderPaths.filter((folderPath) => !items.some((item) => item.path.startsWith(`${folderPath}/`)));
+  if (empty.length) {
+    uploading = uploading.then(async () => {
+      for (const folderPath of empty) {
+        try { await ensureFolderPath(projectId, parentId, folderPath.split('/')); }
+        catch (error) { toast(`${folderPath}: ${error.message}`); }
+      }
+      await load(); paint();
+    });
+  }
   library.uploads.push(...entries);
   paint();
   return enqueue(entries);
+}
+export const uploadLibraryFiles = (files) => uploadLibraryItems([...files].map((file) => ({ file, path: file.webkitRelativePath || file.name })));
+// Dropped folders are read recursively. Entries must be taken during the drop event.
+export function dropLibraryItems(dataTransfer, files) {
+  const entries = [...dataTransfer.items].map((item) => item.webkitGetAsEntry?.()).filter(Boolean);
+  if (!entries.some((entry) => entry.isDirectory)) return uploadLibraryFiles(files);
+  const items = []; const folderPaths = [];
+  const walk = async (entry, prefix) => {
+    if (entry.isFile) { items.push({ file: await new Promise((resolve, reject) => entry.file(resolve, reject)), path: prefix + entry.name }); return; }
+    folderPaths.push(prefix + entry.name);
+    const reader = entry.createReader();
+    for (let batch; (batch = await new Promise((resolve, reject) => reader.readEntries(resolve, reject))).length;) {
+      for (const child of batch) await walk(child, `${prefix}${entry.name}/`);
+    }
+  };
+  return (async () => {
+    try { for (const entry of entries) await walk(entry, ''); }
+    catch (error) { return toast(`Could not read the dropped folder. ${error.message}`); }
+    return uploadLibraryItems(items, folderPaths);
+  })();
 }
 
 async function preview(asset) {
@@ -199,17 +269,70 @@ function versionMarkup(version) {
 }
 async function inspect(assetId) {
   try { inspected = await request(`${base()}/assets/${encodeURIComponent(assetId)}`); } catch (error) { inspected = null; return toast(error.message); }
-  const asset = inspected; const draft = draftFor(asset);
+  const asset = inspected; const draft = draftFor(asset); const removed = Boolean(asset.removedAt);
+  const location = removed ? 'Removed from the Library. Every version is kept.' : libraryPaths(library).folders.get(asset.folderId) || 'Library';
   dialog.innerHTML = `<div class="library-inspector"><div class="small-dialog-header"><h2 id="library-heading">${escape(asset.filename)}</h2>${iconButton('library-close', 'Close file details', 'close')}</div>
+    <p class="library-location">${removed ? '<span class="library-badge danger">Removed</span> ' : ''}${escape(location)}</p>
     <p class="library-preview-label">Saved v${asset.current.number}${draft ? ' · <span class="library-badge draft">Unsaved draft</span> Prompts and downloads use the saved version until you save the draft.' : ''}</p>
     <div id="library-preview" class="library-preview"></div>
-    <div class="library-actions">${asset.current.available ? `<a class="button primary" href="${contentURL(asset.current.id)}" download>${icon('download')}Download v${asset.current.number}</a>` : ''}${editable(asset) && (draft || !archived()) ? button(draft ? 'library-edit-draft' : 'library-edit', draft ? 'Continue draft' : 'Edit', 'edit', 'button secondary', draft ? `data-id="${escape(draft.id)}"` : `data-id="${escape(asset.id)}"`) : ''}${archived() ? '' : `<label class="button secondary">${icon('upload')}Replace…<input type="file" id="library-replace" hidden></label>`}</div>
+    <div class="library-actions">${asset.current.available ? `<a class="button primary" href="${contentURL(asset.current.id)}" download>${icon('download')}Download v${asset.current.number}</a>` : ''}${!removed && editable(asset) && (draft || !archived()) ? button(draft ? 'library-edit-draft' : 'library-edit', draft ? 'Continue draft' : 'Edit', 'edit', 'button secondary', draft ? `data-id="${escape(draft.id)}"` : `data-id="${escape(asset.id)}"`) : ''}${archived() || removed ? '' : `<label class="button secondary">${icon('upload')}Replace…<input type="file" id="library-replace" hidden></label>`}</div>
     <h3 class="library-versions-heading">Versions</h3><ul class="library-versions">${asset.versions.map(versionMarkup).join('')}</ul></div>`;
   if (!dialog.open) dialog.showModal();
   void preview(asset);
 }
 async function refreshInspected() {
   if (dialog.open && inspected) await inspect(inspected.id);
+}
+
+// Removed files stay inspectable and downloadable, but are never offered again.
+async function showRemoved() {
+  let assets;
+  try { ({ assets } = await request(`${base()}/removed`)); } catch (error) { return toast(error.message); }
+  inspected = null;
+  dialog.innerHTML = `<div class="library-inspector"><div class="small-dialog-header"><h2 id="library-heading">Removed files</h2>${iconButton('library-close', 'Close removed files', 'close')}</div>
+    <p class="library-location">Removed files are kept with every version, and work already queued keeps what it captured. They are never offered again.</p>
+    ${assets.length ? `<ul class="library-versions">${assets.map((asset) => `<li class="library-version"><div><strong>${escape(asset.path)}</strong><small>${asset.versionCount} ${asset.versionCount === 1 ? 'version' : 'versions'} · removed ${escape(savedAt(asset.removedAt))}</small></div>
+      <div class="library-version-actions">${button('library-inspect', 'Inspect', null, 'button small secondary', `data-id="${escape(asset.id)}"`)}</div></li>`).join('')}</ul>` : '<p class="library-preview-note">No removed files.</p>'}</div>`;
+  if (!dialog.open) dialog.showModal();
+}
+
+const nameInput = (label, value = '') => `<label class="form-label" for="name-input">${label}</label><input class="form-input" id="name-input" name="name" value="${escape(value)}" maxlength="255" required autocomplete="off">`;
+const reload = async () => { await load(); paint(); };
+function newFolder() {
+  const parentId = library.folder;
+  smallForm({ title: 'New folder', description: `Inside ${libraryPaths(library).folders.get(parentId) || 'Library'}`, fields: nameInput('Folder name'), submit: 'Create folder',
+    onSubmit: async (data) => { await sendJSON('POST', `${base()}/folders`, { name: data.get('name'), parentId }); await reload(); } });
+}
+const libraryItem = (kind, itemId) => (kind === 'folder' ? library.folders : library.assets).find((entry) => entry.id === itemId);
+// Rename and move in one form; a name taken in the destination is refused, never merged.
+function organize(kind, itemId) {
+  const folder = kind === 'folder'; const item = libraryItem(kind, itemId);
+  if (!item) return;
+  const paths = libraryPaths(library); const name = folder ? item.name : item.filename; const current = folder ? item.parentId : item.folderId;
+  // A folder cannot move into itself or anything inside it.
+  const targets = library.folders.filter((entry) => !folder || !paths.folders.get(entry.id).startsWith(paths.folders.get(item.id)))
+    .sort((a, b) => comparePaths(paths.folders.get(a.id), paths.folders.get(b.id)));
+  smallForm({
+    title: `Organize ${name}`, description: 'Renaming or moving keeps its identity and every version.',
+    fields: `${nameInput(folder ? 'Folder name' : 'Filename', name)}<label class="form-label" for="library-destination">Location</label><select class="form-input" id="library-destination" name="destination">
+      <option value="">Library</option>${targets.map((entry) => `<option value="${escape(entry.id)}" ${entry.id === current ? 'selected' : ''}>${escape(paths.folders.get(entry.id))}</option>`).join('')}</select>`,
+    submit: 'Save',
+    extra: button('library-remove', 'Remove…', 'trash', 'button secondary library-remove', `data-kind="${kind}" data-id="${escape(item.id)}"`),
+    onSubmit: async (data) => {
+      const destination = data.get('destination') || null;
+      await sendJSON('PATCH', `${base()}/${folder ? 'folders' : 'assets'}/${encodeURIComponent(item.id)}`, folder ? { name: data.get('name'), parentId: destination } : { filename: data.get('name'), folderId: destination });
+      await reload();
+    },
+  });
+}
+function remove(kind, itemId) {
+  const folder = kind === 'folder'; const item = libraryItem(kind, itemId);
+  if (!item) return;
+  smallForm({
+    title: `Remove ${folder ? item.name : item.filename}?`, submit: 'Remove', danger: true,
+    description: `${folder ? 'This folder and everything in it will' : 'This file will'} no longer be offered for new work. Every version stays retained, and work already queued keeps what it captured. Remembered selections of ${folder ? 'it' : 'this file'} need correcting.`,
+    onSubmit: async () => { await sendJSON('DELETE', `${base()}/${folder ? 'folders' : 'assets'}/${encodeURIComponent(item.id)}`); await reload(); },
+  });
 }
 
 document.addEventListener('click', async (event) => {
@@ -225,6 +348,11 @@ document.addEventListener('click', async (event) => {
   if (action === 'library-discard-draft') discardDraft();
   if (action === 'library-keep-mine') void keepMine();
   if (action === 'library-load-theirs') void loadTheirs();
+  if (action === 'library-open-folder') { library.folder = target.dataset.id || null; library.query = ''; paint(); }
+  if (action === 'library-new-folder') newFolder();
+  if (action === 'library-manage') organize(target.dataset.kind, target.dataset.id);
+  if (action === 'library-remove') remove(target.dataset.kind, target.dataset.id);
+  if (action === 'library-removed') void showRemoved();
   if (action === 'library-clear-uploads') { library.uploads = library.uploads.filter((entry) => ['waiting', 'uploading'].includes(entry.status)); paint(); }
   if (action === 'library-retry-upload') {
     const entry = library.uploads.find((item) => item.id === target.dataset.id);
@@ -239,11 +367,11 @@ document.addEventListener('click', async (event) => {
 });
 document.addEventListener('change', async (event) => {
   const target = event.target;
-  if (target.id === 'library-files') { void uploadLibraryFiles(target.files); target.value = ''; }
+  if (target.id === 'library-files' || target.id === 'library-folder-files') { void uploadLibraryFiles(target.files); target.value = ''; }
   if (target.id === 'library-replace' && target.files[0] && inspected) {
     // Replace keeps this file's name and identity; the chosen file's own name is not used.
     const asset = inspected;
-    const entry = { id: id(), file: target.files[0], projectId: library.projectId, operation: id(), status: 'waiting', filename: asset.filename, collision: 'replace', assetId: asset.id };
+    const entry = { id: id(), file: target.files[0], label: asset.filename, projectId: library.projectId, operation: id(), status: 'waiting', filename: asset.filename, folderId: asset.folderId, collision: 'replace', assetId: asset.id };
     target.value = '';
     dialog.close();
     library.uploads.push(entry); paint();
@@ -274,7 +402,7 @@ dialog.addEventListener('keydown', (event) => {
 
 // Another tab changed this project's Library.
 export function libraryActivity(entry) {
-  if (!['asset', 'library_draft'].includes(entry.entity) || entry.projectId !== library.projectId) return;
+  if (!['asset', 'folder', 'library_draft'].includes(entry.entity) || entry.projectId !== library.projectId) return;
   void load().then(() => { paint(); });
 }
 export const hasLibraryUploads = () => library.uploads.some((entry) => ['waiting', 'uploading'].includes(entry.status)) || Boolean(editing && (editing.timer || editing.writing));
@@ -284,7 +412,8 @@ export const hasLibraryUploads = () => library.uploads.some((entry) => ['waiting
 // The editor keeps a draft on the server as the user types (app data, included
 // in backups). Save publishes exactly that kept text as a new retained version.
 const draftURL = (draftId) => `${base()}/drafts${draftId ? `/${encodeURIComponent(draftId)}` : ''}`;
-const availableName = (name) => nameConflict(name, [...library.assets, ...library.drafts])?.suggested ?? name;
+// New documents are saved at the Library root.
+const availableName = (name) => nameConflict(name, [...folderHolders(library, null), ...library.drafts])?.suggested ?? name;
 async function call(method, url, body) {
   const response = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: body && JSON.stringify(body) }).catch(() => null);
   if (!response) return { status: 0, body: { error: 'Frameboard could not be reached. Your draft is still here; try again.' } };
@@ -383,7 +512,7 @@ async function saveDraft(options = {}) {
   let choice = options.collision ? { collision: options.collision, asset: options.asset } : {};
   if (!asset && !options.collision) {
     await load();
-    const conflict = nameConflict(current.draft.filename, library.assets);
+    const conflict = nameConflict(current.draft.filename, folderHolders(library, null));
     if (conflict) {
       const collision = await chooseCollision(conflict, library.assets.find((entry) => entry.id === conflict.assetId), 'Keep editing the draft.');
       if (collision === 'cancel') return;

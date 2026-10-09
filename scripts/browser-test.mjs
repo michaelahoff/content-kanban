@@ -786,9 +786,89 @@ These values apply when a card enters this lane.
   await click('[data-action="library-close"]');
   await waitFor(`document.querySelectorAll('.library-asset').length === 6`);
   console.log('PASS Library documents keep drafts across reload, save explicit versions and keep saved content apart from drafts');
+
+  // Folders: create one, drop a nested folder with per-file collisions, search
+  // whole paths, rename and move without merging, and remove recursively.
+  await evaluate(`document.querySelector('[data-action="library-clear-uploads"]')?.click()`);
+  await click('[data-action="library-new-folder"]');
+  await waitFor(`document.querySelector('#form-heading')?.textContent === 'New folder'`);
+  await fill('#name-input', 'Thumbnails');
+  await click('#small-form [type="submit"]');
+  await waitFor(`!!document.querySelector('.library-folder[aria-label="Open folder Thumbnails"]')`);
+  await click('.library-folder[aria-label="Open folder Thumbnails"]');
+  await waitFor(`document.querySelector('.library-empty')?.textContent.includes('This folder is empty')`);
+  // Directory entries as a browser's drop provides them, read by the app's own drop handler.
+  const dropFolder = (tree) => evaluate(`(async () => {
+    const { dropLibraryItems } = await import('/library.js');
+    const entry = (name, node) => typeof node === 'string'
+      ? { isFile: true, isDirectory: false, name, file: (resolve) => resolve(new File([node], name)) }
+      : { isFile: false, isDirectory: true, name, createReader: () => { let read = false; return { readEntries: (resolve) => { resolve(read ? [] : Object.entries(node).map(([child, value]) => entry(child, value))); read = true; } }; } };
+    dropLibraryItems({ items: Object.entries(${JSON.stringify(tree)}).map(([name, node]) => ({ webkitGetAsEntry: () => entry(name, node) })) }, []);
+  })()`);
+  const tree = { refs: { 'logo.png': 'dropped logo', deep: { 'note.md': '# Note' }, empty: {} } };
+  await dropFolder(tree);
+  await waitFor(`document.querySelectorAll('.library-upload.saved').length === 2 && !!document.querySelector('.library-folder[aria-label="Open folder refs"]')`);
+  assert.deepEqual(await evaluate(`[...document.querySelectorAll('.library-upload-name')].map(node => node.textContent)`), ['refs/logo.png', 'refs/deep/note.md']);
+  await click('.library-folder[aria-label="Open folder refs"]');
+  await waitFor(`document.querySelectorAll('.library-asset').length === 3`);
+  assert.deepEqual(await libraryNames(), ['deep', 'empty', 'logo.png'], 'the empty directory is a folder too');
+  assert.deepEqual(await evaluate(`[...document.querySelectorAll('.library-crumb')].map(node => node.textContent)`), ['Library', 'Thumbnails', 'refs']);
+  // Dropping the same folder again into Thumbnails merges into refs, asking per file.
+  await click('[data-action="library-clear-uploads"]');
+  await click('.library-crumb:nth-of-type(2)');
+  await waitFor(`!!document.querySelector('.library-folder[aria-label="Open folder refs"]')`);
+  await dropFolder(tree);
+  await waitFor(`document.querySelector('#form-heading')?.textContent === 'A file named logo.png already exists'`);
+  assert.equal(await evaluate(`document.querySelector('input[name="collision"]:checked').value`), 'create');
+  await click('#small-form [type="submit"]');
+  await waitFor(`document.querySelector('#form-heading')?.textContent === 'A file named note.md already exists' && document.querySelector('#form-dialog').open`);
+  await click('input[name="collision"][value="cancel"]');
+  await click('#small-form [type="submit"]');
+  await waitFor(`[...document.querySelectorAll('.library-upload-state')].map(node => node.textContent).join() === 'Saved as logo (1).png,Cancelled'`);
+  assert.equal(await evaluate(`document.querySelectorAll('.library-folder').length`), 1, 'no duplicate refs folder');
+  await click('.library-folder[aria-label="Open folder refs"]');
+  await waitFor(`document.querySelectorAll('.library-asset').length === 4`);
+
+  await fill('#library-search', 'note');
+  await waitFor(`document.querySelectorAll('.library-asset').length === 1`);
+  assert.match(await evaluate(`document.querySelector('.library-asset .library-meta').textContent`), /^Thumbnails\/refs\/deep\/ · v1/);
+  await fill('#library-search', '');
+  await waitFor(`document.querySelectorAll('.library-asset').length === 4`);
+
+  await click('.library-manage[aria-label="Manage logo (1).png"]');
+  await waitFor(`document.querySelector('#form-heading')?.textContent === 'Organize logo (1).png'`);
+  await fill('#name-input', 'mark.png');
+  await evaluate(`document.querySelector('#library-destination').value = ''`);
+  await click('#small-form [type="submit"]');
+  await waitFor(`!document.querySelector('#form-dialog').open && document.querySelectorAll('.library-asset').length === 3`);
+  await click('.library-crumb[data-id=""]');
+  await waitFor(`!!document.querySelector('.library-asset[aria-label="Inspect mark.png"]')`);
+  await click('.library-manage[aria-label="Manage mark.png"]');
+  await waitFor(`document.querySelector('#form-heading')?.textContent === 'Organize mark.png'`);
+  await fill('#name-input', 'logo.png');
+  await click('#small-form [type="submit"]');
+  await waitFor(`document.querySelector('#toast').textContent.includes('already contains logo.png')`);
+  assert.ok(await evaluate(`document.querySelector('#form-dialog').open`), 'a taken name keeps the form open');
+  await click('#small-form [data-action="library-remove"]');
+  await waitFor(`document.querySelector('#form-heading')?.textContent === 'Remove mark.png?'`);
+  await click('[data-action="close-form"]');
+
+  await click('.library-manage[aria-label="Manage Thumbnails"]');
+  await waitFor(`document.querySelector('#form-heading')?.textContent === 'Organize Thumbnails'`);
+  await click('#small-form [data-action="library-remove"]');
+  await waitFor(`document.querySelector('#form-heading')?.textContent === 'Remove Thumbnails?'`);
+  await click('#small-form [type="submit"]');
+  await waitFor(`!document.querySelector('.library-folder[aria-label="Open folder Thumbnails"]')`);
+  await click('[data-action="library-removed"]');
+  await waitFor(`document.querySelector('#library-heading')?.textContent === 'Removed files'`);
+  assert.deepEqual((await evaluate(`[...document.querySelectorAll('#library-dialog .library-version strong')].map(node => node.textContent)`)).sort(), ['Thumbnails/refs/deep/note.md', 'Thumbnails/refs/logo.png']);
+  await click('#library-dialog [data-action="library-inspect"]');
+  await waitFor(`document.querySelector('.library-location .library-badge')?.textContent === 'Removed' && !document.querySelector('#library-replace')`);
+  await click('[data-action="library-close"]');
+  await snapshot('library-folders');
   await click('[data-action="show-board"]');
   await waitFor(`!!document.querySelector('#board .lane')`);
-  console.log('PASS Library tab uploads files, shows thumbnails, resolves collisions explicitly and downloads exact versions');
+  console.log('PASS Library tab uploads files and folders, resolves collisions explicitly, organizes and removes without losing history, and downloads exact versions');
 
   await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
   assert.ok(await evaluate(`document.documentElement.scrollWidth <= innerWidth`));

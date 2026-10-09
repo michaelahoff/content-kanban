@@ -79,6 +79,14 @@ A project's collection of project assets, shown in its Library tab beside the bo
 An uploaded file or explicitly saved document with a stable identity owned by exactly one project. Its filename is a label, not a path; matching names or bytes never merge two assets. Uploading over a taken name requires choosing Create new, Replace or Cancel.
 _Avoid_: Attachment, upload
 
+**Asset folder**:
+A nested folder in a Project Library with its own stable identity. A name is unique among a folder's live files and subfolders, and different folders may hold the same filename. Renaming or moving a folder or asset keeps its identity and every version.
+_Avoid_: Directory, path
+
+**Asset removal**:
+Hiding a project asset, or a folder and everything in it, from future selection while keeping every version, historical use and queued reference. A remembered selection of a removed source stays unresolved, even when a new source takes its old name; it is never revived or substituted.
+_Avoid_: Deletion
+
 **Asset version**:
 One immutable retained content of a project asset. Replace adds a new current version and keeps the older ones. A version whose bytes are missing or damaged is unavailable until repaired with its exact original bytes; it is never silently replaced by other content.
 

@@ -6,6 +6,7 @@ export function dropChatSchema(db) {
     DROP TABLE library_drafts;
     DROP TABLE retained_versions;
     DROP TABLE retained_objects;
+    DROP TABLE library_folders;
     DROP TABLE lane_runs;
     DROP TABLE provider_catalogs;
     DROP TABLE chat_outputs;

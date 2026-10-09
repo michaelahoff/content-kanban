@@ -1,6 +1,6 @@
 // The project Library: uploaded files with stable asset identities and
 // immutable versions. Bytes live in retained storage; names are labels.
-import { libraryFilename, nameConflict } from './public/library-format.js';
+import { availableFilename, comparePaths, libraryFilename, nameConflict } from './public/library-format.js';
 import { libraryKinds } from './store-retained.js';
 import { createHash } from 'node:crypto';
 
@@ -21,9 +21,38 @@ export function createLibrary({ retained, metadata, drafts, project, record }) {
     available: version.available, error: version.error, committedAt: version.committedAt, number: index + 1, written: version.provenance.method === 'document' }));
   function assetFrom(ctx, row) {
     const versions = numbered(metadata.history(ctx, row.id));
-    return { id: row.id, projectId: row.project_id, filename: row.filename, kind: row.kind, createdAt: row.created_at,
+    return { id: row.id, projectId: row.project_id, filename: row.filename, folderId: row.folder_id, kind: row.kind, createdAt: row.created_at, removedAt: row.removed_at,
       current: versions.find((version) => version.id === row.current_version_id) ?? null, versionCount: versions.length };
   }
+  const folderFrom = (row) => ({ id: row.id, name: row.name, parentId: row.parent_id, createdAt: row.created_at });
+  // A live folder of this project.
+  function liveFolder(ctx, projectId, folderId) {
+    const row = typeof folderId === 'string' && metadata.folder(ctx, folderId);
+    if (!row || row.project_id !== projectId || row.removed_at) fail(404, 'This Library folder does not exist.');
+    return row;
+  }
+  // Where something is placed: a live folder, or null for the Library root.
+  const destination = (ctx, projectId, folderId) => folderId === null ? null : liveFolder(ctx, projectId, folderId);
+  // A committed Library source of this project; removed ones only for reading.
+  function libraryAsset(ctx, projectId, assetId, { allowRemoved = false } = {}) {
+    const row = typeof assetId === 'string' && metadata.object(ctx, assetId);
+    if (!row || row.project_id !== projectId || !libraryKinds.includes(row.kind) || (row.removed_at && !allowRemoved) || !row.current_version_id) fail(404, 'This Library file does not exist.');
+    return row;
+  }
+  // Names are unique among a folder's live files and subfolders, never merged.
+  function requireFreeName(ctx, projectId, folderId, name, selfId) {
+    if (metadata.names(ctx, projectId, folderId).some((entry) => entry.filename === name && entry.id !== selfId)) fail(409, `This folder already contains ${name}. Choose another name.`);
+  }
+  // A folder and its ancestors, from the root down, including removed folders.
+  function chain(ctx, folderId) {
+    const folders = [];
+    for (let folder = folderId && metadata.folder(ctx, folderId); folder; folder = folder.parent_id && metadata.folder(ctx, folder.parent_id)) folders.unshift(folder);
+    return folders;
+  }
+  // Folder labels, e.g. "Thumbnails/References/".
+  const labels = (folders) => folders.map((folder) => `${folder.name}/`).join('');
+  const folderPath = (ctx, folderId) => labels(chain(ctx, folderId));
+  const has = (input, key) => Object.hasOwn(input ?? {}, key);
   const numberedVersion = (ctx, version) => numbered(metadata.history(ctx, version.objectId)).find((entry) => entry.id === version.id);
   function owned(ctx, projectId, versionId) {
     const version = metadata.version(ctx, versionId);
@@ -32,11 +61,6 @@ export function createLibrary({ retained, metadata, drafts, project, record }) {
     return { version, source };
   }
 
-  const live = (ctx, projectId, assetId) => {
-    const row = metadata.object(ctx, assetId);
-    if (!row || row.project_id !== projectId || !libraryKinds.includes(row.kind) || row.removed_at || !row.current_version_id) fail(404, 'This Library file does not exist.');
-    return row;
-  };
   // A Save that committed but crashed before finishing its draft is finished here.
   function settle(ctx, projectId) {
     for (const draft of drafts.list(ctx, projectId)) {
@@ -44,46 +68,178 @@ export function createLibrary({ retained, metadata, drafts, project, record }) {
       if (saved?.state === 'committed') drafts.afterSave(ctx, projectId, draft.id, saved.provenance.revision, saved);
     }
   }
-  // Where a publication lands: a new asset, or by explicit choice a new version
-  // of the asset holding its name. A retry repeats its operation's original
-  // choice exactly; a saved operation is reported again without new bytes.
-  function placement(ctx, projectId, { filename, collision = null, assetId, operationId, method, prior = metadata.operation(ctx, operationId) }) {
+  // Where a publication lands in a folder (null: the root): a new asset, or by
+  // explicit choice a new version of the asset holding its name there. A retry
+  // repeats its operation's original choice exactly: a saved one is reported
+  // again without new bytes, and an unfinished one follows its file wherever
+  // it has moved since.
+  function placement(ctx, projectId, { filename, folderId = null, collision = null, assetId, operationId, method, prior = metadata.operation(ctx, operationId) }) {
     if (![null, 'create', 'replace'].includes(collision)) fail(400, 'Choose Create new or Replace for a name collision.');
-    const taken = metadata.names(ctx, projectId);
-    const holder = taken.find((entry) => entry.filename === filename);
-    const conflict = nameConflict(filename, taken);
     const outcome = collision === 'replace' ? 'replaced' : 'created';
     if (prior) {
       const source = metadata.object(ctx, prior.objectId);
-      if (source.project_id !== projectId || prior.provenance.method !== method || prior.provenance.requestedFilename !== filename
+      if (source.project_id !== projectId || prior.provenance.method !== method || prior.provenance.requestedFilename !== filename || (prior.provenance.folderId ?? null) !== folderId
         || prior.provenance.collision !== collision || (collision === 'replace' && source.id !== assetId)) fail(409, `This ${method === 'upload' ? 'upload' : 'save'} was started for a different file. ${method === 'upload' ? 'Upload it' : 'Save'} again.`);
-      if (prior.state !== 'committed' && taken.some((entry) => entry.filename === prior.filename && entry.id !== source.id)) fail(409, `Another file is named ${prior.filename} now. ${method === 'upload' ? `Upload ${filename}` : 'Save'} again to choose.`);
-      return { prior, outcome, descriptor: { ...(collision === 'replace' ? { objectId: source.id } : {}), kind: source.kind, filename: prior.filename } };
+      const descriptor = { ...(collision === 'replace' ? { objectId: source.id } : {}), kind: source.kind, filename: prior.filename };
+      if (prior.state !== 'committed' && source.removed_at) fail(409, `${source.filename} was removed. ${method === 'upload' ? `Upload ${filename}` : 'Save'} again as a new file.`);
+      // An interrupted first publication's name, perhaps a Create new suffix, may have been taken since.
+      if (prior.state !== 'committed' && !descriptor.objectId && metadata.names(ctx, projectId, source.folder_id).some((entry) => entry.filename === prior.filename && entry.id !== source.id)) {
+        fail(409, `Another file is named ${prior.filename} now. ${method === 'upload' ? `Upload ${filename}` : 'Save'} again to choose.`);
+      }
+      return { prior, outcome, descriptor };
     }
+    destination(ctx, projectId, folderId);
+    const taken = metadata.names(ctx, projectId, folderId);
+    const holder = taken.find((entry) => entry.filename === filename);
+    const conflict = nameConflict(filename, taken);
     if (collision === 'replace') {
       if (!holder?.committed || holder.id !== assetId) fail(409, holder ? `Another file is named ${filename} now. Choose again.` : `No file is named ${filename} any more. Save it as a new file.`, { conflict });
       return { outcome, descriptor: { objectId: holder.id, kind: metadata.object(ctx, holder.id).kind, filename } };
     }
     if (holder && collision !== 'create') fail(409, `A file named ${filename} already exists.`, { conflict });
-    return { outcome, descriptor: { kind: method === 'upload' ? 'asset' : 'document', filename: conflict?.suggested ?? filename } };
+    return { outcome, descriptor: { kind: method === 'upload' ? 'asset' : 'document', filename: conflict?.suggested ?? filename, folderId } };
   }
 
   return {
     list(ctx, projectId) {
       project(ctx, projectId, { allowArchived: true });
       settle(ctx, projectId);
-      return { assets: metadata.sources(ctx, projectId).map((row) => assetFrom(ctx, row)),
+      return { folders: metadata.folders(ctx, projectId).map(folderFrom), assets: metadata.sources(ctx, projectId).map((row) => assetFrom(ctx, row)),
         drafts: drafts.list(ctx, projectId).map(({ text, ...draft }) => ({ ...draft, length: text.length })) };
     },
-    // Collisions are folder-local (the Library root, for now). Without an
-    // explicit Create new or Replace choice, a taken name is refused unread.
+    createFolder(ctx, projectId, input) {
+      return metadata.transaction(() => {
+        project(ctx, projectId);
+        const name = libraryFilename(input?.name, 'folder'); const parentId = input.parentId ?? null;
+        destination(ctx, projectId, parentId);
+        requireFreeName(ctx, projectId, parentId, name);
+        const folder = folderFrom(metadata.createFolder(ctx, { projectId, parentId, name }));
+        record(ctx, 'folder_created', folder.id, projectId, { name, parentId }, 'folder');
+        return folder;
+      });
+    },
+    // A dropped folder's path: each live same-named folder is reused, so a
+    // retry finds the same folders. A file holding a name gets the first
+    // suffixed folder name no file holds ("refs (1)").
+    ensureFolders(ctx, projectId, input) {
+      return metadata.transaction(() => {
+        project(ctx, projectId);
+        if (!Array.isArray(input?.names) || !input.names.length) fail(400, 'Name the folders to create.');
+        const names = input.names.map((name) => libraryFilename(name, 'folder'));
+        let folder = destination(ctx, projectId, input.parentId ?? null);
+        for (const wanted of names) {
+          const parentId = folder?.id ?? null; const taken = metadata.names(ctx, projectId, parentId);
+          const files = taken.filter((entry) => entry.kind === 'asset').map((entry) => entry.filename);
+          const name = availableFilename(wanted, files, { extension: false });
+          const found = taken.find((entry) => entry.kind === 'folder' && entry.filename === name);
+          if (found) { folder = metadata.folder(ctx, found.id); continue; }
+          folder = metadata.createFolder(ctx, { projectId, parentId, name });
+          record(ctx, 'folder_created', folder.id, projectId, { name, parentId }, 'folder');
+        }
+        return folderFrom(folder);
+      });
+    },
+    // Rename and move keep the asset's identity and every version.
+    updateAsset(ctx, projectId, assetId, input) {
+      return metadata.transaction(() => {
+        project(ctx, projectId);
+        const row = libraryAsset(ctx, projectId, assetId);
+        const filename = has(input, 'filename') ? libraryFilename(input.filename) : row.filename;
+        const folderId = has(input, 'folderId') ? input.folderId ?? null : row.folder_id;
+        destination(ctx, projectId, folderId);
+        requireFreeName(ctx, projectId, folderId, filename, row.id);
+        metadata.relocateAsset(ctx, row.id, { filename, folderId });
+        record(ctx, folderId === row.folder_id ? 'asset_renamed' : 'asset_moved', row.id, projectId, { filename, folderId, from: { filename: row.filename, folderId: row.folder_id } });
+        return assetFrom(ctx, metadata.object(ctx, row.id));
+      });
+    },
+    // A folder moves with its contents, but never into itself or below.
+    updateFolder(ctx, projectId, folderId, input) {
+      return metadata.transaction(() => {
+        project(ctx, projectId);
+        const row = liveFolder(ctx, projectId, folderId);
+        const name = has(input, 'name') ? libraryFilename(input.name, 'folder') : row.name;
+        const parentId = has(input, 'parentId') ? input.parentId ?? null : row.parent_id;
+        destination(ctx, projectId, parentId);
+        if (chain(ctx, parentId).some((ancestor) => ancestor.id === row.id)) fail(409, 'A folder cannot move into itself.');
+        requireFreeName(ctx, projectId, parentId, name, row.id);
+        metadata.relocateFolder(ctx, row.id, { name, parentId });
+        record(ctx, parentId === row.parent_id ? 'folder_renamed' : 'folder_moved', row.id, projectId, { name, parentId, from: { name: row.name, parentId: row.parent_id } }, 'folder');
+        return folderFrom(metadata.folder(ctx, row.id));
+      });
+    },
+    // Removal hides a source from future choices; every version stays readable.
+    removeAsset(ctx, projectId, assetId) {
+      metadata.transaction(() => {
+        project(ctx, projectId);
+        const row = libraryAsset(ctx, projectId, assetId);
+        metadata.remove(ctx, row.id);
+        record(ctx, 'asset_removed', row.id, projectId, { filename: row.filename, folderId: row.folder_id });
+      });
+      return { ok: true };
+    },
+    removeFolder(ctx, projectId, folderId) {
+      metadata.transaction(() => {
+        project(ctx, projectId);
+        const row = liveFolder(ctx, projectId, folderId);
+        const assets = metadata.removeFolder(ctx, row.id);
+        record(ctx, 'folder_removed', row.id, projectId, { name: row.name, parentId: row.parent_id, assets }, 'folder');
+      });
+      return { ok: true };
+    },
+    removed(ctx, projectId) {
+      project(ctx, projectId, { allowArchived: true });
+      return { assets: metadata.removed(ctx, projectId).map((row) => ({ ...assetFrom(ctx, row), path: folderPath(ctx, row.folder_id) + row.filename })) };
+    },
+    // Remembered asset/folder IDs resolve to current versions and live folder
+    // membership. Folders expand recursively in relative-path order; overlaps
+    // keep their first position and every selecting source. A removed, foreign
+    // or missing source stays unresolved: nothing substitutes by name.
+    resolve(ctx, projectId, sources) {
+      project(ctx, projectId);
+      if (!Array.isArray(sources) || sources.some((source) => !['asset', 'folder'].includes(source?.kind) || typeof source.id !== 'string')) fail(400, 'Select Library files and folders by ID.');
+      const live = metadata.sources(ctx, projectId);
+      // Each folder's chain is read once per resolution, however many sources share it.
+      const chains = new Map();
+      const chainOf = (folderId) => { if (!chains.has(folderId)) chains.set(folderId, chain(ctx, folderId)); return chains.get(folderId); };
+      const pathOf = (folderId) => labels(chainOf(folderId));
+      const resolved = []; const byId = new Map();
+      const include = (row, index, relativePath) => {
+        if (!byId.has(row.id)) {
+          const version = metadata.version(ctx, row.current_version_id);
+          byId.set(row.id, { id: row.id, versionId: version.id, filename: row.filename, path: pathOf(row.folder_id) + row.filename,
+            hash: version.hash, size: version.size, available: version.available, selectedBy: [] });
+          resolved.push(byId.get(row.id));
+        }
+        byId.get(row.id).selectedBy.push({ source: index, relativePath });
+      };
+      const status = sources.map((source, index) => {
+        const row = source.kind === 'asset' ? metadata.object(ctx, source.id) : metadata.folder(ctx, source.id);
+        if (!row || row.project_id !== projectId || (source.kind === 'asset' && (!libraryKinds.includes(row.kind) || !row.current_version_id))) return { ...source, status: 'missing' };
+        const path = source.kind === 'asset' ? pathOf(row.folder_id) + row.filename : pathOf(row.id);
+        if (row.removed_at) return { ...source, status: 'removed', path };
+        if (source.kind === 'asset') include(row, index, row.filename);
+        else {
+          const members = live.flatMap((asset) => {
+            const folders = chainOf(asset.folder_id); const at = folders.findIndex((folder) => folder.id === row.id);
+            return at < 0 ? [] : [{ row: asset, relativePath: labels(folders.slice(at + 1)) + asset.filename }];
+          }).sort((a, b) => comparePaths(a.relativePath, b.relativePath));
+          for (const member of members) include(member.row, index, member.relativePath);
+        }
+        return { ...source, status: 'resolved', path };
+      });
+      return { sources: status, assets: resolved };
+    },
+    // Collisions are folder-local. Without an explicit Create new or Replace
+    // choice, a taken name is refused unread.
     async upload(ctx, projectId, input, source, { signal } = {}) {
       project(ctx, projectId);
       const filename = libraryFilename(input?.filename);
-      const { prior, descriptor, outcome } = placement(ctx, projectId, { ...input, filename, method: 'upload' });
+      const folderId = input.folderId ?? null;
+      const { prior, descriptor, outcome } = placement(ctx, projectId, { ...input, filename, folderId, method: 'upload' });
       if (prior?.state === 'committed') return { outcome, asset: assetFrom(ctx, metadata.object(ctx, prior.objectId)), version: numberedVersion(ctx, prior) };
       const version = await retained.publish(ctx, { operationId: input.operationId, projectId, ...descriptor,
-        provenance: { method: 'upload', requestedFilename: filename, collision: input.collision ?? null } }, source, { signal });
+        provenance: { method: 'upload', requestedFilename: filename, collision: input.collision ?? null, ...(folderId ? { folderId } : {}) } }, source, { signal });
       const asset = assetFrom(ctx, metadata.object(ctx, version.objectId));
       record(ctx, outcome === 'replaced' ? 'asset_replaced' : 'asset_uploaded', asset.id, projectId, { versionId: version.id, filename: asset.filename });
       return { outcome, asset, version: numberedVersion(ctx, version) };
@@ -98,7 +254,7 @@ export function createLibrary({ retained, metadata, drafts, project, record }) {
         record(ctx, 'draft_created', draft.id, projectId, { filename: draft.filename }, 'library_draft');
         return draft;
       }
-      const row = live(ctx, projectId, input.assetId);
+      const row = libraryAsset(ctx, projectId, input.assetId);
       const existing = () => drafts.forAsset(ctx, row.id);
       if (existing()) return existing();
       const current = metadata.version(ctx, row.current_version_id);
@@ -151,7 +307,7 @@ export function createLibrary({ retained, metadata, drafts, project, record }) {
       const bytes = Buffer.from(draft.text, 'utf8');
       let descriptor; let provenance;
       if (draft.assetId) {
-        const row = live(ctx, projectId, draft.assetId);
+        const row = libraryAsset(ctx, projectId, draft.assetId);
         const saved = metadata.version(ctx, row.current_version_id); const current = numberedVersion(ctx, saved);
         const base = input.baseVersionId ?? draft.baseVersionId;
         if (base !== current.id) fail(409, `v${current.number} of ${row.filename} was saved after this draft began.`, { conflict: { currentVersion: current } });
@@ -162,7 +318,8 @@ export function createLibrary({ retained, metadata, drafts, project, record }) {
         descriptor = { objectId: row.id, kind: row.kind, filename: row.filename };
         provenance = { method: 'document', draftId, revision: draft.revision, baseVersionId: base };
       } else {
-        ({ descriptor } = placement(ctx, projectId, { ...input, filename: draft.filename, method: 'document', prior }));
+        // New documents are saved at the Library root, then moved like any file.
+        ({ descriptor } = placement(ctx, projectId, { ...input, filename: draft.filename, folderId: null, method: 'document', prior }));
         provenance = { method: 'document', draftId, revision: draft.revision, requestedFilename: draft.filename, collision: input.collision ?? null };
       }
       drafts.saving(ctx, projectId, draftId, input.operationId);
@@ -184,8 +341,7 @@ export function createLibrary({ retained, metadata, drafts, project, record }) {
     },
     asset(ctx, projectId, assetId) {
       project(ctx, projectId, { allowArchived: true });
-      const row = metadata.object(ctx, assetId);
-      if (!row || row.project_id !== projectId || !libraryKinds.includes(row.kind) || row.removed_at || !row.current_version_id) fail(404, 'This Library file does not exist.');
+      const row = libraryAsset(ctx, projectId, assetId, { allowRemoved: true });
       const versions = numbered(metadata.history(ctx, row.id)).map((version) => ({ ...version, current: version.id === row.current_version_id }));
       return { ...assetFrom(ctx, row), versions: versions.reverse() };
     },
