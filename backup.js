@@ -1,6 +1,6 @@
 // Complete workspace export and restore. Every payload is streamed through
 // SHA-256 with a fixed buffer, so file size never determines memory use.
-import { mkdir, mkdtemp, readdir, rename, rm, lstat, stat, realpath, open, chmod } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rename, rm, lstat, realpath, open, chmod } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
@@ -24,6 +24,7 @@ const coverage = {
     'Card workspaces and hand-off notes (data/workspaces)', 'Project maps, lane playbooks and skills (data/flows)',
     'Already collected native Codex rollouts and generated images bound to card chats'],
   excluded: ['Global native credentials and configuration', 'Native conversations not bound to a card chat', 'The native Codex index',
+    'Native Claude session files, including bound ones (their card chat history is in the database)',
     'External service data', 'Unsaved editor text', 'Temporary retained publication staging',
     'Image outputs that were never saved; their native file is included only when collected from a bound conversation'],
 };
@@ -167,11 +168,14 @@ async function reclaimAbandonedStaging(output) {
     const owned = name.endsWith('.owner') ? name.slice(0, -6) : null;
     if (!stagingName.test(owned ?? name) || (!owned && !names.has(`${name}.owner`))) continue;
     const ownerFile = path.join(output, `${owned ?? name}.owner`);
+    // Another export sharing this folder may publish or clean up meanwhile.
+    const ownerInfo = await optional(ownerFile);
     // A lone owner file may belong to an export between its two creation steps.
-    if (owned && (names.has(owned) || Date.now() - (await stat(ownerFile)).mtimeMs < 60 * 60 * 1000)) continue;
-    const owner = holdExclusiveLock(ownerFile);
+    if (!ownerInfo || (owned && (names.has(owned) || Date.now() - ownerInfo.mtimeMs < 60 * 60 * 1000))) continue;
+    // An unreadable owner file is not proof of ownership; leave it alone.
+    let owner; try { owner = holdExclusiveLock(ownerFile); } catch { owner = null; }
     if (!owner) continue;
-    try { if (!owned && (await lstat(path.join(output, name))).isDirectory()) await rm(path.join(output, name), { recursive: true, force: true }); }
+    try { if (!owned && (await optional(path.join(output, name)))?.isDirectory()) await rm(path.join(output, name), { recursive: true, force: true }); }
     finally { owner.close(); await rm(ownerFile, { force: true }); }
   }
 }

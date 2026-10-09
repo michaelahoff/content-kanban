@@ -216,7 +216,7 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
         if (!/^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/.test(host)) return send(res, 403, { error: 'Use localhost to access this board.' });
         if (req.headers.origin && req.headers.origin !== `http://${host}`) return send(res, 403, { error: 'Cross-origin requests are not allowed.' });
         const url = new URL(req.url, `http://${host}`);
-        if (url.pathname.startsWith('/api/') && !url.pathname.startsWith('/api/maintenance') && !['GET', 'HEAD'].includes(req.method)) {
+        if (url.pathname.startsWith('/api/') && !/^\/api\/maintenance(\/(export|cancel))?$/.test(url.pathname) && !['GET', 'HEAD'].includes(req.method)) {
           if (maintenance.active && !finishesRunningWork(url.pathname)) return send(res, 503, { error: maintenanceMessage });
           // Maintenance drains writes in progress before it exports.
           res.once('close', maintenance.track());

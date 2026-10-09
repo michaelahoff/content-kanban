@@ -26,12 +26,11 @@ export function createMaintenance({ store, ctx, worker, lanes, settle, exportWor
       }
       job.phase = 'exporting';
       const result = await exportWorkspace({ dataDir, output: job.output, codexHome: await codexHome(), signal: job.controller.signal });
-      last = { status: 'completed', backupDir: result.backupDir, label: result.label, finishedAt: new Date().toISOString() };
+      last = { status: 'completed', backupDir: result.backupDir, label: result.label };
     } catch (error) {
-      last = job.controller.signal.aborted
-        ? { status: 'cancelled', error: 'Export cancelled. Nothing was published.', finishedAt: new Date().toISOString() }
-        : { status: 'failed', error: error.message, finishedAt: new Date().toISOString() };
+      last = job.controller.signal.aborted ? { status: 'cancelled', error: 'Export cancelled. Nothing was published.' } : { status: 'failed', error: error.message };
     } finally {
+      last.finishedAt = new Date().toISOString();
       current = null;
       worker.wake(); lanes.wake();
     }

@@ -30,7 +30,7 @@ Any failure, cancellation (`AbortSignal`) or ENOSPC/EDQUOT anywhere in the expor
 
 ### Inventory
 
-`inventory.retained` records version/object/project identity, kind, filename, base version, current/removed state, bundle path, size and hash. `inventory.outputs` records every chat image output: saved outputs point at their bundled `images/` version; unsaved outputs are marked `retained: false` with the bundled native file when it was collected from a bound conversation, otherwise `null`. A saved output whose image version is missing fails the export, so required retained content is never only a native-path pointer. `coverage` lists what is included and excluded: global native credentials/configuration, unrelated native conversations, the native index, external service data, unsaved editor text, temporary staging and never-saved outputs.
+`inventory.retained` records version/object/project identity, kind, filename, base version, current/removed state, bundle path, size and hash. `inventory.outputs` records every chat image output: saved outputs point at their bundled `images/` version; unsaved outputs are marked `retained: false` with the bundled native file when it was collected from a bound conversation, otherwise `null`. A saved output whose image version is missing fails the export, so required retained content is never only a native-path pointer. `coverage` lists what is included and excluded: global native credentials/configuration, unrelated native conversations, native Claude session files (their card chat history is in the database), the native index, external service data, unsaved editor text, temporary staging and never-saved outputs.
 
 ## Acceptance evidence
 
@@ -64,3 +64,9 @@ Two parallel review axes ran against `main...HEAD`.
   - Project maps are required coverage.
   - Maintenance remains an HTTP-plus-dispatch gate rather than a store-wide write freeze: freezing the store would drop late transcript history that the spec requires to be retained. The atomic database snapshot and the file rescan make any residual write a visible failure.
   - Accepting format 2 in the existing restore is kept deliberately, so the README's backup round trip keeps working; #51 owns restore holds and startup behaviour.
+
+A second round on both axes, run against `main...HEAD`, returned **PASS** on each, with no blocking findings. Its non-blocking notes were also addressed:
+- Reclaim tolerates another export publishing concurrently, and an unreadable `.owner` file.
+- The maintenance route gate uses an exact match.
+- The boundary exception names `inspectBackupDatabase`.
+- Coverage now lists native Claude session files as excluded.
