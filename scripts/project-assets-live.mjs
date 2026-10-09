@@ -115,10 +115,14 @@ try {
   const tools = chat.items.filter((item) => item.attemptId === attempt.id && item.kind !== 'agentMessage' && item.kind !== 'userMessage')
     .map((item) => ({ kind: item.kind, type: item.data?.type ?? null, command: item.data?.command ?? null }));
   const expected = { BRIEF: documentCode, LEFT: left, RIGHT: right, NOTES: gzipCode };
-    Object.assign(evidence, { harness: submission.configuration?.harness, protection: submission.configuration?.protection,
+  Object.assign(evidence, { harness: submission.configuration?.harness, protection: submission.configuration?.protection,
     configurationId: submission.configuration?.id, delivery: attempt.delivery, inputs: submission.context.library.map(({ filename, method, format, hash, size }) => ({ filename, method, format, hash, size })),
     expected, reply, tools });
-  const matches = (text) => Object.entries(expected).every(([key, value]) => new RegExp(`${key}=${value}\\b`, 'i').test(text));
+  // Each key must be reported exactly once, with exactly the expected value.
+  const matches = (text) => Object.entries(expected).every(([key, value]) => {
+    const reported = [...text.matchAll(new RegExp(`\\b${key}=([A-Za-z0-9]+)`, 'g'))].map(([, found]) => found.toLowerCase());
+    return reported.length === 1 && reported[0] === value.toLowerCase();
+  });
   assert.ok(matches(reply), `The card chat reply does not report every value: ${reply}`);
   console.log(`Card chat passed: the written document, both image colors and the gzip code (${tools.length} tool item${tools.length === 1 ? '' : 's'}).`);
 

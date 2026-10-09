@@ -177,7 +177,8 @@ test('active and archived projects with their whole asset history export under m
   await setPlaybook(f.ok, f.project.flowId, f.stage, { run: 'manual', model: 'test-model', may_edit: ['intro'], skills: ['voice'], assets: [`folder:${scripts.id}`, `asset:${guideAsset.id}`] }, 'Outline the episode.');
 
   // A completed Send whose reply is saved as a document and promoted.
-  const portrait = await (await f.raw('/api/images', { method: 'POST', headers: { 'Content-Type': 'image/png' }, body: png })).json();
+  const uploaded = await f.raw('/api/images', { method: 'POST', headers: { 'Content-Type': 'image/png' }, body: png });
+  const portrait = await uploaded.json(); assert.ok(uploaded.ok, JSON.stringify(portrait));
   const card = await f.card({ title: 'Episode 12', images: [{ id: portrait.id, name: 'Portrait' }] });
   const sent = await f.queue(card.id, await f.select(card.id, 'Outline it', { library: [{ kind: 'folder', id: scripts.id }] }));
   f.codex.finish(await f.nextSend(0), 'completed', outline);

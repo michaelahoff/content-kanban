@@ -12,7 +12,7 @@ One protected execution configuration is usable, and every unproven one is held 
 | Inherited Codex setup (ADR 0002) | **Enabled, explicit opt-in** | `test:native` shows a local hook and a stdio MCP server running inside the boundary without changing retained bytes. The live gate ran in this mode. Remote connectors (`codex_apps`) and remote plugins run at OpenAI, not on this machine, so they cannot write local retained data, but they can act outside Frameboard ([ADR 0004](../adr/0004-native-retained-data-boundary.md)). Nothing beyond the boundary itself was tested for them. |
 | Isolated Codex selection on a machine whose inherited MCP servers or plugins have unproven isolation | **Held before execution** | The live gate's first submission was held with no native turn; `codex-configuration.test.js` |
 | Full text and authored Markdown, both providers | Codex enabled; Claude held | Live gate (Codex); `chat-library.test.js` (Claude transport, protection off) |
-| Supported raster images (PNG, JPEG, GIF, WebP) | Codex enabled; Claude held | Live gate (Codex); `chat-library.test.js` |
+| Supported raster images (PNG, JPEG, GIF, WebP) | Codex enabled; Claude held | Live gate (Codex): every image was delivered, but the model misread one half in 2 of 6 reads; `chat-library.test.js` |
 | Any other file (archives, PDFs, fonts, audio, video, opaque bytes, non-UTF-8 text) delivered as an exact workspace copy for Codex's shell tool | **Delivered to Codex with its shell tool** | The route is format-independent. Reading was proven for gzip (live, `zcat`) and tar (`test:native`). Whether Codex can extract, render or understand any other format depends on its tools and is not certified. A setup with `features.shell_tool = false` refuses the file by name. |
 | Every Claude model and setup | **Held**: no protected Claude configuration is proven ([ADR 0004](../adr/0004-native-retained-data-boundary.md)) | `release-workflows.test.js`: a Claude Send and a Claude lane run are held and no turn starts |
 | Claude PDF route | **Unavailable**: the passing live evidence was gathered outside protection | [Claude PDF delivery](claude-pdf-delivery.md); `claude-pdf-gate.test.js` |
@@ -57,11 +57,11 @@ The environment was Arch Linux x64, Node.js 22.17.1, Codex CLI 0.160.1, Claude C
 - `npm run test:native`: **15 passed, 0 failed**. Codex `gpt-6-luna` resolved to `gpt-5.6-luna` on the credential-free loopback peer, with 12 requests.
 - `npm run test:browser`: **all checks passed**.
 - `npm run test:retained-large`: 2,147,549,185 bytes passed import, materialization, independent copy, repair, restart and verified read. SHA-256 `62897f37…0780` matched. Peak RSS was **128.2 MiB**.
-- `npm run test:library-large` (run again after the review's changes, peak 178.6 MiB): a 2,147,549,185-byte **Matroska video**, recognized by its bytes, went through every step together with an authored document and a 512-byte file of every byte value (NULs and invalid UTF-8, no recognized format). The steps were HTTP upload and download, a Codex Send that delivered the document inline and both files as exact workspace copies, export, restore, a restored download, and fresh-context rebuilds of both deleted copies. SHA-256 `65da027c…48c4` matched. Peak RSS was **179.6 MiB**, below the asserted 256 MiB.
+- `npm run test:library-large`: a 2,147,549,185-byte **Matroska video**, recognized by its bytes, went through every step together with an authored document and a 512-byte file of every byte value (NULs and invalid UTF-8, no recognized format). The steps were HTTP upload and download, a Codex Send that delivered the document inline and both files as exact workspace copies, export, restore, a restored download, and fresh-context rebuilds of both deleted copies. SHA-256 `65da027c…48c4` matched. Peak RSS was **179.6 MiB**, below the asserted 256 MiB, and **178.6 MiB** when run again after the review's changes.
 - `npm run test:backup-large`: 2,147,549,185 bytes passed export, staged verification and restore. SHA-256 `0104cee8…8f8a` matched. Peak RSS was **129.3 MiB**.
 - `npm run test:retained-disk-full`: a real ENOSPC on an isolated 16 MiB tmpfs kept the prior version current and reclaimed staging. The retry then committed.
 - `npm run test:backup-disk-full`: a real ENOSPC during export kept the previous backup and published nothing. A real ENOSPC during restore activated nothing and kept the existing data. Both retries succeeded with matching hashes.
-- `FRAMEBOARD_LIVE_TEST=1 node --disable-warning=ExperimentalWarning scripts/project-assets-live.mjs`: **passed** for a card chat and a lane run. Details follow.
+- `FRAMEBOARD_LIVE_TEST=1 node --disable-warning=ExperimentalWarning scripts/project-assets-live.mjs`: **passed** for a card chat and a lane run at 15:53 UTC. A later run of the final script failed on one image color the model misread. Details follow.
 
 ### Signed-in Codex gate
 
@@ -85,7 +85,10 @@ Earlier runs are reported as they happened:
 1. The first version of the script treated the configuration hold as a failure. That hold is the expected behavior, and the script now records it.
 2. A run with a 64×32 image reported both codes and the left color correctly but named the right half yellow instead of green. The PNG was checked and is correct, and the probe image was enlarged.
 3. A card-chat-only run then passed (15:46 UTC).
-4. When the lane step was added, its first run (15:52 UTC) passed the card chat. The lane run completed, but its result block listed no `outputs`, so nothing was saved and the gate failed. Its reply was not captured. The gate now records the lane reply, and the next run passed.
+4. When the lane step was added, its first run (15:52 UTC) passed the card chat. The lane run completed, but Frameboard's parsed lane result recorded no `outputs` entry, so nothing was saved and the gate failed. The reply text was not captured, so whether the model omitted the entry or wrote one Frameboard could not parse is not known. The gate now records the lane reply, and the next run (15:53 UTC) passed.
+5. The review then made the check stricter: each key must appear exactly once with exactly its value. The recorded 15:53 texts (reply, notes and `values.md`) pass that check too. One more run on the final script (15:58 UTC) failed. The document and gzip codes and the left color were right, but the reply named the right half blue when it was red.
+
+Across the six image reads (five card chats and one lane run), the left half was named correctly every time and the right half four times out of six. Both wrong answers came on images whose left half was yellow. Every image was delivered `sent` as a native image, and the left half was always right, so delivery works. `gpt-6-luna`'s reading of this simple image is not fully reliable, which is why **sent** is never presented as read. The gate stays strict and can fail on a misread, and it was not rerun until it passed.
 
 These results show that the files were delivered and read for these three simple inputs on this account. They do not certify comprehension of complex or unusual formats, or that a model always follows the result-block instructions.
 
@@ -167,7 +170,7 @@ A run of the live gate saves the full-setup choice in its own temporary data dir
 
 ## Review
 
-Parallel code review (Standards and Spec axes) found no documented-standard breach and no missing requirement.
+Parallel code review (Standards and Spec axes). Standards found no documented-standard breach, only judgement calls and test or script defects. Spec found one evidence gap (no signed-in lane run) and several overstated claims, all listed below. A verification round passed on both axes. Its smaller notes are also fixed: an unchecked image upload status, a duplicated peak figure, and a live check that now requires each value to be reported exactly once.
 
 Fixed:
 - **Cleanup order.** Restored apps now close before their data and fixture directories are removed.
