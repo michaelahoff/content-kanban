@@ -65,6 +65,13 @@ export function inspectBackupDatabase(filename) {
       label: row.label, filename: row.filename, path: `retained/versions/${row.id}`, size: row.size, sha256: row.hash, current: Boolean(row.current), removed: Boolean(row.removed),
       baseVersionId: row.base_version_id })) : [];
     for (const version of retained) if (!/^[a-f0-9-]{36}$/.test(version.versionId) || !/^[a-f0-9]{64}$/.test(version.sha256 ?? '') || !Number.isSafeInteger(version.size)) throw new Error('The database contains an invalid retained version.');
+    // Frozen submissions name the exact Library versions they captured; each
+    // must be a retained committed version with the recorded hash and size.
+    const versions = new Map(retained.map((version) => [version.versionId, version]));
+    for (const row of db.prepare('SELECT id, frozen FROM chat_submissions').all()) for (const file of JSON.parse(row.frozen).context.library ?? []) {
+      const version = versions.get(file.versionId);
+      if (version?.sha256 !== file.hash || version.size !== file.size) throw new Error(`Submission ${row.id} references Library version ${file.versionId}, which is not retained with its recorded hash and size.`);
+    }
     const archived = db.prepare("SELECT name FROM pragma_table_info('projects') WHERE name = 'archived_at'").get() ? 'archived_at' : 'NULL';
     const projects = db.prepare(`SELECT id, name, flow_id, ${archived} AS archived_at, deleted_at FROM projects ORDER BY position, rowid`).all()
       .map((row) => ({ id: row.id, name: row.name, flowId: row.flow_id, archivedAt: row.archived_at, deletedAt: row.deleted_at }));
@@ -221,7 +228,10 @@ const migrations = [`
   ALTER TABLE chat_attempts ADD COLUMN revoked TEXT;
   ALTER TABLE chat_submissions ADD COLUMN revoked TEXT;
   UPDATE chat_attempts SET revoked = 'stopped' WHERE cause = 'user';
-`, libraryDraftsMigration];
+`, libraryDraftsMigration, `
+  -- What each delivery attempt actually did with a submission's inputs.
+  ALTER TABLE chat_attempts ADD COLUMN delivery TEXT;
+`];
 
 // The newest schema this version can open; restore refuses newer backups.
 export const supportedSchemaVersion = migrations.length;

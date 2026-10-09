@@ -183,7 +183,7 @@ export function createCodexAdapter({
       return {
         ...(retainedDataDir ? { protection: (await boundary()).snapshot } : {}),
         cwd: work, harness: { userAgent: harness.userAgent, codexHome: harness.codexHome },
-        models: models.filter((m) => !m.hidden).map((m) => ({ id: m.id, displayName: m.displayName, isDefault: m.isDefault })),
+        models: models.filter((m) => !m.hidden).map((m) => ({ id: m.id, displayName: m.displayName, isDefault: m.isDefault, ...(Array.isArray(m.inputModalities) ? { inputModalities: m.inputModalities } : {}) })),
         skills: skills.data.flatMap((entry) => entry.skills).map((s) => ({ id: s.path, name: s.name, description: s.description, scope: s.scope })),
         hooks: hooks.data.flatMap((entry) => entry.hooks), plugins: plugins.marketplaces.flatMap((entry) => entry.plugins),
         mcpServers, configuredMcpServers: Object.keys(config.config.mcp_servers ?? {}), requirements: requirements.requirements,

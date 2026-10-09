@@ -2,10 +2,13 @@ import { mkdir, readFile, writeFile, chmod, lstat, realpath, unlink } from 'node
 import path from 'node:path';
 import { configurationDiscovery, compileConfiguration } from './provider-configuration.js';
 import { cardTools } from './card-tools.js';
-import { nativeImageBytes, storeImage, readRegularFile, within, sha256 as hash, maxImageBytes } from './image-files.js';
+import { nativeImageBytes, storeImage, readRegularFile, within, sha256 as hash, maxImageBytes, imageFormat } from './image-files.js';
 import { referencePath } from './public/chat-context.js';
+import { sourceKey } from './public/library-format.js';
+import { planInputs } from './submission-inputs.js';
 
 const fail = (status, message) => { throw Object.assign(new Error(message), { status }); };
+const problemMessage = (problems) => `Not sent. ${problems.map((problem) => `${problem.label}: ${problem.reason}`).join(' ')}`;
 export function createChatService({ store, adapter, adapters = { codex: adapter }, providers, dataDir }) {
   const workspace = (cardId) => path.resolve(dataDir, 'workspaces', cardId);
   async function imageBytes(image) {
@@ -38,9 +41,36 @@ export function createChatService({ store, adapter, adapters = { codex: adapter 
       if (await realpath(filename) !== resolved || !(await within(root, filename))) fail(403, 'The rendered image path changed during registration.');
       return { ...await storeImage(imagesDir, bytes), name: input.name || path.basename(filename), sourcePath: filename };
     },
-    async preview(ctx, cardId) {
+    // The shared resolution, preflight and capture for a manual Send and its
+    // preview: the card images and selected Library files as one union, checked
+    // for existence, ownership, byte integrity and the target's capabilities and
+    // known limits. Problems are reported by source; nothing is silently dropped.
+    // Send verifies every byte against the model it discovered; a preview
+    // samples large files and uses the saved model catalog.
+    async preview(ctx, cardId, { verify = false, models } = {}) {
       const captured = store.chats.context(ctx, cardId);
-      for (const image of captured.context.images) image.hash = hash(await imageBytes(image));
+      models ??= store.providerCatalog(ctx, captured.provider).discovery?.models ?? [];
+      const items = [];
+      for (const image of captured.context.images) {
+        const bytes = await imageBytes(image);
+        image.hash = hash(bytes);
+        items.push({ key: `image:${image.id}`, label: `${image.labels.join(', ')}: ${image.name}`, kind: 'image', format: imageFormat(bytes), size: bytes.length });
+      }
+      const { files, problems } = store.library.resolve(ctx, captured.projectId, captured.librarySelections);
+      const library = [];
+      for (const file of files) {
+        const key = sourceKey({ kind: 'asset', id: file.assetId });
+        try { library.push({ ...file, key, label: file.filename, ...await store.library.inspect(ctx, file.projectId, file.versionId, { verify }) }); }
+        catch (error) {
+          if (!error.status) throw error;
+          problems.push({ key, label: file.filename, phase: 'integrity', reason: `Version ${file.number} is unavailable: its bytes are missing or damaged. Repair it with its exact original bytes.` });
+        }
+      }
+      const textBytes = Buffer.byteLength(captured.prompt) + captured.context.fields.reduce((sum, field) => sum + Buffer.byteLength(String(field.value ?? '')), 0);
+      const plan = planInputs(captured.provider, [...items, ...library], { textBytes, model: models.find((model) => model.id === captured.model) });
+      captured.context.library = plan.inputs.slice(items.length).map(({ key, label, ...file }) => ({ ...file, ...(file.method === 'text' ? {} : { path: store.library.copyPath(file) }) }));
+      captured.context.warnings = plan.warnings;
+      captured.problems = [...problems, ...plan.problems];
       return captured;
     },
     async previewLane(ctx, cardId, selections) {
@@ -61,12 +91,22 @@ export function createChatService({ store, adapter, adapters = { codex: adapter 
       if (!input || typeof input.id !== 'string' || !/^[\w-]{1,100}$/.test(input.id)) fail(400, 'A browser submission ID is required.');
       const existing = store.chats.findSubmission(ctx, cardId, input.id);
       if (existing) return existing;
-      const captured = await this.preview(ctx, cardId);
-      providers?.assertEnabled(ctx, captured.provider);
-      const settings = store.providerConfiguration(ctx, captured.provider);
+      // State at Send: preparation that spans an archive, or any change to the
+      // card, composer or conversation, queues nothing.
+      const start = store.chats.context(ctx, cardId);
+      providers?.assertEnabled(ctx, start.provider);
+      const settings = store.providerConfiguration(ctx, start.provider);
       const { discovery } = await this.discover(ctx, cardId);
+      const captured = await this.preview(ctx, cardId, { verify: true, models: discovery.models });
+      if (captured.archiveGeneration !== start.archiveGeneration) fail(409, 'The project was archived while preparing Send, so it was not sent. Review and send again.');
+      if (['composerRevision', 'cardRevision', 'conversationId'].some((key) => captured[key] !== start[key])) fail(409, 'The card, composer or conversation changed while preparing Send. Review and send again.');
       if (!discovery.models.some((model) => model.id === captured.model)) fail(400, 'Choose an available model in Settings.');
-      if (settings.revision !== store.providerConfiguration(ctx, captured.provider).revision) fail(409, 'Provider settings changed while preparing Send. Review and send again.');
+      if (captured.problems.length) throw Object.assign(new Error(problemMessage(captured.problems)), { status: 409, problems: captured.problems });
+      if (settings.revision !== store.providerConfiguration(ctx, start.provider).revision) fail(409, 'Provider settings changed while preparing Send. Review and send again.');
+      // Revalidated synchronously with the commit: a Library file replaced or
+      // removed while preflight read it is never sent at its stale version.
+      const current = store.library.resolve(ctx, captured.projectId, store.chats.context(ctx, cardId).librarySelections);
+      if (current.problems.length || current.files.map((file) => file.versionId).join() !== captured.context.library.map((file) => file.versionId).join()) fail(409, 'A selected Library file changed while preparing Send. Review and send again.');
       return store.chats.queue(ctx, cardId, input, captured, compileConfiguration(settings.selection, discovery, cardTools, captured.provider));
     },
     // A lane run's frozen submission: the playbook's prompt, selections and
@@ -84,6 +124,34 @@ export function createChatService({ store, adapter, adapters = { codex: adapter 
       if (settings.revision !== store.providerConfiguration(ctx, provider).revision) fail(409, 'Provider settings changed while preparing the lane run.');
       return store.chats.queueLane(ctx, cardId, { id }, { ...captured, prompt, provider, model, authority,
         lane: { ...lane, fieldVersions: captured.versions } }, compileConfiguration(settings.selection, discovery, cardTools, provider));
+    },
+    // Everything one delivery attempt sends besides its text: the card's image
+    // references, then verified Library inputs (inline text, and independent
+    // workspace copies rebuilt from the frozen versions). A Library original
+    // that cannot be delivered stops the attempt, recording what happened to
+    // each input.
+    async deliveryInputs(ctx, submission) {
+      const library = submission.context.library ?? [];
+      const delivery = [...submission.context.images.map((image) => ({ imageId: image.id, filename: image.name, method: 'image' })),
+        ...library.map((file) => ({ versionId: file.versionId, filename: file.filename, method: file.method }))];
+      const stopped = (failed, reason) => delivery.map((entry) => ({ ...entry, status: entry === failed ? 'failed' : 'not-sent', reason }));
+      let images;
+      try { images = await this.references(submission); }
+      catch (error) { throw Object.assign(error, { delivery: stopped(null, error.message) }); }
+      const texts = new Map();
+      for (const [index, file] of library.entries()) {
+        try {
+          if (file.method === 'text') texts.set(file.versionId, await store.library.text(ctx, file.projectId, file.versionId));
+          else {
+            const copy = await store.library.materialize(ctx, file.projectId, file.versionId, workspace(submission.cardId), file.path);
+            if (file.method === 'image') images.push({ type: 'localImage', path: copy.path });
+          }
+        } catch (error) {
+          throw Object.assign(new Error(`${file.filename} version ${file.versionId} could not be delivered: ${error.message} Repair it with its exact original bytes if it is damaged, then Retry.`), { kind: 'input-unavailable',
+            delivery: stopped(delivery[submission.context.images.length + index], error.message) });
+        }
+      }
+      return { texts, images, delivery };
     },
     async references(submission) {
       const directory = path.join(workspace(submission.cardId), 'references');
@@ -114,7 +182,7 @@ export function createChatService({ store, adapter, adapters = { codex: adapter 
   // Finish filesystem operations before the app releases its backup/restore
   // lock. Native events can already have started an import when shutdown begins.
   const pending = new Set();
-  for (const name of ['importNative', 'renderedImage', 'preview', 'previewLane', 'discover', 'queue', 'queueLane', 'references']) {
+  for (const name of ['importNative', 'renderedImage', 'preview', 'previewLane', 'discover', 'queue', 'queueLane', 'references', 'deliveryInputs']) {
     const operation = service[name];
     service[name] = function (...args) {
       const task = operation.apply(this, args);

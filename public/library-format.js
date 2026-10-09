@@ -1,5 +1,7 @@
 // Project Library filenames, read the same way in the browser and on the server.
 // A filename is the asset's label, never a filesystem path.
+// A selected Library source's identity, such as asset:<id>.
+export const sourceKey = (source) => `${source.kind}:${source.id}`;
 const invalid = (message) => { throw Object.assign(new Error(message), { status: 400 }); };
 
 export function libraryFilename(value) {

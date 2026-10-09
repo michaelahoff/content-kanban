@@ -3,8 +3,25 @@ import { request, send, enqueue } from './api.js';
 import { state, locateCard, flushCards, saveStatus, refreshSavedCard } from './state.js';
 import { contextFields } from './chat-context.js';
 import { attemptMarkup, progressState, runningStatuses } from './chat-transcript.js';
+import { formatSize } from './library.js';
 
 const chats = new Map();
+// Each project's Library files, for naming manual selections and the picker.
+// One load per project at a time; a failed load is shown, not retried by render.
+const libraries = new Map();
+function loadLibrary(projectId) {
+  const entry = libraries.get(projectId);
+  if (entry?.loading) return entry.loading;
+  const loading = request(`/api/projects/${encodeURIComponent(projectId)}/library`).then(({ assets }) => {
+    libraries.set(projectId, { assets }); return assets;
+  }, (error) => { libraries.set(projectId, { error: error.message }); throw error; });
+  libraries.set(projectId, { loading });
+  return loading;
+}
+// Composer edits wait for the saved composer and any Send in progress.
+function editableComposer(item) {
+  if (!item.composer || item.sending || item.pending) throw new Error('Wait for the saved composer and any Send in progress.');
+}
 const activityListeners = new Set();
 export function onActivity(listener) { activityListeners.add(listener); }
 let modelCatalog = []; let catalogLoading = null; let catalogRefreshPending = false;
@@ -169,12 +186,50 @@ function renderComposer(item) {
   $('#chat-composer').innerHTML = `<div class="chat-model-row"><label for="chat-provider">Provider</label><select id="chat-provider"><option value="" disabled ${!provider ? 'selected' : ''}>Choose a provider…</option>${enabledProviders.map((entry) => `<option value="${entry.provider}" ${composer.provider === entry.provider ? 'selected' : ''}>${entry.provider === 'claude' ? 'Claude' : 'Codex'}</option>`).join('')}${provider && !provider.enabled ? `<option value="${composer.provider}" selected disabled>${composer.provider === 'claude' ? 'Claude' : 'Codex'} (disabled)</option>` : ''}</select></div>
     <div class="chat-model-row"><label for="chat-model">Model</label><select id="chat-model"><option value="">Choose a model…</option>${choices.map((model) => `<option value="${escape(model.id)}" ${composer.model === model.id ? 'selected' : ''}>${escape(model.displayName ?? model.id)}</option>`).join('')}${missing ? `<option value="${escape(composer.model)}" selected disabled>${escape(composer.model)} (unavailable)</option>` : ''}</select><a class="button small secondary" href="/settings.html" target="_blank" rel="noopener">Settings</a></div>
     ${!enabledProviders.length ? '<p class="chat-hint">Enable Claude or Codex in Settings to send prompts.</p>' : provider?.error ? `<p class="chat-hint">${escape(provider.error)} Refresh models in Settings.</p>` : !choices.length ? '<p class="chat-hint">Models are loading or unavailable. Check Settings for the shared model list.</p>' : ''}
-    <details id="chat-context-preview" ${item.view.preview ? 'open' : ''}><summary>What will be sent</summary><p class="chat-hint">Saved card values at Send. Images are attached once with all selected labels.</p><fieldset class="chat-selections"><legend>Card fields</legend>${contextFields(card.template).map((field) => `<label><input type="checkbox" data-chat-field="${field.key}" ${composer.selections.fields.includes(field.key) ? 'checked' : ''}>${escape(field.label)}</label>`).join('')}</fieldset><fieldset class="chat-selections"><legend>Image references</legend>${[['original', 'Original'], ['inspiration', 'Inspiration'], ['cover', 'Display']].map(([role, label]) => `<label><input type="checkbox" data-chat-role="${role}" ${composer.selections.roles.includes(role) ? 'checked' : ''}>${label}</label>`).join('')}${images.map((image) => `<label><input type="checkbox" data-chat-image="${image.id}" ${composer.selections.images.includes(image.id) ? 'checked' : ''}>${escape(image.name)}</label>`).join('')}</fieldset>${composer.provider === 'claude' ? '' : `<fieldset class="chat-selections"><legend>Allow requested text edits</legend><p>Only check fields you explicitly ask the provider to edit. Suggestions remain proposals.</p>${contextFields(card.template).map((field) => `<label><input type="checkbox" data-chat-authority="${field.key}" ${composer.authority.fields.includes(field.key) ? 'checked' : ''}>${escape(field.label)}</label>`).join('')}</fieldset>`}<div id="chat-exact-preview"></div></details>
+    <details id="chat-context-preview" ${item.view.preview ? 'open' : ''}><summary>What will be sent</summary><p class="chat-hint">Saved card values at Send. Images are attached once with all selected labels.</p><fieldset class="chat-selections"><legend>Card fields</legend>${contextFields(card.template).map((field) => `<label><input type="checkbox" data-chat-field="${field.key}" ${composer.selections.fields.includes(field.key) ? 'checked' : ''}>${escape(field.label)}</label>`).join('')}</fieldset><fieldset class="chat-selections"><legend>Image references</legend>${[['original', 'Original'], ['inspiration', 'Inspiration'], ['cover', 'Display']].map(([role, label]) => `<label><input type="checkbox" data-chat-role="${role}" ${composer.selections.roles.includes(role) ? 'checked' : ''}>${label}</label>`).join('')}${images.map((image) => `<label><input type="checkbox" data-chat-image="${image.id}" ${composer.selections.images.includes(image.id) ? 'checked' : ''}>${escape(image.name)}</label>`).join('')}</fieldset>${libraryMarkup(item)}${composer.provider === 'claude' ? '' : `<fieldset class="chat-selections"><legend>Allow requested text edits</legend><p>Only check fields you explicitly ask the provider to edit. Suggestions remain proposals.</p>${contextFields(card.template).map((field) => `<label><input type="checkbox" data-chat-authority="${field.key}" ${composer.authority.fields.includes(field.key) ? 'checked' : ''}>${escape(field.label)}</label>`).join('')}</fieldset>`}<div id="chat-exact-preview"></div></details>
     <label class="sr-only" for="chat-prompt">Prompt for this card</label><textarea id="chat-prompt" maxlength="200000" placeholder="Ask about this card…" ${item.pending ? 'disabled' : ''}>${escape(composer.prompt)}</textarea><div class="chat-send-row"><span id="chat-save-state">${item.dirty ? 'Saving draft…' : ''}</span><button class="button small secondary" data-action="chat-stop" ${active(item) ? '' : 'disabled'}>Stop</button><button class="button primary" data-action="chat-send">${item.pending ? 'Retry Send' : 'Send'}</button></div>${composer.provider === 'claude' ? '<p class="chat-hint">Claude supports text and image references. Native tools are disabled; apply suggestions with Use text.</p>' : '<p class="chat-hint">Codex native image generation and exact-reference edits stay in this chat. Add to gallery never sets Display, Original or Inspiration.</p><p class="chat-hint">Codex can write in its workspace and run sandboxed commands without network access automatically. Escape requests need approval. Outside reads are possible. Full native access keeps card acceptance rules. <a href="/codex.html" target="_blank" rel="noopener">Configuration and permission limits</a></p>'}`;
   $('#chat-context-preview').addEventListener('toggle', () => { rememberView(); if ($('#chat-context-preview').open) void refreshPreview(item); });
   if (item.view.preview) void refreshPreview(item);
   updateComposerControls(item);
   if (focusId) { const input = document.getElementById(focusId); input?.focus(); if (selection) input?.setSelectionRange(...selection); }
+}
+// Ordered Library choices. They are remembered for this conversation; Send
+// resolves each to its current version and refuses any it cannot deliver.
+function libraryMarkup(item) {
+  const projectId = locateCard(item.id).project.id;
+  const library = libraries.get(projectId);
+  if (!library) void loadLibrary(projectId).then(() => { if (selected === item.id) renderComposer(item); }, () => { if (selected === item.id) renderComposer(item); });
+  const assets = library?.assets;
+  const chosen = item.composer.selections.library ?? [];
+  return `<fieldset class="chat-selections chat-library"><legend>Library files</legend>${library?.error ? `<p class="chat-hint">Library files could not be loaded: ${escape(library.error)}</p>` : ''}${chosen.length ? `<ol>${chosen.map((entry, index) => {
+    const asset = assets?.find((candidate) => candidate.id === entry.id);
+    return `<li><span>${asset ? escape(asset.filename) : assets ? `<strong>Unavailable file</strong> <small>${escape(entry.id)}</small>` : escape(entry.id)}</span><button type="button" class="button small secondary" data-action="chat-library-remove" data-index="${index}" aria-label="Remove ${escape(asset?.filename ?? 'this file')}">Remove</button></li>`;
+  }).join('')}</ol>` : ''}<button type="button" class="button small secondary" data-action="chat-library-add">Add Library files…</button></fieldset>`;
+}
+function pickLibraryFiles(item) {
+  editableComposer(item);
+  libraries.delete(locateCard(item.id).project.id);
+  void loadLibrary(locateCard(item.id).project.id).then((assets) => {
+    const chosen = new Set((item.composer.selections.library ?? []).map((entry) => entry.id));
+    const available = assets.filter((asset) => !chosen.has(asset.id));
+    smallForm({ title: 'Add Library files', description: available.length ? 'Selected files are sent as reference material, in the order chosen.' : 'Every Library file is already selected, or the Library is empty.',
+      fields: `<div class="chat-library-picker">${available.map((asset) => `<label><input type="checkbox" name="asset" value="${escape(asset.id)}">${escape(asset.filename)} <small>v${asset.current.number} · ${formatSize(asset.current.size)}${asset.current.available ? '' : ' · unavailable'}</small></label>`).join('')}</div>`,
+      submit: 'Add files', onSubmit: async (data) => {
+        const added = data.getAll('asset').map((id) => ({ kind: 'asset', id: String(id) }));
+        item.composer.selections.library = [...(item.composer.selections.library ?? []), ...added];
+        item.view.preview = true; composerChanged(item); renderComposer(item);
+      } });
+  }, (error) => showError(item, error));
+}
+const methods = { text: 'full text', image: 'native image', copy: 'workspace copy for tools' };
+function libraryContextMarkup(context) {
+  const library = context.library ?? [];
+  return `${library.length ? `<ul class="chat-library-inputs">${library.map((file) => `<li><strong>${escape(file.filename)}</strong> <small>v${file.number} · ${formatSize(file.size)} · ${methods[file.method]}${file.sources.length > 1 ? ` · selected ${file.sources.length} times` : ''}<br>Version ${escape(file.versionId)} · SHA-256 ${escape(file.hash)}</small></li>`).join('')}</ul>` : ''}${(context.warnings ?? []).map((warning) => `<p class="chat-hint">${escape(warning)}</p>`).join('')}`;
+}
+const deliveryLabels = { sending: 'sending, not confirmed', sent: 'sent', 'not-sent': 'not sent', uncertain: 'delivery uncertain', failed: 'failed' };
+function deliveryMarkup(attempt) {
+  if (!attempt.delivery?.length) return '';
+  return `<ul class="chat-delivery" aria-label="Delivery">${attempt.delivery.map((entry) => `<li>${escape(entry.filename)} · ${methods[entry.method]} · ${deliveryLabels[entry.status] ?? escape(entry.status)}${entry.reason ? ` · ${escape(entry.reason)}` : ''}</li>`).join('')}</ul>`;
 }
 function outputMarkup(output) {
   if (!output) return '';
@@ -188,7 +243,7 @@ function outputMarkup(output) {
   return `<figure class="chat-output">${status}${actions}</figure>`;
 }
 function contextMarkup(context) {
-  return `${context.fields.map((field) => `<p><strong>${escape(field.label)} <small>v${field.version}</small></strong><br>${escape(field.value)}</p>`).join('')}${context.images.map((image) => `<figure><img src="/images/${encodeURIComponent(image.id)}" alt="${escape(image.name)}"><figcaption>${escape(image.labels.join(', '))}: ${escape(image.name)}<br><small>Version ${escape(image.id)} · SHA-256 ${escape(image.hash)}</small></figcaption></figure>`).join('')}`;
+  return `${context.fields.map((field) => `<p><strong>${escape(field.label)} <small>v${field.version}</small></strong><br>${escape(field.value)}</p>`).join('')}${context.images.map((image) => `<figure><img src="/images/${encodeURIComponent(image.id)}" alt="${escape(image.name)}"><figcaption>${escape(image.labels.join(', '))}: ${escape(image.name)}<br><small>Version ${escape(image.id)} · SHA-256 ${escape(image.hash)}</small></figcaption></figure>`).join('')}${libraryContextMarkup(context)}`;
 }
 function frozenMarkup(submission) {
   return `<details class="chat-frozen" data-detail-key="context:${escape(submission.id)}"><summary>Submitted context · ${escape(submission.model)}</summary><p>${escape(submission.prompt)}</p>${contextMarkup(submission.context)}<small>Configuration ${escape(submission.configuration.id)}</small></details>`;
@@ -198,7 +253,7 @@ async function refreshPreview(item) {
   try {
     const preview = await send('POST', url(item.id, 'preview'), {});
     if (selected !== item.id || !$('#chat-exact-preview')) return;
-    $('#chat-exact-preview').innerHTML = contextMarkup(preview.context);
+    $('#chat-exact-preview').innerHTML = `${preview.problems?.length ? `<div class="chat-problems" role="alert"><strong>Send is blocked</strong><ul>${preview.problems.map((problem) => `<li>${escape(problem.label)}: ${escape(problem.reason)}</li>`).join('')}</ul></div>` : ''}${contextMarkup(preview.context)}`;
   } catch (error) { showError(item, error); }
 }
 // Possible delivery is never resent automatically; these are explicit choices.
@@ -225,7 +280,7 @@ function renderTranscript(item) {
       const sent = submission.lane
         ? `<div class="chat-prompt-sent chat-lane-run"><span class="chat-speaker">Lane run</span>${escape(submission.lane.stageName)} playbook${submission.lane.trigger === 'manual' ? ' · run by you' : ' · card entered the lane'}<small>${escape(submission.lane.playbook.path)}</small></div>`
         : `<div class="chat-prompt-sent"><span class="chat-speaker">You</span>${escape(submission.prompt)}</div>`;
-      return `<article class="chat-submission">${sent}${frozenMarkup(submission)}<p class="chat-status">${escape(({ running: 'In progress', completed: 'Completed', queued: 'Queued', waiting: 'Waiting for provider', held: 'Needs attention', failed: 'Failed', interrupted: 'Stopped', uncertain: 'Check delivery', cancelled: 'Cancelled' })[submission.status] ?? submission.status)}${submission.reason ? ` · ${escape(submission.reason)}` : ''}</p>${attempts.map((attempt) => `${attempt.previousAttemptId ? `<div class="chat-divider">${snapshot.attempts.find((a) => a.id === attempt.previousAttemptId)?.status === 'not-delivered' ? 'Not sent before Codex stopped · sent again with original inputs' : 'Retry · original inputs retained'}</div>` : ''}${attemptMarkup(snapshot.items.filter((entry) => entry.attemptId === attempt.id), attempt.id,
+      return `<article class="chat-submission">${sent}${frozenMarkup(submission)}<p class="chat-status">${escape(({ running: 'In progress', completed: 'Completed', queued: 'Queued', waiting: 'Waiting for provider', held: 'Needs attention', failed: 'Failed', interrupted: 'Stopped', uncertain: 'Check delivery', cancelled: 'Cancelled' })[submission.status] ?? submission.status)}${submission.reason ? ` · ${escape(submission.reason)}` : ''}</p>${attempts.map((attempt) => `${attempt.previousAttemptId ? `<div class="chat-divider">${snapshot.attempts.find((a) => a.id === attempt.previousAttemptId)?.status === 'not-delivered' ? 'Not sent before Codex stopped · sent again with original inputs' : 'Retry · original inputs retained'}</div>` : ''}${deliveryMarkup(attempt)}${attemptMarkup(snapshot.items.filter((entry) => entry.attemptId === attempt.id), attempt.id,
         (entry) => outputMarkup((snapshot.outputs ?? []).find((output) => output.attemptId === entry.attemptId
           && (output.nativeId === entry.nativeId || output.id === entry.data?.outputId))), runningStatuses.has(attempt.status))}`).join('')}${recoveryMarkup(submission, attempts)}${['queued', 'waiting', 'held'].includes(submission.status) ? `<button class="button small secondary" data-action="chat-cancel" data-id="${escape(submission.id)}">Cancel submission</button>` : ''}${['failed', 'interrupted'].includes(submission.status) && conversation.state === 'active' && !submission.revoked ? `<button class="button small secondary" data-action="chat-retry" data-id="${escape(submission.id)}">Retry original submission</button>` : ''}</article>`;
     }).join('')}`;
@@ -495,6 +550,13 @@ export function initializeChats(callbacks) {
   });
   clearInterval(clockTimer); clockTimer = setInterval(tickTimers, 1000);
   void loadActivity().then(connect, () => connect(0));
+  // Uploads and replacements in any tab rename and re-version selected files.
+  onActivity((entry) => {
+    if (entry.entity !== 'asset' || !libraries.has(entry.projectId)) return;
+    libraries.delete(entry.projectId);
+    const item = chats.get(selected);
+    if (item?.composer && locateCard(item.id)?.project.id === entry.projectId) renderComposer(item);
+  });
   document.addEventListener('input', (event) => {
     if (event.target.id !== 'chat-prompt') return;
     const item = chats.get(selected); if (!item?.composer) return;
@@ -508,7 +570,7 @@ export function initializeChats(callbacks) {
       if (target.checked) fields.add(target.dataset.chatAuthority); else fields.delete(target.dataset.chatAuthority);
       item.composer.authority.fields = [...fields]; composerChanged(item); return;
     }
-    if (target.id === 'chat-provider') { item.composer.provider = target.value; item.composer.model = null; composerChanged(item); renderComposer(item); return; }
+    if (target.id === 'chat-provider') { item.composer.provider = target.value; item.composer.model = null; item.composer.selections.library = []; composerChanged(item); renderComposer(item); return; }
     if (target.id === 'chat-model') { item.composer.model = target.value || null; composerChanged(item); updateComposerControls(item); return; }
     for (const [attribute, key] of [['chatField', 'fields'], ['chatRole', 'roles'], ['chatImage', 'images']]) if (target.dataset[attribute]) {
       const set = new Set(item.composer.selections[key]);
@@ -552,13 +614,19 @@ export function initializeChats(callbacks) {
       if (action === 'chat-retry-save') { await send('POST', url(item.id, `outputs/${target.dataset.id}/retry-save`), {}); await refresh(item); }
       if (action === 'chat-edit-image') {
         // Edit adds this exact version; existing selections stay visible and removable.
-        if (!item.composer || item.sending || item.pending) throw new Error('Wait for the saved composer and any Send in progress.');
+        editableComposer(item);
         if (!item.composer.selections.images.includes(target.dataset.id)) { item.composer.selections.images = [...item.composer.selections.images, target.dataset.id]; composerChanged(item); }
         item.view.preview = true; renderComposer(item); $('#chat-prompt')?.focus();
       }
+      if (action === 'chat-library-add') pickLibraryFiles(item);
+      if (action === 'chat-library-remove') {
+        editableComposer(item);
+        item.composer.selections.library = item.composer.selections.library.filter((entry, index) => index !== Number(target.dataset.index));
+        composerChanged(item); renderComposer(item);
+      }
       if (action === 'chat-revoke-grants') { await send('POST', url(item.id, 'revoke-grants'), {}); await refresh(item); }
       if (action === 'chat-full-access') smallForm({ title: 'Allow full native access?', description: 'Approve remaining native requests individually. From the next response Codex runs without its own sandbox or approval prompts for this conversation. Retained originals, outputs, frozen history and authority metadata remain protected. Workspaces stay mutable; local services and unverified network destinations stay blocked. Card acceptance keeps its own rules. Stop active work before revoking; fresh context resets the allowance.', submit: 'Allow full native access', onSubmit: async () => { await send('POST', url(item.id, 'answer'), { requestId: target.dataset.id, response: { decision: 'accept', scope: 'full' } }); await refresh(item); } });
-      if (action === 'chat-fresh') smallForm({ title: 'Start empty fresh context?', description: 'Retain this conversation as previous history and reset its permissions. Cancel any queued or held submissions for the old conversation. No native conversation or turn starts until Send.', submit: 'Start fresh and cancel queued work', onSubmit: async () => { await saveComposer(item); item.snapshot = await send('POST', url(item.id, 'fresh'), { cancelQueued: true }); renderTranscript(item); } });
+      if (action === 'chat-fresh') smallForm({ title: 'Start empty fresh context?', description: 'Retain this conversation as previous history and reset its permissions. Cancel any queued or held submissions for the old conversation and clear Library file choices. No native conversation or turn starts until Send.', submit: 'Start fresh and cancel queued work', onSubmit: async () => { await saveComposer(item); item.snapshot = await send('POST', url(item.id, 'fresh'), { cancelQueued: true }); item.composer = item.snapshot.composer; renderComposer(item); renderTranscript(item); } });
     } catch (error) { if (item) showError(item, error); else toast(error.message); }
 
   });
