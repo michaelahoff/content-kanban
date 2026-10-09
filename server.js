@@ -17,6 +17,7 @@ import { lockDataDirectory } from './data-lock.js';
 import { createBackup } from './backup.js';
 import { createMaintenance, maintenanceMessage } from './maintenance.js';
 import { homedir } from 'node:os';
+import { previewType } from './public/library-format.js';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const imageTypes = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif', 'image/avif': 'avif' };
@@ -25,6 +26,24 @@ const staticTypes = { '.html': 'text/html', '.js': 'text/javascript', '.css': 't
 function assert(value, message) {
   if (!value) throw Object.assign(new Error(message), { status: 400 });
 }
+
+// Library uploads carry metadata in the query string and bytes in the body.
+// Frameboard computes hashes, sizes and storage locations itself.
+const uploadParameters = new Set(['filename', 'operation', 'collision', 'asset']);
+function uploadInput(url) {
+  for (const key of url.searchParams.keys()) assert(uploadParameters.has(key), 'Uploads take only a filename, operation and collision choice. Frameboard computes hashes and storage locations itself.');
+  const operation = url.searchParams.get('operation');
+  assert(/^[\w-]{1,100}$/.test(operation || ''), 'Each upload needs an operation ID.');
+  return { filename: url.searchParams.get('filename'), operationId: operation, collision: url.searchParams.get('collision') || undefined, assetId: url.searchParams.get('asset') || undefined };
+}
+// Stops a publication when the uploading client disconnects.
+function uploadSignal(req) {
+  const controller = new AbortController();
+  req.once('close', () => { if (!req.complete) controller.abort(new Error('The upload was interrupted before all bytes arrived.')); });
+  return controller.signal;
+}
+const rfc5987 = (value) => encodeURIComponent(value).replace(/['()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+const disposition = (kind, filename) => `${kind}; filename="${filename.replace(/[^\x20-\x7e]|["\\]/g, '_')}"; filename*=UTF-8''${rfc5987(filename)}`;
 
 async function body(req, limit) {
   const chunks = [];
@@ -165,6 +184,11 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
       ['POST', /^\/api\/projects\/([^/]+)\/archive$/, (ctx, req, id) => store.archiveProject(ctx, id)],
       ['POST', /^\/api\/projects\/([^/]+)\/unarchive$/, (ctx, req, id) => store.unarchiveProject(ctx, id)],
       ['POST', /^\/api\/projects\/([^/]+)\/prompt$/, async (ctx, req, id) => ({ cards: store.setProjectPrompt(ctx, id, (await read(req))?.prompt) })],
+      ['GET', /^\/api\/projects\/([^/]+)\/library$/, (ctx, req, id) => store.library.list(ctx, id)],
+      ['POST', /^\/api\/projects\/([^/]+)\/library\/uploads$/, (ctx, req, id, url) => store.library.upload(ctx, id, uploadInput(url), req, { signal: uploadSignal(req) }), 201],
+      ['GET', /^\/api\/projects\/([^/]+)\/library\/assets\/[^/]+$/, (ctx, req, id, url) => store.library.asset(ctx, id, url.pathname.split('/').at(-1))],
+      ['POST', /^\/api\/projects\/([^/]+)\/library\/versions\/[^/]+\/verify$/, (ctx, req, id, url) => store.library.verify(ctx, id, url.pathname.split('/').at(-2))],
+      ['POST', /^\/api\/projects\/([^/]+)\/library\/versions\/[^/]+\/repair$/, (ctx, req, id, url) => store.library.repair(ctx, id, url.pathname.split('/').at(-2), req, { signal: uploadSignal(req) })],
       ['GET', /^\/api\/projects\/([^/]+)\/cards$/, (ctx, req, id) => ({ cards: store.listCards(ctx, id) })],
       ['POST', /^\/api\/projects\/([^/]+)\/cards$/, async (ctx, req, id) => store.createCard(ctx, id, await read(req)), 201],
       ['POST', /^\/api\/flows\/([^/]+)\/stages$/, async (ctx, req, id) => store.createStage(ctx, id, await read(req)), 201],
@@ -233,6 +257,18 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
           try { id = match[1] && decodeURIComponent(match[1]); } catch { return send(res, 404, { error: 'Not found.' }); }
           return send(res, status, await handler(currentUser(req), req, id, url));
         }
+        const content = url.pathname.match(/^\/api\/projects\/([^/]+)\/library\/versions\/([^/]+)\/content$/);
+        if (content && req.method === 'GET') {
+          // Verified before the first byte; a change while streaming aborts the response.
+          const { version, filename, stream: bytes } = await store.library.read(currentUser(req), ...content.slice(1).map(decodeURIComponent));
+          const inline = url.searchParams.get('inline') === '1' && previewType(filename);
+          res.writeHead(200, { 'Content-Type': inline ? inline.type : 'application/octet-stream', 'Content-Length': version.size,
+            'Content-Disposition': disposition(inline ? 'inline' : 'attachment', filename),
+            'Content-Security-Policy': "default-src 'none'; sandbox", 'Cache-Control': 'private, max-age=31536000, immutable' });
+          bytes.once('error', () => res.destroy());
+          res.once('close', () => bytes.destroy());
+          return bytes.pipe(res);
+        }
         if (url.pathname === '/api/images' && req.method === 'POST') {
           const type = req.headers['content-type'];
           assert(Object.hasOwn(imageTypes, type || ''), 'Use a PNG, JPEG, WebP, GIF, or AVIF image.');
@@ -270,7 +306,9 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
         res.writeHead(200, { 'Content-Type': type, 'Content-Length': bytes.length });
         res.end(req.method === 'HEAD' ? undefined : bytes);
       } catch (error) {
-        if (!res.headersSent) send(res, error.code === 'ENOENT' ? 404 : error.status || 500, { error: error.status ? error.message : error.code === 'ENOENT' ? 'Not found.' : 'Could not save or load data. Check available disk space and try again.' });
+        // A refused upload closes the connection instead of reading its remaining bytes.
+        if (!res.headersSent && !req.complete) res.setHeader('Connection', 'close');
+        if (!res.headersSent) send(res, error.code === 'ENOENT' ? 404 : error.status || 500, { error: error.status ? error.message : error.code === 'ENOENT' ? 'Not found.' : 'Could not save or load data. Check available disk space and try again.', ...(error.conflict ? { conflict: error.conflict } : {}) });
         else res.end();
         if (!error.status && error.code !== 'ENOENT') console.error(error);
       }

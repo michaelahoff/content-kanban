@@ -2,9 +2,10 @@
 import { $, escape, icon, button, iconButton, imageURL, palette, wordCount, lastEditedMarkup, smallForm, nameField, toast } from './ui.js';
 import { state, project, locateCard, cardCount, searchText, saveStatus, createProject, renameProject, addLane, updateLane, setProjectPrompt, latestMoveCard } from './state.js';
 import { activityMarkup } from './chat.js';
+import { renderLibrary } from './library.js';
 
 const app = $('#app');
-export const view = { query: '', pasteLaneId: null, cardsCollapsed: false };
+export const view = { query: '', pasteLaneId: null, cardsCollapsed: false, tab: 'board' };
 try { view.cardsCollapsed = localStorage.getItem('frameboard-cards-collapsed') === 'true'; } catch { /* Optional display preference. */ }
 
 export function toggleCards() {
@@ -49,12 +50,21 @@ export function renderStatus() {
     editorError.innerHTML = `<span>${escape(conflict?.message || saveError)}</span>${retryable ? button('retry-save', 'Retry save', null, 'button small') : ''}${conflict ? button('use-saved-card', 'Use saved version', null, 'button small', `data-id="${escape(conflict.id)}"`) : conflictLinks}`;
   }
 }
+export function showTab(tab) {
+  view.tab = tab;
+  renderApp();
+}
+// Board and Library are views of the same project.
+const tabs = (p) => `<div class="project-tabs" role="tablist" aria-label="Project views"><button type="button" role="tab" class="board-tab ${view.tab === 'board' ? 'active' : ''}" data-action="show-board" aria-selected="${view.tab === 'board'}">${icon('board')} Board <span id="total-count">${cardCount(p)}</span></button><button type="button" role="tab" class="board-tab ${view.tab === 'library' ? 'active' : ''}" data-action="show-library" aria-selected="${view.tab === 'library'}">${icon('upload')} Library</button></div>`;
+const searchBox = () => `<label class="search">${icon('search')}<input id="search" type="search" placeholder="Find a card…" aria-label="Find a card" value="${escape(view.query)}"></label>`;
+const projectView = (p, tools) => view.tab === 'library'
+  ? `<div class="board-toolbar">${tabs(p)}</div><section id="library" class="library" aria-label="${escape(p.name)} library"></section>`
+  : `<div class="board-toolbar">${tabs(p)}<div class="board-tools">${tools}</div></div><div id="board" class="board" aria-label="${escape(p.name)} kanban board"></div>`;
 const projectLink = (item) => `<button class="project-link ${item.id === state.projectId ? 'active' : ''}" data-action="switch-project" data-id="${item.id}" ${item.id === state.projectId ? 'aria-current="page"' : ''}>${icon('board')}<span>${escape(item.name)}</span><span class="project-count">${cardCount(item)}</span></button>`;
 // An archived project is read-only: no lane, card or playbook actions.
 const archivedHeader = (p) => `<header class="board-header"><div><div class="heading-row"><h1>${escape(p.name)}</h1><span class="archived-badge">Archived</span></div></div><div class="header-actions">${button('unarchive-project', 'Unarchive', 'undo', 'button primary')}</div></header>
       <p class="archived-banner" role="note">${escape(archivedNotice)}</p>
-      <div class="board-toolbar"><div class="board-tab">${icon('board')} Board <span id="total-count">${cardCount(p)}</span></div><div class="board-tools"><label class="search">${icon('search')}<input id="search" type="search" placeholder="Find a card…" aria-label="Find a card" value="${escape(view.query)}"></label></div></div>
-      <div id="board" class="board" aria-label="${escape(p.name)} kanban board"></div>`;
+      ${projectView(p, searchBox())}`;
 export const archivedNotice = 'This project is archived. Its work was cancelled; cards, chats, history and saved images stay readable. Unarchive it to make changes or start new work. Cancelled work is not restarted.';
 
 export function renderApp() {
@@ -72,10 +82,10 @@ export function renderApp() {
       <div class="topbar"><div class="breadcrumbs">${iconButton('toggle-sidebar', 'Toggle projects', 'menu')}</div><div class="workspace-chat-activity"><button class="button small secondary" data-action="workspace-chat-activity">Chat activity</button><div id="chat-activity-list" hidden></div></div><div class="save-status" data-save-status></div></div>
       <div id="save-error" class="error-banner" role="alert" hidden></div>
       ${p?.archivedAt ? archivedHeader(p) : p ? `<header class="board-header"><div><div class="heading-row"><h1>${escape(p.name)}</h1>${iconButton('edit-project', 'Project settings', 'more')}</div></div><div class="header-actions">${button('open-playbooks', 'Playbooks', 'playbook', 'button secondary')}${button('set-project-prompt', 'Set prompt', 'text', 'button secondary')}${button('add-lane', 'Add lane', 'plus', 'button secondary')}${button('add-card', 'New card', 'plus', 'button primary', p.lanes.length ? '' : 'disabled')}</div></header>
-      <div class="board-toolbar"><div class="board-tab">${icon('board')} Board <span id="total-count">${cardCount(p)}</span></div><div class="board-tools">${button('undo-move', 'Undo last move', 'undo', 'button small secondary', 'data-undo-move="board" disabled')}${button('toggle-cards', view.cardsCollapsed ? 'Expand cards' : 'Collapse cards', null, 'button small secondary', `aria-pressed="${view.cardsCollapsed}" aria-controls="board"`)}<span class="paste-hint">${icon('image')} Paste an image to start a card</span><label class="search">${icon('search')}<input id="search" type="search" placeholder="Find a card…" aria-label="Find a card" value="${escape(view.query)}"></label></div></div>
-      <div id="board" class="board" aria-label="${escape(p.name)} kanban board"></div>` : `<div class="no-projects"><span class="empty-symbol">${icon('board')}</span><h1>Room for your ideas.</h1><p>Create a project and make it your own.</p>${button('add-project', 'Create a project', 'plus', 'button primary')}</div>`}
+      ${projectView(p, `${button('undo-move', 'Undo last move', 'undo', 'button small secondary', 'data-undo-move="board" disabled')}${button('toggle-cards', view.cardsCollapsed ? 'Expand cards' : 'Collapse cards', null, 'button small secondary', `aria-pressed="${view.cardsCollapsed}" aria-controls="board"`)}<span class="paste-hint">${icon('image')} Paste an image to start a card</span>${searchBox()}`)}` : `<div class="no-projects"><span class="empty-symbol">${icon('board')}</span><h1>Room for your ideas.</h1><p>Create a project and make it your own.</p>${button('add-project', 'Create a project', 'plus', 'button primary')}</div>`}
     </main>`;
   renderBoard();
+  void renderLibrary();
   renderStatus();
 }
 function cardMarkup(card, draggable = true) {

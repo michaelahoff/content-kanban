@@ -299,6 +299,8 @@ async function verifyBackupFile(root, entry) {
 // Compares the manifest's inventory with the staged database's own.
 function sameInventory(recorded, { projects, tables, retained, images, outputs }) {
   const output = ({ outputId, cardId, attemptId, importStatus, path }) => ({ outputId, cardId, attemptId, importStatus, path });
+  // Format 2 bundles exported before Library labels were inventoried omit them.
+  if (recorded?.retained?.every((entry) => !Object.hasOwn(entry, 'label'))) retained = retained.map(({ label, ...entry }) => entry);
   return isDeepStrictEqual(recorded?.projects, projects) && isDeepStrictEqual(recorded?.tables, tables) && isDeepStrictEqual(recorded?.retained, retained)
     && isDeepStrictEqual(recorded?.images, images.map((image) => ({ ...image, path: `images/${image.id}` })))
     && isDeepStrictEqual(recorded?.outputs?.map(output), outputs.map((value) => output({ ...value, path: value.importStatus === 'imported' ? `images/${value.imageId}` : null })));

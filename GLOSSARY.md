@@ -72,6 +72,16 @@ A particular retained image used as a reference or produced in a card chat. An e
 An image version produced in a card chat, either by native image generation or by an explicitly registered rendered file, kept with its producing provider, creation method and references. Generation and saving it into Frameboard are tracked separately; neither adopts it.
 _Avoid_: Artifact, attachment
 
+**Project Library**:
+A project's collection of project assets, shown in its Library tab beside the board. Selecting assets for prompts is separate from keeping them in the Library.
+
+**Project asset**:
+An uploaded file or explicitly saved document with a stable identity owned by exactly one project. Its filename is a label, not a path; matching names or bytes never merge two assets. Uploading over a taken name requires choosing Create new, Replace or Cancel.
+_Avoid_: Attachment, upload
+
+**Asset version**:
+One immutable retained content of a project asset. Replace adds a new current version and keeps the older ones. A version whose bytes are missing or damaged is unavailable until repaired with its exact original bytes; it is never silently replaced by other content.
+
 **Card workspace**:
 The working files associated with a particular card's agent work.
 
