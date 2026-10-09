@@ -53,7 +53,7 @@ Two parallel review axes ran against `main...HEAD`.
   - Per-file `find` lookups became maps.
   - Repeated size/hash checks became `sameBytes`.
   - Names were clarified (`hashCopy`, `explainDiskFull`, `temporaryStores`, `exportWorkspace`).
-  - Restore staging uses `mkdtemp` again.
+  - Restore staging used `mkdtemp` again. [#51](workspace-restore.md) superseded this: restore now claims owned staging like export, so a crashed restore's staging can be reclaimed.
   - Two bugs were fixed: the owner-file creation/lock race (exclusive creation before locking; reclaim requires an existing owner beside a folder) and partial native restore files.
   - The hashing loop shared in spirit with `retained-storage.js` stays separate, because their failure semantics differ.
 - **Spec** findings were fixed:

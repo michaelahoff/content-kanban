@@ -26,7 +26,7 @@ export async function fixture(t, { providerBackoffMs = 10, streamReplayLimit, cl
   };
   const raw = (url, init) => fetch(`http://127.0.0.1:${app.address().port}${url}`, init);
   const ok = async (...args) => { const result = await call(...args); assert.ok(result.status < 300, JSON.stringify(result)); return result.body; };
-  const close = () => new Promise((resolve) => app.close(resolve));
+  const close = () => new Promise((resolve) => (app.listening ? app.close(resolve) : resolve()));
   t.after(async () => { await close(); await rm(dataDir, { recursive: true, force: true }); });
   const workspace = await ok('GET', '/api/workspace'); const project = workspace.projects[0];
   const stageId = workspace.flows.find((flow) => flow.id === project.flowId).stages[0].id;
@@ -63,5 +63,5 @@ export async function fixture(t, { providerBackoffMs = 10, streamReplayLimit, cl
     t.after(() => { controller.abort(); return reading; });
     return { frames, until: (predicate) => waitFor(() => frames.find(predicate)), close: () => { controller.abort(); return reading; } };
   }
-  return { dataDir, codex, call, raw, ok, card, chat, compose, queue, stream, restart: async () => { await close(); await start(); } };
+  return { dataDir, codex, call, raw, ok, card, chat, compose, queue, stream, close, restart: async () => { await close(); await start(); } };
 }

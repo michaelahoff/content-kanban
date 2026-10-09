@@ -81,7 +81,7 @@ export function createImageStore({ all, get, run, transaction, retainedCard, rec
         const current = output(id);
         if (current.importStatus === 'imported') return current;
         // Bytes are published only while the producing attempt is unrevoked.
-        if (revoked(current.attemptId)) return this.importFailed(ctx, id, 'Not saved: this response was stopped or its project archived before the image was saved.');
+        if (revoked(current.attemptId)) return this.importFailed(ctx, id, 'Not saved: this response was stopped, its project archived or the workspace restored before the image was saved.');
         insertVersion(ctx, value, origin);
         run("UPDATE chat_outputs SET import_status = 'imported', image_id = ?, error = '', imported_at = ? WHERE id = ?", value.id, now(), id);
         activity(ctx, current.cardId, 'image_output_imported', { outputId: id, imageId: value.id, hash: value.hash });
@@ -101,7 +101,7 @@ export function createImageStore({ all, get, run, transaction, retainedCard, rec
     beginRetry(ctx, cardId, id) {
       if (retainedCard(ctx, cardId).project_archived_at) fail(409, archivedMessage);
       const existing = output(id);
-      if (existing?.cardId === cardId && existing.importStatus !== 'imported' && revoked(existing.attemptId)) fail(409, 'This image cannot be saved: its response was stopped or its project archived. Send a new request instead.');
+      if (existing?.cardId === cardId && existing.importStatus !== 'imported' && revoked(existing.attemptId)) fail(409, 'This image cannot be saved: its response was stopped, its project archived or the workspace restored from a backup. Send a new request instead.');
       return transaction(() => {
         const current = output(id);
         if (!current || current.cardId !== cardId) fail(404, 'This image output does not exist.');

@@ -14,7 +14,7 @@ const submissionLabels = { queued: 'Queued in the card chat', waiting: 'Waiting 
 export function runLabel(run) {
   if (run.status === 'pending') return run.reason || 'Starting…';
   if (run.status === 'queued') return submissionLabels[run.submissionStatus] ?? 'Queued';
-  const label = { completed: 'Done', failed: 'Failed', cancelled: 'Cancelled' }[run.status] ?? run.status;
+  const label = { completed: 'Done', failed: 'Failed', cancelled: 'Cancelled', held: 'Held' }[run.status] ?? run.status;
   return run.reason ? `${label} · ${run.reason}` : label;
 }
 

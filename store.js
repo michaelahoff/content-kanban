@@ -26,10 +26,19 @@ export function snapshotDatabase(filename, destination) {
   finally { db.close(); }
 }
 
+// Restore marks the staged database before activation. The next open applies
+// the recovery hold in one commit, before the app creates any worker.
+export function markRestored(filename, details) {
+  const db = new DatabaseSync(filename);
+  // A restored workspace exported before it was ever opened still carries a marker.
+  try { db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('restore_recovery', ?)").run(JSON.stringify(details)); }
+  finally { db.close(); }
+}
+
 export function inspectBackupDatabase(filename) {
   const db = new DatabaseSync(filename, { readOnly: true });
   try {
-    if (db.prepare('PRAGMA integrity_check').get().integrity_check !== 'ok' || db.prepare('PRAGMA foreign_key_check').all().length) throw new Error('The backup database is damaged.');
+    if (db.prepare('PRAGMA integrity_check').get().integrity_check !== 'ok' || db.prepare('PRAGMA foreign_key_check').all().length) throw new Error('The database failed its integrity or foreign-key check.');
     const images = new Map(db.prepare('SELECT id, hash FROM image_versions').all().map((image) => [image.id, image]));
     const include = (references) => {
       for (const image of references ?? []) {
@@ -212,6 +221,8 @@ const migrations = [`
   UPDATE chat_attempts SET revoked = 'stopped' WHERE cause = 'user';
 `];
 
+// The newest schema this version can open; restore refuses newer backups.
+export const supportedSchemaVersion = migrations.length;
 const now = () => new Date().toISOString();
 const fail = (status, message) => { throw Object.assign(new Error(message), { status }); };
 const check = (value, message) => { if (!value) fail(400, message); };
@@ -462,9 +473,9 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
   // Cancels runs that have not started work. Running replies finish; their
   // result arrives as proposals because the card is no longer in that lane.
   function cancelLaneRuns(ctx, cardId, keep, reason) {
-    for (const row of all("SELECT * FROM lane_runs WHERE card_id = ? AND status IN ('pending', 'queued')", cardId)) {
+    for (const row of all("SELECT * FROM lane_runs WHERE card_id = ? AND status IN ('pending', 'queued', 'held')", cardId)) {
       if (keep(row)) continue;
-      if (row.status === 'queued') {
+      if (row.submission_id && row.status !== 'pending') {
         if (!chats.cancelQueued(ctx, row.submission_id, reason)) continue;
       }
       run("UPDATE lane_runs SET status = 'cancelled', reason = ?, updated_at = ? WHERE id = ?", reason, now(), row.id);
@@ -476,7 +487,7 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
     const legacy = await readLegacyBoard(legacyFile);
     transaction(() => {
       for (const sql of migrations) db.exec(sql);
-      run("INSERT INTO meta (key, value) VALUES ('schema_version', ?)", String(migrations.length));
+      run("INSERT INTO meta (key, value) VALUES ('schema_version', ?)", String(supportedSchemaVersion));
       const workspaceId = randomUUID();
       const userId = randomUUID();
       run('INSERT INTO workspaces (id, name, created_at) VALUES (?, ?, ?)', workspaceId, 'Personal workspace', now());
@@ -506,11 +517,11 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
   try {
     if (!schemaVersion()) await initialize();
     const version = schemaVersion();
-    if (version > migrations.length) throw new Error('This data was saved by a newer version of Frameboard.');
-    if (version < migrations.length) transaction(() => {
+    if (version > supportedSchemaVersion) throw new Error('This data was saved by a newer version of Frameboard.');
+    if (version < supportedSchemaVersion) transaction(() => {
       for (const sql of migrations.slice(version)) db.exec(sql);
       recordMissingBaselines();
-      run("UPDATE meta SET value = ? WHERE key = 'schema_version'", String(migrations.length));
+      run("UPDATE meta SET value = ? WHERE key = 'schema_version'", String(supportedSchemaVersion));
     });
   } catch (error) {
     db.close();
@@ -605,7 +616,7 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
     const at = now();
     for (const row of rows) {
       chats.cancelCard(ctx, row.id, reason);
-      run("UPDATE lane_runs SET status = 'cancelled', reason = ?, updated_at = ? WHERE card_id = ? AND status IN ('pending', 'queued')", reason, at, row.id);
+      run("UPDATE lane_runs SET status = 'cancelled', reason = ?, updated_at = ? WHERE card_id = ? AND status IN ('pending', 'queued', 'held')", reason, at, row.id);
       run('UPDATE cards SET deleted_at = ? WHERE id = ?', at, row.id);
       insertEvent(ctx.workspaceId, cardFrom(row), 'deleted', ctx.actor, { from: row.stage_id, data: { reason }, at });
       recordSavedState(ctx, row.id, 'deleted', at);
@@ -1101,6 +1112,8 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
         if (!found.settings.instructions) fail(409, 'This lane playbook has no instructions to run.');
         if (found.settings.run === 'off') fail(409, 'This lane playbook is turned off. Change run: off to manual or on-enter.');
         return transaction(() => {
+          // New explicit work replaces runs held after a restore, with their submissions.
+          cancelLaneRuns(ctx, cardId, (row) => row.status !== 'held', 'Replaced by a new run of the playbook.');
           const open = get("SELECT id FROM lane_runs WHERE card_id = ? AND stage_id = ? AND status = 'pending'", cardId, stage.id);
           return laneRunFrom(get('SELECT * FROM lane_runs WHERE id = ?', open?.id ?? requestLaneRun(ctx, card, stage, 'manual')));
         });
@@ -1127,6 +1140,13 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
     },
   };
   try {
+    const restored = meta('restore_recovery');
+    if (restored) transaction(() => {
+      const ctx = { workspaceId: owner.workspaceId, actor: 'system:restore' };
+      const { held } = chats.holdRestored(ctx);
+      recordChange(ctx, 'workspace', owner.workspaceId, 'restored', { data: { ...JSON.parse(restored), held } });
+      run("DELETE FROM meta WHERE key = 'restore_recovery'");
+    });
     api.retained = await createRetainedStorage({ dataDir, checkpoint: retainedCheckpoint, metadata: createRetainedMetadata({ all, get, run, transaction, now }) });
   } catch (error) { db.close(); throw error; }
   return api;

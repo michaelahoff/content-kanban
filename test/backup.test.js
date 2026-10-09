@@ -62,7 +62,8 @@ test('backup CLI restores app history, image roles and workspace bytes losslessl
   assert.equal(await readFile(path.join(restored, 'workspaces', f.card.id, 'draft.txt'), 'utf8'), 'Workspace draft');
   assert.equal(await readFile(path.join(restored, 'flows', f.before.workspace.projects[0].flowId, 'skills', 'voice.md'), 'utf8'), 'Retained skill');
   await f.start(restored);
-  assert.deepEqual(await f.api('GET', '/api/workspace'), f.before.workspace);
+  // The restore itself is the only new activity.
+  assert.deepEqual(await f.api('GET', '/api/workspace'), { ...f.before.workspace, eventCursor: f.before.workspace.eventCursor + 1 });
   assert.deepEqual(await f.api('GET', `/api/cards/${f.card.id}`), f.before.card);
   assert.deepEqual(await f.api('GET', `/api/cards/${f.card.id}/states`), f.before.states);
 });
@@ -94,7 +95,9 @@ test('backup selects only bound native rollouts and images, excludes global secr
   assert.deepEqual(await readFile(path.join(nativeHome, generated)), png);
   assert.deepEqual(report.nativeSkipped, [rollout]);
   await f.start(restored);
-  assert.deepEqual(await f.api('GET', `/api/cards/${f.card.id}/chat`), chat);
+  // History is identical; the bound conversation is not promised to resume.
+  assert.deepEqual(await f.api('GET', `/api/cards/${f.card.id}/chat`), { ...chat,
+    conversations: chat.conversations.map((conversation) => ({ ...conversation, state: 'native-unavailable' })) });
 });
 
 test('backup and restore refuse a running app and a second app cannot share its data', async (t) => {
@@ -119,8 +122,11 @@ test('damaged images abort backup and damaged backup bytes abort restore before 
   await assert.rejects(f.backup(), /Damaged image/);
   assert.equal((await readdir(path.join(f.root, 'backups'))).length, 1);
   await writeFile(path.join(backupDir, 'workspaces', f.card.id, 'draft.txt'), 'Damaged backup');
+  const empty = path.join(f.root, 'empty-target'); await mkdir(empty);
+  await assert.rejects(cli('restore', '--backup', backupDir, '--data-dir', empty), /hash mismatch/);
+  assert.deepEqual(await readdir(empty), []);
   const target = path.join(f.root, 'target'); await mkdir(target); await writeFile(path.join(target, 'keep.txt'), 'Existing data');
-  await assert.rejects(cli('restore', '--backup', backupDir, '--data-dir', target), /hash mismatch/);
+  await assert.rejects(cli('restore', '--backup', backupDir, '--data-dir', target), /Existing app data/);
   assert.deepEqual(await readdir(target), ['keep.txt']);
   assert.equal(await readFile(path.join(target, 'keep.txt'), 'utf8'), 'Existing data');
 });

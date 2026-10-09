@@ -110,7 +110,11 @@ A project taken out of active use. Archiving cancels its queued and pending work
 _Avoid_: Deleted project
 
 **Revoked attempt**:
-A delivery attempt that Stop or project archive has permanently stripped of authority. Its late native events stay in history, but it can never again change the card, add notes, create proposals or save outputs. A submission revoked by archive also cannot be retried.
+A delivery attempt that Stop, project archive or a workspace restore has permanently stripped of authority. Its late native events stay in history, but it can never again change the card, add notes, create proposals or save outputs. A submission revoked by archive or restore also cannot be retried.
+
+**Recovery hold**:
+The state a restored workspace starts in, installed once before any worker wakes. Unfinished submissions and pending lane runs are held for review instead of resuming; the old runtime's attempts, approvals and grants confer no authority; bound conversations are not resumed. Archived and cancelled work stays cancelled. Running anything again takes new explicit work.
+_Avoid_: Resume, replay
 
 **Card restoration**:
 Returning a whole card to an earlier saved card state while preserving intervening activity, conversation history, and image versions.
