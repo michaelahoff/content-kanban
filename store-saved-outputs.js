@@ -35,6 +35,7 @@ const settled = (output) => { if (output.status === 'failed') throw Object.assig
 export const suppliedInputs = (frozen) => [
   ...(frozen.context?.images ?? []).map((image) => ({ kind: 'image', versionId: image.id, label: image.name, roles: image.labels, hash: image.hash ?? null })),
   ...(frozen.context?.library ?? []).map((file) => ({ kind: 'asset', assetId: file.assetId, versionId: file.versionId, label: file.libraryPath ?? file.filename, hash: file.hash, size: file.size })),
+  ...(frozen.context?.savedOutputs ?? []).map((output) => ({ kind: 'output', outputId: output.outputId, versionId: output.versionId, label: output.filename, hash: output.hash, size: output.size })),
 ];
 
 // A lane result's declared sources, verified against what its submission
@@ -265,6 +266,24 @@ export function createSavedOutputStore({ all, get, run, transaction, retainedCar
       // A document is published as written text; a file or image as an uploaded file.
       const written = (JSON.parse(row.provenance).kind ?? 'document') === 'document';
       return library().promoteOutput(ctx, card.project_id, { ...input, cardId, outputId: row.id, versionId: row.version_id, written });
+    },
+    // Reused outputs for a Send from this card chat, in selection order: each
+    // an exact saved version with where it was saved. An output of another
+    // card, or one that was never saved, is a problem naming its ID; other
+    // cards reuse an output only once the user saves it to the Library.
+    resolve(ctx, cardId, ids) {
+      const files = []; const problems = [];
+      for (const id of ids) {
+        const key = `output:${id}`; const row = byId(ctx, id);
+        const reason = !row ? 'This saved output does not exist.'
+          : row.card_id !== cardId ? 'It was saved in another card’s chat. Save it to the project Library to reuse it on other cards.'
+            : row.status !== 'saved' ? `It was not saved${row.error ? `: ${row.error}` : '.'} Save it again from its reply first.` : null;
+        if (reason) { problems.push({ key, label: row?.filename ?? key, phase: 'resolve', reason }); continue; }
+        const output = outputFrom(row);
+        files.push({ outputId: output.id, versionId: output.versionId, filename: output.filename, hash: output.hash, size: output.size, cardId, attemptId: output.attemptId,
+          conversationId: output.conversationId, submissionId: output.submissionId, provider: output.provider, creationMethod: output.creationMethod });
+      }
+      return { files, problems };
     },
     // Restart interrupts an in-flight save. A document's text remains in the
     // reply; the user's own file save can be retried with its verified bytes;

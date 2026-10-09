@@ -58,7 +58,7 @@ export function createChatService({ store, adapter, adapters = { codex: adapter 
     // nothing is silently dropped. Sends verify every byte against the model
     // and tools they discovered; a preview samples large files and uses the
     // saved provider catalog.
-    async preflight(ctx, captured, { selections, provider, model, prompt, verify = false, discovery }) {
+    async preflight(ctx, captured, { selections, savedOutputs = [], provider, model, prompt, verify = false, discovery }) {
       discovery ??= store.providerCatalog(ctx, provider).discovery;
       const models = discovery?.models ?? [];
       const items = []; const imageProblems = [];
@@ -81,9 +81,23 @@ export function createChatService({ store, adapter, adapters = { codex: adapter 
           problems.push({ key, label: file.filename, phase: 'integrity', reason: `Version ${file.number} is unavailable: its bytes are missing or damaged. Repair it with its exact original bytes.` });
         }
       }
+      // Reused saved outputs of this card chat come last, in selection order.
+      const reusable = store.savedOutputs.resolve(ctx, captured.cardId, savedOutputs);
+      problems.push(...reusable.problems);
+      const reused = [];
+      for (const output of reusable.files) {
+        const key = `output:${output.outputId}`;
+        try { reused.push({ ...output, projectId: captured.projectId, key, label: output.filename, ...await store.savedOutputs.delivery.inspect(ctx, captured.projectId, output.versionId, { verify }) }); }
+        catch (error) {
+          if (!error.status) throw error;
+          problems.push({ key, label: output.filename, phase: 'integrity', reason: 'Its saved bytes are missing or damaged, and nothing else is ever sent in their place. Remove it from this prompt, or save its reply again as a new document and use that.' });
+        }
+      }
       const textBytes = Buffer.byteLength(prompt) + captured.context.fields.reduce((sum, field) => sum + Buffer.byteLength(String(field.value ?? '')), 0);
-      const plan = planInputs(provider, [...items, ...library], { textBytes, model: models.find((entry) => entry.id === model), shellTool: hasShellTool(discovery) });
-      captured.context.library = plan.inputs.slice(items.length).map(({ key, label, ...file }) => ({ ...file, ...(file.method === 'text' ? {} : { path: store.library.copyPath(file) }) }));
+      const plan = planInputs(provider, [...items, ...library, ...reused], { textBytes, model: models.find((entry) => entry.id === model), shellTool: hasShellTool(discovery) });
+      const frozen = (inputs, copies) => inputs.map(({ key, label, ...file }) => ({ ...file, ...(file.method === 'text' ? {} : { path: copies.copyPath(file) }) }));
+      captured.context.library = frozen(plan.inputs.slice(items.length, items.length + library.length), store.library);
+      captured.context.savedOutputs = frozen(plan.inputs.slice(items.length + library.length), store.savedOutputs.delivery);
       captured.context.librarySelections = resolved.selections;
       captured.context.warnings = plan.warnings;
       captured.problems = [...problems, ...plan.problems];
@@ -91,7 +105,7 @@ export function createChatService({ store, adapter, adapters = { codex: adapter 
     },
     async preview(ctx, cardId, { verify = false, discovery } = {}) {
       const captured = store.chats.context(ctx, cardId);
-      return this.preflight(ctx, captured, { selections: captured.librarySelections, provider: captured.provider, model: captured.model, prompt: captured.prompt, verify, discovery });
+      return this.preflight(ctx, captured, { selections: captured.librarySelections, savedOutputs: captured.savedOutputSelections, provider: captured.provider, model: captured.model, prompt: captured.prompt, verify, discovery });
     },
     // A lane run's inputs: every gallery photo, then the playbook's Library
     // sources, checked like a manual Send for the lane's provider and model.
@@ -148,24 +162,27 @@ export function createChatService({ store, adapter, adapters = { codex: adapter 
         lane: { ...lane, fieldVersions: captured.versions } }, compileConfiguration(settings.selection, discovery, cardTools, provider));
     },
     // Everything one delivery attempt sends besides its text: the card's image
-    // references, then verified Library inputs (inline text, and independent
-    // workspace copies rebuilt from the frozen versions, sent as native images
-    // or Claude PDF documents). A Library original that cannot be
-    // delivered stops the attempt, recording what happened to each input.
+    // references, then verified Library inputs and reused saved outputs (inline
+    // text, and independent workspace copies rebuilt from the frozen versions,
+    // sent as native images or Claude PDF documents). An original that cannot
+    // be delivered stops the attempt, recording what happened to each input.
     async deliveryInputs(ctx, submission) {
       const library = submission.context.library ?? [];
+      const outputs = submission.context.savedOutputs ?? [];
+      const entry = (file) => ({ versionId: file.versionId, filename: file.filename, method: file.method, ...(['copy', 'document'].includes(file.method) ? { format: file.format } : {}) });
       const delivery = [...submission.context.images.map((image) => ({ imageId: image.id, filename: image.name, method: 'image' })),
-        ...library.map((file) => ({ versionId: file.versionId, filename: file.filename, method: file.method, ...(['copy', 'document'].includes(file.method) ? { format: file.format } : {}) }))];
+        ...library.map(entry), ...outputs.map((output) => ({ outputId: output.outputId, ...entry(output) }))];
       const stopped = (failed, reason) => delivery.map((entry) => ({ ...entry, status: entry === failed ? 'failed' : 'not-sent', reason }));
       let nativeInputs;
       try { nativeInputs = await this.references(submission); }
       catch (error) { throw Object.assign(error, { delivery: stopped(null, error.message) }); }
       const texts = new Map();
-      for (const [index, file] of library.entries()) {
+      const sources = [...library.map((file) => [file, store.library]), ...outputs.map((output) => [output, store.savedOutputs.delivery])];
+      for (const [index, [file, reads]] of sources.entries()) {
         try {
-          if (file.method === 'text') texts.set(file.versionId, await store.library.text(ctx, file.projectId, file.versionId));
+          if (file.method === 'text') texts.set(file.versionId, await reads.text(ctx, file.projectId, file.versionId));
           else {
-            const copy = await store.library.materialize(ctx, file.projectId, file.versionId, workspace(submission.cardId), file.path);
+            const copy = await reads.materialize(ctx, file.projectId, file.versionId, workspace(submission.cardId), file.path);
             if (file.method === 'image') nativeInputs.push({ type: 'localImage', path: copy.path });
             if (file.method === 'document') nativeInputs.push({ type: 'localDocument', path: copy.path });
           }
@@ -181,7 +198,7 @@ export function createChatService({ store, adapter, adapters = { codex: adapter 
     // the Claude model's evidence-backed route. Without it the attempt stops,
     // naming each such file, rather than sending a path or a subset.
     assertRoutes(submission, discovery, delivery) {
-      const library = submission.context.library ?? [];
+      const library = [...submission.context.library ?? [], ...submission.context.savedOutputs ?? []];
       const pdf = discovery.models?.find((model) => model.id === submission.model)?.pdf;
       const [method, reason] = submission.provider === 'codex' ? ['copy', hasShellTool(discovery) ? null : `${noShellTool}, then Retry.`]
         : ['document', pdf?.available ? null : `Claude PDF delivery is not enabled here: ${pdf?.reason ?? 'this Claude setup reported no PDF route.'} Use the checked setup, then Retry.`];

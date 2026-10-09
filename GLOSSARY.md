@@ -57,7 +57,7 @@ One try at delivering a submission to a native agent. Retrying a failed submissi
 _Avoid_: Run, retry
 
 **Submitted card context**:
-The card content, image versions and selected Library file versions captured for a particular chat submission. It remains the record of what was sent even when the card changes afterward.
+The card content, image versions, selected Library file versions and reused saved output versions captured for a particular chat submission. It remains the record of what was sent even when the card changes afterward.
 
 **Card proposal**:
 A suggested change to a card that awaits the user's acceptance.
@@ -73,7 +73,7 @@ An image version produced in a card chat, either by native image generation or b
 _Avoid_: Artifact, attachment
 
 **Saved output**:
-An exact retained snapshot of something a card chat produced, kept only by an explicit save: reply text saved with Save as document, a document a lane result declares with its exact text, or a finished file (including a rendered image) in the card workspace that a lane result or the user's Save output names by its path. A file is saved only from a response that could write files, never by scanning the workspace or because a reply mentions it, and a failed file save can be retried only with the exact bytes first verified. It records its card chat, conversation, submission, delivery attempt, actual provider and creation method, and keeps the context that was supplied apart from any derivation the agent declared; what is not known stays unknown. Saving is separate from producing it and from any card effect. A stopped, archived or restored attempt cannot save one, though the user can still save its retained text. Saved outputs outlive the card workspace, the card, fresh context and archive. Only the user can promote one into the Project Library.
+An exact retained snapshot of something a card chat produced, kept only by an explicit save: reply text saved with Save as document, a document a lane result declares with its exact text, or a finished file (including a rendered image) in the card workspace that a lane result or the user's Save output names by its path. A file is saved only from a response that could write files, never by scanning the workspace or because a reply mentions it, and a failed file save can be retried only with the exact bytes first verified. It records its card chat, conversation, submission, delivery attempt, actual provider and creation method, and keeps the context that was supplied apart from any derivation the agent declared; what is not known stays unknown. Saving is separate from producing it and from any card effect. A stopped, archived or restored attempt cannot save one, though the user can still save its retained text. Saved outputs outlive the card workspace, the card, fresh context and archive. Only the user can promote one into the Project Library. A saved output can be reused, as its exact version, in later prompts of its own card chat, including after fresh context; other cards reuse it only once the user saves it to the Library. Reusing it never adopts, applies or promotes it.
 _Avoid_: Artifact, attachment, export
 
 **Project Library**:

@@ -166,6 +166,10 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
         throw error;
       }
     };
+    // A card chat as the browser shows it, including after fresh context: the
+    // saved and image outputs of earlier conversations stay listed to reuse.
+    const chatView = (ctx, id) => ({ ...store.chats.snapshot(ctx, id), proposals: store.protection.proposals(ctx, id), savedOutputs: store.savedOutputs.list(ctx, id),
+      outputs: store.images.outputs(ctx, id).map((output) => ({ ...output, available: Boolean(output.imageId) && existsSync(path.join(imagesDir, output.imageId)) })) });
     const routes = [
       ['PUT', /^\/api\/cards\/([^/]+)\/draft-lease$/, async (ctx, req, id) => store.protection.lease(ctx, id, await read(req))],
       ['POST', /^\/api\/cards\/([^/]+)\/chat\/text-preview$/, async (ctx, req, id) => store.protection.previewAcceptance(ctx, id, await read(req))],
@@ -184,12 +188,12 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
         store.savedOutputs.promote(ctx, id, url.pathname.split('/').at(-2), libraryChoices(await read(req), ['folderId', 'filename', 'collision', 'assetId'], 'Save to project library')), 201],
       ['GET', /^\/api\/chat-activity$/, (ctx) => ({ cursor: store.workspace(ctx).eventCursor, entries: store.chats.indicators(ctx) })],
       ['POST', /^\/api\/cards\/([^/]+)\/chat\/revoke-grants$/, (ctx, req, id) => store.chats.clearGrants(ctx, id)],
-      ['GET', /^\/api\/cards\/([^/]+)\/chat$/, (ctx, req, id) => (worker.flushCard(id), { ...store.chats.snapshot(ctx, id), proposals: store.protection.proposals(ctx, id), savedOutputs: store.savedOutputs.list(ctx, id), outputs: store.images.outputs(ctx, id).map((output) => ({ ...output, available: Boolean(output.imageId) && existsSync(path.join(imagesDir, output.imageId)) })) })],
+      ['GET', /^\/api\/cards\/([^/]+)\/chat$/, (ctx, req, id) => (worker.flushCard(id), chatView(ctx, id))],
       ['PUT', /^\/api\/cards\/([^/]+)\/chat\/composer$/, async (ctx, req, id) => store.chats.saveComposer(ctx, id, await read(req))],
       ['POST', /^\/api\/cards\/([^/]+)\/chat\/preview$/, (ctx, req, id) => chat.preview(ctx, id)],
       ['POST', /^\/api\/cards\/([^/]+)\/chat\/discover$/, (ctx, req, id) => codexAction(() => chat.discover(ctx, id))],
       ['POST', /^\/api\/cards\/([^/]+)\/chat\/submissions$/, (ctx, req, id) => codexAction(async () => chat.queue(ctx, id, await read(req))), 201],
-      ['POST', /^\/api\/cards\/([^/]+)\/chat\/fresh$/, async (ctx, req, id) => store.chats.fresh(ctx, id, await read(req))],
+      ['POST', /^\/api\/cards\/([^/]+)\/chat\/fresh$/, async (ctx, req, id) => (store.chats.fresh(ctx, id, await read(req)), chatView(ctx, id))],
       ['POST', /^\/api\/cards\/([^/]+)\/chat\/viewed$/, (ctx, req, id) => (store.chats.viewed(ctx, id), { ok: true })],
       ['POST', /^\/api\/cards\/([^/]+)\/chat\/reconcile$/, (ctx, req, id) => codexAction(() => worker.reconcileCard(id))],
       ['POST', /^\/api\/cards\/([^/]+)\/chat\/continue$/, async (ctx, req, id) => store.chats.continueOutside(ctx, id, (await read(req))?.submissionId)],
