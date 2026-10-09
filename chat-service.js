@@ -128,7 +128,9 @@ export function createChatService({ store, adapter, adapters = { codex: adapter 
     },
     // A lane run's frozen submission: the playbook's prompt, selections and
     // field authority with the provider configuration current at queue time.
-    async queueLane(ctx, cardId, { id, prompt, provider, model, selections, assets = [], authority, lane }) {
+    // confirm() runs synchronously with the commit, after every asynchronous
+    // check, so the caller can refuse inputs that changed meanwhile.
+    async queueLane(ctx, cardId, { id, prompt, provider, model, selections, assets = [], authority, lane, confirm = () => {} }) {
       const existing = store.chats.findSubmission(ctx, cardId, id);
       if (existing) return existing;
       providers?.assertEnabled(ctx, provider);
@@ -139,6 +141,7 @@ export function createChatService({ store, adapter, adapters = { codex: adapter 
       if (!discovery.models.some((entry) => entry.id === model)) fail(409, `The model ${model} is not available for ${provider === 'claude' ? 'Claude' : 'Codex'}. Choose another model in the playbook or card chat.`);
       const captured = await this.previewLane(ctx, cardId, { selections, assets, provider, model, prompt, verify: true, discovery });
       assertSendable(captured);
+      confirm();
       if (settings.revision !== store.providerConfiguration(ctx, provider).revision) fail(409, 'Provider settings changed while preparing the lane run.');
       assertSendable(captured, store.library.resolve(ctx, captured.projectId, assets), 'A selected Library file changed while preparing the lane run.');
       return store.chats.queueLane(ctx, cardId, { id }, { ...captured, prompt, provider, model, authority,

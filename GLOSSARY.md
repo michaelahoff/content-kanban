@@ -33,7 +33,7 @@ The Markdown file that describes a project and its lanes. Every lane run reads i
 A shared Markdown file of know-how, such as a voice guide, that lane playbooks include by name.
 
 **Lane run**:
-One execution of a lane playbook's instructions for one card, triggered by moving the card into an `on-enter` lane or by Run playbook. Returning to the lane starts another run. Creating a card does not start one.
+One execution of a lane playbook's instructions for one card, triggered by moving the card into an `on-enter` lane or by Run playbook. Returning to the lane starts another run. Creating a card does not start one. A pending run is a request: it sends what is saved when it queues, not what was saved when it was requested.
 _Avoid_: Lane graph run
 
 **Lane result**:
