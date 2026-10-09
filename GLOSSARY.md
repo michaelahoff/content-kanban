@@ -98,7 +98,7 @@ _Avoid_: Deletion
 One immutable retained content of a project asset. Replace adds a new current version and keeps the older ones. Restoring an older version adds a new current version with its content; it never revives the older version itself. A version whose bytes are missing or damaged is unavailable until repaired with its exact original bytes; it is never silently replaced by other content.
 
 **Project copy**:
-A new project asset made from another asset's current version, in the same or another project. It has its own identity, bytes and history, starting at one version, and keeps a link to the version it came from. The source's removal, damage or archive never affects it.
+A new project asset in another project, made from an asset's current version. It has its own identity, bytes and history, starting at one version, and keeps a link to the version it came from. The source's removal, damage or archive never affects it.
 _Avoid_: Linked copy, shared asset
 
 **Document draft**:

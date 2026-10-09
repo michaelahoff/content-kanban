@@ -1248,3 +1248,16 @@ test('export and restore keep a restored history and an independent project copy
     assert.deepEqual(Buffer.from(await (await fetch(`${base}${library}/versions/${version.id}/content`)).arrayBuffer()), Buffer.from(bytes));
   }
 });
+
+test('a repeated restore operation must name the version it restored, and copies go only to another project', async (t) => {
+  const f = await fixture(t);
+  const v1 = await f.upload('script.md', Buffer.from('# Take one'));
+  const v2 = await f.upload('script.md', Buffer.from('# Take two'), { collision: 'replace', assetId: v1.asset.id });
+  const v3 = await f.upload('script.md', Buffer.from('# Take three'), { collision: 'replace', assetId: v1.asset.id });
+  await f.library.restoreVersion(f.ctx, f.projectId, v1.asset.id, { versionId: v1.version.id, baseVersionId: v3.version.id, operationId: 'restore-1' });
+  await assert.rejects(f.library.restoreVersion(f.ctx, f.projectId, v1.asset.id, { versionId: v2.version.id, baseVersionId: v3.version.id, operationId: 'restore-1' }),
+    (error) => error.status === 409 && /different/.test(error.message));
+  await assert.rejects(f.library.copyAsset(f.ctx, f.projectId, v1.asset.id, { targetProjectId: f.projectId, filename: 'copy.md', operationId: 'copy-1' }),
+    (error) => error.status === 400 && /another project/.test(error.message));
+  assert.deepEqual(f.library.list(f.ctx, f.projectId).assets.map((asset) => asset.filename), ['script.md']);
+});

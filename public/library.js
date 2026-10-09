@@ -134,7 +134,10 @@ function send(entry) {
 }
 // Create new is the default; Replace saves a new version of the file holding
 // the name. A copy is always a separate file, so it offers no Replace.
-function chooseCollision(conflict, holder, skip = 'Skip this file.', { replace = true } = {}) {
+// An open form (such as Copy to project) closes before the question opens.
+async function chooseCollision(conflict, holder, skip = 'Skip this file.', { replace = true } = {}) {
+  const form = $('#form-dialog');
+  if (form.open) { const closed = new Promise((resolve) => form.addEventListener('close', resolve, { once: true })); form.close(); await closed; }
   return new Promise((resolve) => {
     let choice = 'cancel';
     const option = (value, label, detail, checked = false, disabled = false) => `<label class="collision-option"><input type="radio" name="collision" value="${value}" ${checked ? 'checked' : ''} ${disabled ? 'disabled' : ''}><span>${label}<small>${escape(detail)}</small></span></label>`;
@@ -337,9 +340,6 @@ function copyToProject() {
       const url = `${base()}/assets/${encodeURIComponent(asset.id)}/copy`;
       let result = await call('POST', url, body);
       if (result.status === 409 && result.body.conflict) {
-        // The collision question reuses the form dialog once this form has closed.
-        const form = $('#form-dialog'); const closed = new Promise((resolve) => form.addEventListener('close', resolve, { once: true }));
-        form.close(); await closed;
         const choice = await chooseCollision(result.body.conflict, null, 'Copy nothing.', { replace: false });
         if (choice !== 'create') return;
         result = await call('POST', url, { ...body, collision: 'create' });
