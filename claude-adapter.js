@@ -6,6 +6,7 @@ import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { imageFormat } from './image-files.js';
+import { createNativeBoundary } from './native-boundary.js';
 
 const error = (kind, message) => Object.assign(new Error(message), { kind });
 // Claude Code reports thinking and text as separate blocks, and its final
@@ -21,10 +22,18 @@ const uuid = (value) => /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(va
 export function createClaudeAdapter({ command = 'claude', args = [], env = process.env, cwd = process.cwd(), timeoutMs = 15000 } = {}) {
   const sessions = new Map(); const processes = new Set(); const listeners = new Map();
   const nativeHome = env.CLAUDE_CONFIG_DIR || path.join(homedir(), '.claude');
+  let retainedDataDir = null; let boundaryTask = null;
+  const boundary = () => {
+    if (!retainedDataDir) return null;
+    // A failed setup is retried, so a corrected installation applies on refresh.
+    boundaryTask ??= createNativeBoundary({ dataDir: retainedDataDir, nativeHome }).catch((error) => { boundaryTask = null; throw error; });
+    return boundaryTask;
+  };
   const historyPath = (work, id) => path.join(nativeHome, 'projects', work.replace(/[^a-zA-Z0-9]/g, '-'), `${id}.jsonl`);
   const emit = (session, event) => { for (const handler of listeners.get(session.id) ?? []) handler.onEvent?.({ threadId: session.id, turnId: session.turnId, ...event }); };
   async function launch({ id, work = cwd, model, instructions = '', resume = false } = {}) {
-    const child = spawn(command, [...args, '-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--include-partial-messages',
+    const guard = await boundary(); await guard?.check();
+    const child = (guard ? guard.launch.bind(guard) : spawn)(command, [...args, '-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--include-partial-messages',
       '--safe-mode', '--tools', '', '--strict-mcp-config', ...(id ? [resume ? '--resume' : '--session-id', id] : []),
       ...(model ? ['--model', model] : []), ...(instructions ? ['--append-system-prompt', instructions] : [])],
     { cwd: work, env, stdio: ['pipe', 'pipe', 'pipe'] });
@@ -112,13 +121,19 @@ export function createClaudeAdapter({ command = 'claude', args = [], env = proce
     try { await done; } finally { clearTimeout(timer); }
   }
   return {
+    async protectRetainedData(dataDir) { await Promise.all([...processes].map(stop)); retainedDataDir = dataDir; },
+    async assertProtection() {
+      if (retainedDataDir) throw error('configuration-unavailable', 'Retained-data protection for this installed Claude configuration is unproven. Use the verified Codex configuration until a Claude native gate is available.');
+    },
+    async disposeProtection() { if (boundaryTask) await (await boundaryTask.catch(() => null))?.close(); boundaryTask = null; },
     get running() { return processes.size > 0; },
     async discover({ cwd: work = cwd } = {}) {
       const session = await launch({ work });
       try {
         const models = session.info.models;
         if (!Array.isArray(models) || !models.length) throw error('configuration-unavailable', 'Claude Code returned no available models. Update Claude Code and refresh.');
-        return { cwd: work, harness: { userAgent: 'Claude Code', claudeHome: nativeHome }, models: models.map((model) => ({ id: model.value, displayName: model.displayName ?? model.value, resolvedModel: model.resolvedModel })), items: [], errors: [] };
+        return { cwd: work, harness: { userAgent: 'Claude Code', claudeHome: nativeHome }, models: models.map((model) => ({ id: model.value, displayName: model.displayName ?? model.value, resolvedModel: model.resolvedModel })), items: [], errors: [],
+          ...(retainedDataDir ? { protection: { supported: false, reason: 'Retained-data protection for Claude is unproven. Use the verified Codex configuration until a Claude native gate is available.' } } : {}) };
       } finally { await stop(session); }
     },
     subscribe(threadId, handler) {

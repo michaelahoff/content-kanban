@@ -8,6 +8,37 @@ import { DatabaseSync } from 'node:sqlite';
 
 import { fixture, waitFor } from './support/chat-fixture.js';
 
+test('an unproven retained-data boundary holds a prompt with no images before opening a native thread', async (t) => {
+  const f = await fixture(t); const card = await f.card();
+  const discover = f.codex.discover.bind(f.codex);
+  f.codex.discover = async (input) => ({ ...await discover(input), protection: { supported: false, reason: 'Install the enforced native boundary.' } });
+  const submission = await f.queue(card.id, await f.compose(card.id));
+  const outcome = await waitFor(async () => {
+    const row = (await f.chat(card.id)).submissions.find((row) => row.id === submission.id);
+    return ['held', 'running'].includes(row.status) && row;
+  });
+  assert.equal(outcome.status, 'held');
+  assert.match(outcome.reason, /Install the enforced native boundary/);
+  assert.equal(f.codex.threads.size, 0);
+});
+
+test('inherited native actions discovered during preparation run inside the retained-data boundary without holding', async (t) => {
+  const f = await fixture(t); const card = await f.card();
+  await f.ok('PUT', '/api/providers/codex', { revision: 0, selection: { inherited: true, selected: [], instructions: '' } });
+  const discover = f.codex.discover.bind(f.codex); let hooks = [];
+  f.codex.discover = async (input) => ({ ...await discover(input), protection: { policy: 'linux-retained-v1', supported: true, fullAccess: true }, hooks });
+  let open;
+  f.codex.openGate = new Promise((resolve) => { open = resolve; });
+  const submission = await f.queue(card.id, await f.compose(card.id));
+  hooks = [{ key: 'local-writer' }]; open();
+  const outcome = await waitFor(async () => {
+    const row = (await f.chat(card.id)).submissions.find((row) => row.id === submission.id);
+    return ['held', 'running', 'completed'].includes(row.status) && row;
+  });
+  assert.notEqual(outcome.status, 'held', outcome.reason);
+  assert.equal(f.codex.sends.length, 1);
+});
+
 test('a terminal-only Codex user agent change resumes the saved conversation without holding a follow-up', async (t) => {
   const f = await fixture(t); const card = await f.card();
   const discover = f.codex.discover.bind(f.codex);

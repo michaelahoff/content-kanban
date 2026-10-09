@@ -75,6 +75,13 @@ _Avoid_: Artifact, attachment
 **Card workspace**:
 The working files associated with a particular card's agent work.
 
+**Retained data**:
+The authoritative bytes Frameboard keeps: original assets, saved outputs, frozen submission history, and the database and authority metadata. Native agents can read retained data but never write it. It is distinct from an image's Original role, and from card workspaces and hand-off notes, which agents may change.
+_Avoid_: protected files, app storage
+
+**Retained-data protection hold**:
+A hold placed on a submission before any native execution because Frameboard cannot prove that retained data is outside the agent's write authority for the current OS, harness and configuration. It explains what to install or change, and applies even when no assets are selected.
+
 **Frameboard harness configuration**:
 The instructions, skills, tools, connectors, and hooks selected for a provider across Frameboard's card chats. It is either an isolated selection or, by explicit choice, the provider's full native setup without isolation. Selecting a capability is distinct from granting permission for its actions or authority to change a card.
 

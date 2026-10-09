@@ -92,6 +92,7 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
     const codex = codexAdapter ?? createCodexAdapter();
     const claude = claudeAdapter ?? createClaudeAdapter();
     const adapters = { codex, claude };
+    await Promise.all(Object.values(adapters).map((adapter) => adapter.protectRetainedData?.(dataDir)));
     const providers = createProviderService({ store, adapters });
     const chat = createChatService({ store, adapter: codex, adapters, providers, dataDir });
     stream = createEventStream({ store, replayLimit: streamReplayLimit });
@@ -261,6 +262,7 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
           // during shutdown. Finish its filesystem work and stop that process.
           await providers.drain();
           await Promise.all([codex.close(), claude.close()]);
+          await Promise.all([codex.disposeProtection?.(), claude.disposeProtection?.()]);
           return error;
         }).finally(() => { try { store.close(); } finally { lock.release(); } });
       }

@@ -199,7 +199,9 @@ export function createChatWorker({ store, adapter, adapters = { codex: adapter }
       const images = await service.references(submission);
       if (closed) return;
       if (store.chats.attempt(attempt.id)?.status === 'interrupt-requested') { end(work, 'interrupted'); return; }
-      const recheck = queuedConfigurationDecision(submission.configuration, store.providerConfiguration(ctx, submission.provider).selection, discovery);
+      const actualDiscovery = await configurationDiscovery(adapter, { cwd }, submission.provider);
+      if (closed) return;
+      const recheck = queuedConfigurationDecision(submission.configuration, store.providerConfiguration(ctx, submission.provider).selection, actualDiscovery);
       if (recheck.status !== 'ready') { store.chats.hold(ctx, attempt.id, recheck.reason); release(work); return; }
       if (work.conversation.binding?.threadId) {
         const outside = await outsideTurns(work.conversation.id, opened.threadId, adapter);
@@ -207,6 +209,9 @@ export function createChatWorker({ store, adapter, adapters = { codex: adapter }
         if (store.chats.attempt(attempt.id)?.status === 'interrupt-requested') { end(work, 'interrupted'); return; }
         if (outside.length) { store.chats.holdOutside(ctx, attempt.id, outside); release(work); return; }
       }
+      if (store.chats.attempt(attempt.id)?.status !== 'dispatching') { release(work); return; }
+      await adapter.assertProtection?.();
+      if (closed) return;
       if (store.chats.attempt(attempt.id)?.status !== 'dispatching') { release(work); return; }
       work.dispatching = true; work.sent = true;
       const started = await adapter.startTurn({ threadId: opened.threadId, model: submission.model,

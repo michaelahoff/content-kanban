@@ -15,6 +15,7 @@ function renderModels() {
   $('#refresh-models').disabled = !enabled.length;
   $('#models').innerHTML = enabled.length ? enabled.map((provider) => `<div class="model-provider"><strong>${names[provider.provider]}</strong>
     ${provider.error ? `<p class="settings-error">${escape(provider.error)}${provider.discovery ? ' Previously saved models remain available.' : ''}</p>` : ''}
+    ${provider.discovery?.protection ? `<p class="${provider.discovery.protection.supported ? '' : 'settings-error'}">${escape(provider.discovery.protection.supported ? 'Retained data is protected during native execution, permission escalation and Full access.' : provider.discovery.protection.reason)}</p>` : ''}
     ${provider.discovery ? `<ul>${provider.discovery.models.map((model) => `<li>${escape(model.displayName ?? model.id)} <small>(${escape(model.id)})</small></li>`).join('')}</ul><time>Last refreshed ${escape(new Date(provider.updatedAt).toLocaleString())}</time>` : '<p>No saved models yet. Refresh models to check your installation.</p>'}
   </div>`).join('') : '<p>Both providers are disabled. Enable a provider above to use card chats.</p>';
 }

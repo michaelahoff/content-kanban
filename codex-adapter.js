@@ -3,6 +3,9 @@
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { isDeepStrictEqual } from 'node:util';
+import path from 'node:path';
+import { homedir } from 'node:os';
+import { createNativeBoundary } from './native-boundary.js';
 
 export class CodexError extends Error {
   constructor(kind, message, details = {}) { super(message); this.kind = kind; Object.assign(this, details); }
@@ -11,9 +14,16 @@ const unavailable = (message) => new CodexError('configuration-unavailable', mes
 
 export function createCodexAdapter({
   command = 'codex', args = ['app-server'], env = process.env, cwd = process.cwd(),
-  requestTimeoutMs = 60000, clientVersion = '0',
+  requestTimeoutMs = 60000, clientVersion = '0', retainedTestPorts = [],
 } = {}) {
   let session = null;
+  let retainedDataDir = null; let boundaryTask = null;
+  const boundary = () => {
+    if (!retainedDataDir) return null;
+    // A failed setup is retried, so a corrected installation applies on refresh.
+    boundaryTask ??= createNativeBoundary({ dataDir: retainedDataDir, nativeHome: env.CODEX_HOME || path.join(env.HOME || homedir(), '.codex'), testPorts: retainedTestPorts }).catch((error) => { boundaryTask = null; throw error; });
+    return boundaryTask;
+  };
   const listeners = new Map();
   const bindings = new Map();
   const sequences = new Map();
@@ -33,8 +43,8 @@ export function createCodexAdapter({
       }
     }
   }
-  function startSession() {
-    const child = spawn(command, args, { cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
+  function startSession(guard) {
+    const child = (guard ? guard.launch.bind(guard) : spawn)(command, args, { cwd: guard ? undefined : cwd, env, stdio: ['pipe', 'pipe', 'pipe'] });
     const current = { child, pending: new Map(), incoming: new Map(), threads: new Set(), nextId: 1, exited: false };
     const ended = (error) => {
       if (current.exited) return;
@@ -134,7 +144,9 @@ export function createCodexAdapter({
     return current;
   }
   async function connection() {
-    session ??= startSession(); const current = session; await current.ready; return current;
+    const guard = await boundary();
+    if (!session) { await guard?.check(); session ??= startSession(guard); }
+    const current = session; await current.ready; return current;
   }
   const request = async (method, params) => (await connection()).request(method, params);
   async function pages(method, params) {
@@ -151,6 +163,9 @@ export function createCodexAdapter({
     if (!model || !(await pages('model/list', { includeHidden: false })).some((entry) => !entry.hidden && entry.id === model)) throw new CodexError('model-unavailable', `The selected Codex model ${model ?? '(none)'} is unavailable. Select an available model explicitly.`);
   }
   const api = {
+    async protectRetainedData(dataDir) { await api.close(); retainedDataDir = dataDir; },
+    async assertProtection() { await (await boundary())?.check(); },
+    async disposeProtection() { if (boundaryTask) await (await boundaryTask.catch(() => null))?.close(); boundaryTask = null; },
     get running() { return Boolean(session && !session.exited); },
     subscribe(threadId, handlers) {
       if (!listeners.has(threadId)) listeners.set(threadId, new Set());
@@ -158,6 +173,7 @@ export function createCodexAdapter({
       return () => { listeners.get(threadId)?.delete(handlers); if (!listeners.get(threadId)?.size) listeners.delete(threadId); };
     },
     async discover({ cwd: work = cwd } = {}) {
+      await api.assertProtection();
       const current = await connection(); const harness = await current.ready;
       const [models, skills, config, hooks, plugins, mcpServers, requirements] = await Promise.all([
         pages('model/list', { includeHidden: false }), current.request('skills/list', { cwds: [work], forceReload: true }),
@@ -165,6 +181,7 @@ export function createCodexAdapter({
         current.request('plugin/installed', {}), pages('mcpServerStatus/list', {}), current.request('configRequirements/read', null),
       ]);
       return {
+        ...(retainedDataDir ? { protection: (await boundary()).snapshot } : {}),
         cwd: work, harness: { userAgent: harness.userAgent, codexHome: harness.codexHome },
         models: models.filter((m) => !m.hidden).map((m) => ({ id: m.id, displayName: m.displayName, isDefault: m.isDefault })),
         skills: skills.data.flatMap((entry) => entry.skills).map((s) => ({ id: s.path, name: s.name, description: s.description, scope: s.scope })),
@@ -205,6 +222,7 @@ export function createCodexAdapter({
       return { threadId: id, resumed: Boolean(threadId), native: result };
     },
     async startTurn({ threadId, input, clientUserMessageId, model, fullAccess = false }) {
+      await api.assertProtection();
       const binding = bindings.get(threadId); const current = await connection();
       if (!binding || !current.threads.has(threadId)) throw new CodexError('not-open', 'Resume the exact native binding before submitting.');
       if (binding.blocked) throw unavailable(binding.blocked);

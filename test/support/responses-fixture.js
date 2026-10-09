@@ -29,7 +29,11 @@ export async function createResponsesFixture() {
     const id = `resp_fb_${n}`;
     emit('response.created', { response: { id, object: 'response', status: 'in_progress', output: [] } });
     let item;
-    if (step.functionCall) {
+    if (step.customToolCall) {
+      item = { type: 'custom_tool_call', id: `ct_fb_${n}`, call_id: `call_fb_${n}`, name: step.customToolCall.name, input: step.customToolCall.input };
+      emit('response.output_item.added', { output_index: 0, item: { ...item, input: '' } });
+      emit('response.custom_tool_call_input.delta', { output_index: 0, item_id: item.id, delta: item.input });
+    } else if (step.functionCall) {
       item = { type: 'function_call', id: `fc_fb_${n}`, call_id: `call_fb_${n}`, name: step.functionCall.name, arguments: JSON.stringify(step.functionCall.arguments ?? {}) };
       emit('response.output_item.added', { output_index: 0, item: { ...item, arguments: '' } });
       emit('response.function_call_arguments.delta', { output_index: 0, item_id: item.id, delta: item.arguments });

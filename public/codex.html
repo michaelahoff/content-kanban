@@ -21,7 +21,7 @@
       <label for="instructions">Your instructions</label>
       <textarea id="instructions" rows="6" maxlength="50000" placeholder="Guidance for your Frameboard card chats"></textarea>
       <fieldset><legend>Codex setup</legend>
-        <label class="native-item"><input type="checkbox" id="inherited">Use my full Codex setup (not isolated)<small>Card chats load your global instructions, skills, MCP servers, plugins/connectors and hooks exactly as Codex does outside Frameboard. Connectors can act outside Frameboard, for example publishing or sending. Frameboard cannot exclude them for a card. Sandbox, approvals and card acceptance rules still apply. Switching modes holds queued prompts and needs an empty fresh context for existing conversations.</small></label>
+        <label class="native-item"><input type="checkbox" id="inherited">Use my full Codex setup (not isolated)<small>Card chats load your global instructions, skills, MCP servers, plugins/connectors and hooks exactly as Codex does outside Frameboard. Connectors can act outside Frameboard, for example publishing or sending. Frameboard cannot exclude them for a card. Local hooks and tools run inside the retained-data boundary, which only reaches verified OpenAI endpoints. This choice is separate from Full native access; neither bypasses retained-data protection, sandbox, approvals or card acceptance. Switching modes holds queued prompts and needs an empty fresh context for existing conversations.</small></label>
       </fieldset>
       <fieldset id="isolated-items"><legend>Optional native configuration</legend>
         <p>New discoveries start unchecked. A selection makes a capability available; actions still follow their permission and card acceptance rules.</p>
