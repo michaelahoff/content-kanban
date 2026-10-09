@@ -3,7 +3,8 @@ import { $, escape, iconButton, imageURL, toast, wordCount, confirmDelete, small
 import { retry } from './api.js';
 import { templates, fieldInputId } from './card-template.js';
 import { state, project, locateCard, cardCount, loadWorkspace, loadCards, cardChanged, flushCards, createCard, moveCard, deleteCard, deleteLane, deleteProject, archiveProject, unarchiveProject, saveStatus, hasUnsavedWork, onStatusChange, useSavedCard, undoLastMove, loadPlaybooks, applyStages } from './state.js';
-import { view, selectProject, renderApp, renderBoard, renderStatus, editProject, editLane, editProjectPrompt, toggleCards } from './board.js';
+import { view, selectProject, renderApp, renderBoard, renderStatus, editProject, editLane, editProjectPrompt, toggleCards, showTab } from './board.js';
+import { uploadLibraryFiles, libraryActivity, hasLibraryUploads } from './library.js';
 import { openCard, closeCard, cardPanelOpen, renderImages, copyText, copyTrifecta, fetchYoutube, addImages, originalVideoMarkup, videoLinkMarkup } from './editor.js';
 import { openPlaybooks, playbooksChanged } from './playbook-editor.js';
 import { renderBar, cardPlaybookActivity, hasUnsavedNotes } from './card-playbook.js';
@@ -46,6 +47,8 @@ document.addEventListener('click', (event) => {
   if (action === 'toggle-sidebar') $('.sidebar').classList.toggle('mobile-open');
   if (action === 'set-project-prompt') editProjectPrompt();
   if (action === 'toggle-cards') toggleCards();
+  if (action === 'show-board') showTab('board');
+  if (action === 'show-library') showTab('library');
   if (action === 'add-lane') editLane();
   if (action === 'edit-lane') editLane(targetId);
   if (action === 'edit-playbook') {
@@ -204,6 +207,8 @@ document.addEventListener('paste', (event) => {
   if (!files.length) return;
   if (!cardPanelOpen() && event.target.closest('input, textarea, [contenteditable]')) return;
   event.preventDefault();
+  // The Library tab has no lanes to paste a new card into.
+  if (!cardPanelOpen() && view.tab === 'library') return;
   let targetId = cardPanelOpen() ? state.cardId : null;
   if (!targetId && project()?.archivedAt) return;
   if (!targetId) targetId = makeCard(view.pasteLaneId)?.id;
@@ -293,6 +298,7 @@ document.addEventListener('dragover', (event) => {
   if (files) event.preventDefault();
   if (formDialog.open || imageDialog.open) return;
   if (cardPanelOpen() && files) { $('#image-drop').classList.add('drag-over'); return; }
+  if (files && event.target.closest('#library')) { $('[data-library-drop]')?.classList.add('drag-over'); event.dataTransfer.dropEffect = project()?.archivedAt ? 'none' : 'copy'; return; }
   const lane = event.target.closest('[data-lane]');
   if (!lane || (!files && !draggedId)) { clearDropTarget(); return; }
   event.preventDefault();
@@ -322,6 +328,7 @@ document.addEventListener('drop', (event) => {
   clearDrag();
   if (formDialog.open || imageDialog.open) return;
   if (cardPanelOpen() && files.length) { addImages(files, state.cardId); return; }
+  if (files.length && event.target.closest('#library')) { uploadLibraryFiles(files); return; }
   if (!lane) return;
   event.preventDefault();
   if (files.length) {
@@ -340,7 +347,7 @@ for (const dialog of [formDialog, imageDialog]) {
   dialog.addEventListener('click', (event) => { if (downOnBackdrop && event.target === dialog) dialog.close(); downOnBackdrop = false; });
 }
 window.addEventListener('beforeunload', (event) => {
-  if (hasUnsavedWork() || hasUnsentChatChanges() || hasUnsavedNotes()) { event.preventDefault(); event.returnValue = ''; }
+  if (hasUnsavedWork() || hasUnsentChatChanges() || hasUnsavedNotes() || hasLibraryUploads()) { event.preventDefault(); event.returnValue = ''; }
 });
 document.addEventListener('visibilitychange', () => { if (document.hidden) { flushCards(); flushComposers(); } });
 window.addEventListener('online', () => { if (saveStatus().error) retry(); });
@@ -356,6 +363,7 @@ try {
   // Playbook files saved in another tab change lane summaries on the board.
   onActivity((entry) => {
     cardPlaybookActivity(entry);
+    libraryActivity(entry);
     // Another tab archived or unarchived a project.
     const changed = entry.entity === 'project' && ['archived', 'unarchived'].includes(entry.type) && state.projects.find((item) => item.id === entry.entityId);
     if (changed && Boolean(changed.archivedAt) !== (entry.type === 'archived')) {

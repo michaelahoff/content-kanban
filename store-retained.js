@@ -1,6 +1,10 @@
-// Private metadata for retained-storage.js. Released image tables are untouched.
+// Private metadata for retained-storage.js, plus the read-only listings the
+// Library (library.js) shows. Released image tables are untouched.
 import { randomUUID } from 'node:crypto';
+import { archivedMessage } from './store-chat.js';
 
+export const libraryKinds = ['asset', 'document'];
+const librarySource = `kind IN (${libraryKinds.map((kind) => `'${kind}'`).join(', ')})`;
 export const retainedMigration = `
   CREATE TABLE retained_objects (
     id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id),
@@ -24,12 +28,27 @@ export function createRetainedMetadata({ all, get, run, transaction, now }) {
   const version = (ctx, id) => from(get('SELECT * FROM retained_versions WHERE id = ? AND workspace_id = ?', id, ctx.workspaceId));
   const object = (ctx, id) => get('SELECT * FROM retained_objects WHERE id = ? AND workspace_id = ?', id, ctx.workspaceId)
     || fail(404, 'The retained source does not exist.');
+  // Archive may land while bytes stream; an archived project gains no new bytes.
+  const active = (ctx, id) => {
+    const row = get('SELECT p.archived_at FROM retained_versions v JOIN retained_objects o ON o.id = v.object_id JOIN projects p ON p.id = o.project_id WHERE v.id = ? AND v.workspace_id = ?', id, ctx.workspaceId);
+    if (row?.archived_at) fail(409, archivedMessage);
+  };
   return {
     version,
     operation: (ctx, operationId) => from(get('SELECT * FROM retained_versions WHERE workspace_id = ? AND operation_id = ?', ctx.workspaceId, operationId)),
     inventory: (ctx) => all('SELECT * FROM retained_versions WHERE workspace_id = ? ORDER BY rowid', ctx.workspaceId).map(from),
     unfinished: () => all("SELECT * FROM retained_versions WHERE state != 'committed'").map(from),
     committed: () => all("SELECT * FROM retained_versions WHERE state = 'committed'").map(from),
+    // Library listings: live uploaded/authored sources and their committed versions.
+    object: (ctx, id) => get('SELECT * FROM retained_objects WHERE id = ? AND workspace_id = ?', id, ctx.workspaceId),
+    sources: (ctx, projectId) => all(`SELECT * FROM retained_objects WHERE workspace_id = ? AND project_id = ? AND ${librarySource}
+      AND removed_at IS NULL AND current_version_id IS NOT NULL ORDER BY filename, created_at`, ctx.workspaceId, projectId),
+    history: (ctx, objectId) => all("SELECT * FROM retained_versions WHERE workspace_id = ? AND object_id = ? AND state = 'committed' ORDER BY committed_at, rowid", ctx.workspaceId, objectId).map(from),
+    // A name is held by a live source, including one whose first upload is still in progress.
+    names: (ctx, projectId) => all(`SELECT o.id, o.filename, o.current_version_id FROM retained_objects o WHERE o.workspace_id = ? AND o.project_id = ? AND o.${librarySource}
+      AND o.removed_at IS NULL AND (o.current_version_id IS NOT NULL OR EXISTS (SELECT 1 FROM retained_versions v WHERE v.object_id = o.id AND v.state IN ('staging', 'published')))`, ctx.workspaceId, projectId)
+      .map((row) => ({ id: row.id, filename: row.filename, committed: row.current_version_id !== null })),
+    active,
     current(ctx, id) { const row = object(ctx, id); return row.removed_at ? null : version(ctx, row.current_version_id); },
     remove(ctx, id) { object(ctx, id); transaction(() => run('UPDATE retained_objects SET removed_at = ? WHERE id = ?', now(), id)); },
     begin(ctx, input) {
@@ -66,6 +85,7 @@ export function createRetainedMetadata({ all, get, run, transaction, now }) {
         const row = get('SELECT * FROM retained_versions WHERE id = ? AND workspace_id = ?', id, ctx.workspaceId);
         const source = object(ctx, row.object_id);
         if (source.removed_at || source.current_version_id !== row.base_version_id) fail(409, 'The current retained version changed during publication.');
+        active(ctx, id);
         if (row.state !== 'published' || !row.hash || row.size === null) fail(409, 'Publication is incomplete.');
         run("UPDATE retained_versions SET state = 'committed', available = 1, error = '', committed_at = ? WHERE id = ?", now(), id);
         run('UPDATE retained_objects SET current_version_id = ? WHERE id = ?', id, row.object_id);

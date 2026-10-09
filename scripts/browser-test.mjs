@@ -678,6 +678,62 @@ These values apply when a card enters this lane.
   assert.equal(await evaluate(`document.querySelectorAll('.archived-projects').length`), 0);
   console.log('PASS project archive and unarchive');
 
+  // Library: batch upload, thumbnails, explicit collision choices, inspection and download.
+  await click('[data-action="show-library"]');
+  await waitFor(`document.querySelector('#library .library-empty')?.textContent.includes('No files yet')`);
+  const pickLibraryFiles = (files) => evaluate(`(async () => {
+    const made = [];
+    for (const [name, kind, text] of ${JSON.stringify(files)}) {
+      if (kind === 'png') {
+        const canvas = document.createElement('canvas'); canvas.width = 320; canvas.height = 180;
+        const ctx = canvas.getContext('2d'); ctx.fillStyle = text; ctx.fillRect(0, 0, 320, 180);
+        made.push(new File([await new Promise(resolve => canvas.toBlob(resolve))], name, { type: 'image/png' }));
+      } else made.push(new File([kind === 'bytes' ? new Uint8Array([0, 255, 1, 254]) : text], name));
+    }
+    const transfer = new DataTransfer(); made.forEach(file => transfer.items.add(file));
+    const input = document.querySelector('#library-files'); input.files = transfer.files; input.dispatchEvent(new Event('change', { bubbles: true }));
+  })()`);
+  const libraryNames = () => evaluate(`[...document.querySelectorAll('.library-asset .library-name')].map(node => node.textContent)`);
+  await pickLibraryFiles([['logo.png', 'png', '#7b6aa8'], ['script.md', 'text', '# Episode 12\nHook: the desk studio.'], ['opaque.bin', 'bytes']]);
+  await waitFor(`document.querySelectorAll('.library-upload.saved').length === 3 && document.querySelectorAll('.library-asset').length === 3`);
+  assert.deepEqual(await libraryNames(), ['logo.png', 'opaque.bin', 'script.md']);
+  await waitFor(`document.querySelector('.library-thumb img')?.naturalWidth === 320`);
+  assert.equal(await evaluate(`document.querySelectorAll('.library-thumb.file').length`), 2);
+
+  await pickLibraryFiles([['logo.png', 'png', '#3c8b7d']]);
+  await waitFor(`document.querySelector('#form-dialog').open && document.querySelector('#form-heading')?.textContent === 'A file named logo.png already exists'`);
+  assert.equal(await evaluate(`document.querySelector('input[name="collision"]:checked').value`), 'create', 'Create new is the default');
+  assert.match(await evaluate(`document.querySelector('#small-form').textContent`), /logo \(1\)\.png/);
+  await click('#small-form [type="submit"]');
+  await waitFor(`document.querySelectorAll('.library-asset').length === 4`);
+  assert.deepEqual(await libraryNames(), ['logo (1).png', 'logo.png', 'opaque.bin', 'script.md']);
+  await pickLibraryFiles([['logo.png', 'png', '#c7835a']]);
+  await waitFor(`document.querySelector('#form-dialog').open && document.querySelector('#form-heading')?.textContent === 'A file named logo.png already exists'`);
+  await click('input[name="collision"][value="replace"]');
+  await click('#small-form [type="submit"]');
+  await waitFor(`[...document.querySelectorAll('.library-upload-state')].some(node => node.textContent === 'Replaced · v2')`);
+  await pickLibraryFiles([['opaque.bin', 'bytes']]);
+  await waitFor(`document.querySelector('#form-dialog').open && document.querySelector('#form-heading')?.textContent === 'A file named opaque.bin already exists'`);
+  await click('input[name="collision"][value="cancel"]');
+  await click('#small-form [type="submit"]');
+  await waitFor(`[...document.querySelectorAll('.library-upload-state')].some(node => node.textContent === 'Cancelled')`);
+  assert.equal(await evaluate(`document.querySelectorAll('.library-asset').length`), 4);
+
+  await click('.library-asset[aria-label="Inspect script.md"]');
+  await waitFor(`document.querySelector('#library-preview pre')?.textContent.includes('Hook: the desk studio.')`);
+  const downloaded = await evaluate(`fetch(document.querySelector('#library-dialog .library-actions a[download]').href).then(response => response.text())`);
+  assert.equal(downloaded, '# Episode 12\nHook: the desk studio.');
+  await click('[data-action="library-close"]');
+  await click('.library-asset[aria-label="Inspect logo.png"]');
+  await waitFor(`document.querySelectorAll('#library-dialog .library-version').length === 2 && document.querySelector('#library-preview img')?.naturalWidth === 320`);
+  assert.match(await evaluate(`document.querySelector('#library-dialog .library-version').textContent`), /v2\s*Current/);
+  await snapshot('library-inspector');
+  await click('[data-action="library-close"]');
+  await snapshot('library');
+  await click('[data-action="show-board"]');
+  await waitFor(`!!document.querySelector('#board .lane')`);
+  console.log('PASS Library tab uploads files, shows thumbnails, resolves collisions explicitly and downloads exact versions');
+
   await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
   assert.ok(await evaluate(`document.documentElement.scrollWidth <= innerWidth`));
   await snapshot('mobile-board');

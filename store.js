@@ -15,6 +15,7 @@ import { protectionMigration, createProtectionStore } from './store-protection.j
 import { imagesMigration, createImageStore } from './store-images.js';
 import { retainedMigration, createRetainedMetadata } from './store-retained.js';
 import { createRetainedStorage } from './retained-storage.js';
+import { createLibrary } from './library.js';
 
 export const imageIdPattern = /^[a-f0-9-]{36}\.(png|jpg|webp|gif|avif)$/;
 
@@ -57,10 +58,10 @@ export function inspectBackupDatabase(filename) {
     const table = (name) => Boolean(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
     // Every committed version is required, including superseded, removed and
     // unavailable ones; unfinished publications are not retained content.
-    const retained = table('retained_versions') ? db.prepare(`SELECT v.id, v.object_id, o.project_id, o.kind, v.filename, v.hash, v.size, v.base_version_id,
+    const retained = table('retained_versions') ? db.prepare(`SELECT v.id, v.object_id, o.project_id, o.kind, o.filename AS label, v.filename, v.hash, v.size, v.base_version_id,
       o.current_version_id = v.id AS current, o.removed_at IS NOT NULL AS removed FROM retained_versions v JOIN retained_objects o ON o.id = v.object_id
       WHERE v.state = 'committed' ORDER BY v.rowid`).all().map((row) => ({ versionId: row.id, objectId: row.object_id, projectId: row.project_id, kind: row.kind,
-      filename: row.filename, path: `retained/versions/${row.id}`, size: row.size, sha256: row.hash, current: Boolean(row.current), removed: Boolean(row.removed),
+      label: row.label, filename: row.filename, path: `retained/versions/${row.id}`, size: row.size, sha256: row.hash, current: Boolean(row.current), removed: Boolean(row.removed),
       baseVersionId: row.base_version_id })) : [];
     for (const version of retained) if (!/^[a-f0-9-]{36}$/.test(version.versionId) || !/^[a-f0-9]{64}$/.test(version.sha256 ?? '') || !Number.isSafeInteger(version.size)) throw new Error('The database contains an invalid retained version.');
     const archived = db.prepare("SELECT name FROM pragma_table_info('projects') WHERE name = 'archived_at'").get() ? 'archived_at' : 'NULL';
@@ -1147,7 +1148,10 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
       recordChange(ctx, 'workspace', owner.workspaceId, 'restored', { data: { ...JSON.parse(restored), held } });
       run("DELETE FROM meta WHERE key = 'restore_recovery'");
     });
-    api.retained = await createRetainedStorage({ dataDir, checkpoint: retainedCheckpoint, metadata: createRetainedMetadata({ all, get, run, transaction, now }) });
+    const metadata = createRetainedMetadata({ all, get, run, transaction, now });
+    api.retained = await createRetainedStorage({ dataDir, checkpoint: retainedCheckpoint, metadata });
+    api.library = createLibrary({ retained: api.retained, metadata, project: requireProject,
+      record: (ctx, type, assetId, projectId, data) => transaction(() => recordChange(ctx, 'asset', assetId, type, { projectId, data })) });
   } catch (error) { db.close(); throw error; }
   return api;
 }
