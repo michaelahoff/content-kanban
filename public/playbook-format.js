@@ -468,9 +468,9 @@ export function parseLaneResult(text, templateId) {
       else if (output.sources !== undefined && (!Array.isArray(output.sources) || !output.sources.every((id) => typeof id === 'string'))) result.errors.push(`Ignored ${label}: “sources” must be a list of supplied version IDs.`);
       else {
         result.outputs.push({ filename: name, text: output.text, sources: output.sources ? [...new Set(output.sources)] : null });
-        // Saving never places a document in the Library, whatever else is asked.
+        // Saving takes only these keys and never places a document in the Library.
         const extra = Object.keys(output).filter((key) => !['filename', 'text', 'sources'].includes(key));
-        if (extra.length) result.errors.push(`Saved ${label} with this card chat only and ignored ${extra.map((key) => `“${key}”`).join(', ')}: only the user can save it to the project Library.`);
+        if (extra.length) result.errors.push(`Ignored ${extra.map((key) => `“${key}”`).join(', ')} in ${label}: an output is saved with this card chat from its filename, text and sources only, and only the user can save it to the project Library.`);
       }
     }
   }

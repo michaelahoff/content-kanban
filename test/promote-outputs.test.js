@@ -177,7 +177,7 @@ test('an agent’s registered output is never promoted: a requested Library plac
   const parsed = parseLaneResult(block(asked), 'youtube-video');
   assert.deepEqual(parsed.outputs, [{ filename: 'hook.md', text: '# Hook', sources: null }]);
   assert.equal(parsed.errors.length, 1);
-  assert.match(parsed.errors[0], /hook\.md.*library.*replace.*only the user/i);
+  assert.match(parsed.errors[0], /Ignored “library”, “replace” in “hook\.md”.*only the user can save it to the project Library/);
 
   const f = await promotionFixture(t);
   const workspace = await f.ok('GET', '/api/workspace');

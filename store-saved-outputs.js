@@ -42,12 +42,12 @@ function declaredDerivation(frozen, sources) {
 }
 
 export function createSavedOutputStore({ all, get, run, transaction, retainedCard, requireCard, recordChange, now, retained, library, revoked }) {
-  function outputFrom(row) {
+  function outputFrom(row, promotions = library().promotions({ workspaceId: row.workspace_id }, row.card_id)) {
     const version = row.version_id ? retained().version({ workspaceId: row.workspace_id }, row.version_id) : null;
     return { ...JSON.parse(row.provenance), id: row.id, cardId: row.card_id, attemptId: row.attempt_id, operationId: row.operation_id,
       filename: row.filename, status: row.status, versionId: row.version_id, hash: version?.hash ?? null, size: version?.size ?? null,
       available: version ? version.available : null, error: row.error, createdAt: row.created_at, savedAt: row.saved_at,
-      promotions: library().promotions({ workspaceId: row.workspace_id }, row.id) };
+      promotions: promotions.get(row.id) ?? [] };
   }
   const byId = (ctx, id) => get('SELECT * FROM saved_outputs WHERE id = ? AND workspace_id = ?', id, ctx.workspaceId);
   function activity(ctx, cardId, type, data) {
@@ -69,7 +69,8 @@ export function createSavedOutputStore({ all, get, run, transaction, retainedCar
   const api = {
     list(ctx, cardId) {
       retainedCard(ctx, cardId);
-      return all('SELECT * FROM saved_outputs WHERE card_id = ? AND workspace_id = ? ORDER BY created_at, rowid', cardId, ctx.workspaceId).map(outputFrom);
+      const promotions = library().promotions(ctx, cardId);
+      return all('SELECT * FROM saved_outputs WHERE card_id = ? AND workspace_id = ? ORDER BY created_at, rowid', cardId, ctx.workspaceId).map((row) => outputFrom(row, promotions));
     },
     // Registers and saves one document. `operationId` is stable for the
     // request: repeating it returns the saved output, and repeating a failed

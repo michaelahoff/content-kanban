@@ -47,7 +47,7 @@ const publications = {
   upload: { noun: 'upload', retry: () => 'Upload it', again: (filename) => `Upload ${filename}`, kind: 'asset' },
   document: { noun: 'save', retry: () => 'Save', again: () => 'Save', kind: 'document' },
   copy: { noun: 'copy', retry: () => 'Copy it', again: () => 'Copy it' },
-  promote: { noun: 'save', retry: () => 'Save it to the Library', again: () => 'Save it to the Library', kind: 'document' },
+  promote: { noun: 'Library save', retry: () => 'Save it to the Library', again: () => 'Save it to the Library', kind: 'document' },
 };
 // A promoted version names the saved output whose bytes it began from.
 const promotedFrom = (provenance) => provenance.method === 'promote' ? { promotedFrom: { cardId: provenance.cardId, outputId: provenance.savedOutputId, versionId: provenance.outputVersionId } } : {};
@@ -414,7 +414,7 @@ export function createLibrary({ retained, metadata, drafts, project, record }) {
       project(ctx, projectId);
       const filename = libraryFilename(input.filename); const folderId = input.folderId ?? null;
       const prior = metadata.operation(ctx, input.operationId);
-      if (prior && prior.provenance.savedOutputId !== input.outputId) fail(409, 'This save was started for a different output. Save it to the Library again.');
+      if (prior && prior.provenance.savedOutputId !== input.outputId) fail(409, 'This Library save was started for a different output. Save it to the Library again.');
       const { outcome, descriptor } = placement(ctx, projectId, { filename, folderId, collision: input.collision ?? null, assetId: input.assetId, operationId: input.operationId, method: 'promote', prior });
       if (prior?.state === 'committed') return savedResult(ctx, outcome, prior);
       const output = metadata.version(ctx, input.versionId);
@@ -430,13 +430,18 @@ export function createLibrary({ retained, metadata, drafts, project, record }) {
       record(ctx, outcome === 'replaced' ? 'asset_replaced' : 'asset_promoted', asset.id, projectId, { versionId: version.id, filename: asset.filename, from: { cardId: input.cardId, outputId: input.outputId, versionId: output.id } });
       return { outcome, asset, version: numberedVersion(ctx, version) };
     },
-    // Where a saved output has been published in the Library, oldest first.
-    promotions(ctx, outputId) {
-      return metadata.promotions(ctx, outputId).map((version) => {
+    // Where each of a card's saved outputs has been published in the Library,
+    // oldest first, by output ID.
+    promotions(ctx, cardId) {
+      const byOutput = new Map();
+      for (const version of metadata.promotions(ctx, cardId)) {
         const asset = metadata.object(ctx, version.objectId);
-        return { assetId: asset.id, versionId: version.id, filename: asset.filename, removed: Boolean(asset.removed_at),
-          outcome: version.provenance.collision === 'replace' ? 'replaced' : 'created', promotedAt: version.committedAt };
-      });
+        const list = byOutput.get(version.provenance.savedOutputId) ?? [];
+        list.push({ assetId: asset.id, versionId: version.id, filename: asset.filename, removed: Boolean(asset.removed_at),
+          outcome: savedOutcome(version.provenance), promotedAt: version.committedAt });
+        byOutput.set(version.provenance.savedOutputId, list);
+      }
+      return byOutput;
     },
     // Rechecks the recorded hash and size; failure marks only this version unavailable.
     async verify(ctx, projectId, versionId) {

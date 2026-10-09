@@ -3,8 +3,8 @@ import { request, send, enqueue } from './api.js';
 import { state, locateCard, flushCards, saveStatus, refreshSavedCard } from './state.js';
 import { contextFields } from './chat-context.js';
 import { attemptMarkup, progressState, runningStatuses } from './chat-transcript.js';
-import { chooseCollision, formatSize, libraryChoices } from './library.js';
-import { comparePaths, deliveryDescription, libraryPaths, parseSourceKey, selectionPaths, selectionSummary, sourceKey } from './library-format.js';
+import { chooseCollision, folderOptions, formatSize, libraryChoices } from './library.js';
+import { deliveryDescription, libraryPaths, parseSourceKey, selectionPaths, selectionSummary, sourceKey } from './library-format.js';
 
 const chats = new Map();
 // Each project's Library files and folders, for naming manual selections and the picker.
@@ -298,7 +298,6 @@ async function promoteOutput(item, outputId) {
   const projectId = locateCard(item.id)?.project.id;
   if (!output || !projectId) return;
   const listing = await loadLibrary(projectId);
-  const paths = libraryPaths(listing);
   const operations = new Map();
   const promote = (body) => {
     const key = JSON.stringify(body);
@@ -308,8 +307,7 @@ async function promoteOutput(item, outputId) {
   smallForm({
     title: `Save ${output.filename} to the project Library`, submit: 'Save to Library',
     description: 'Saves a separate Library file other cards can select. This saved output stays as it is.',
-    fields: `<label class="form-label" for="chat-promote-folder">Folder</label><select class="form-input" id="chat-promote-folder" name="folder"><option value="">Library</option>${listing.folders.sort((a, b) => comparePaths(paths.folders.get(a.id), paths.folders.get(b.id)))
-      .map((folder) => `<option value="${escape(folder.id)}">${escape(paths.folders.get(folder.id))}</option>`).join('')}</select>
+    fields: `<label class="form-label" for="chat-promote-folder">Folder</label><select class="form-input" id="chat-promote-folder" name="folder"><option value="">Library</option>${folderOptions(listing)}</select>
       <label class="form-label" for="name-input">Filename</label><input class="form-input" id="name-input" name="name" value="${escape(output.filename)}" maxlength="255" required autocomplete="off">`,
     onSubmit: async (data) => {
       const body = { folderId: data.get('folder') || null, filename: String(data.get('name')) };

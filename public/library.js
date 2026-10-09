@@ -161,6 +161,12 @@ export async function chooseCollision(conflict, holder, skip = 'Skip this file.'
   });
 }
 
+// A project's folders as <option>s in path order, after the Library root.
+export function folderOptions(listing) {
+  const paths = libraryPaths(listing);
+  return [...listing.folders].sort((a, b) => comparePaths(paths.folders.get(a.id), paths.folders.get(b.id)))
+    .map((entry) => `<option value="${escape(entry.id)}">${escape(paths.folders.get(entry.id))}</option>`).join('');
+}
 // Finds or creates a dropped folder path inside parentId; repeating it finds the same folders.
 const ensureFolderPath = async (projectId, parentId, names) => (await sendJSON('POST', `${base(projectId)}/folders/paths`, { parentId, names })).id;
 async function upload(entry) {
@@ -364,9 +370,7 @@ function copyToProject() {
     try {
       const listing = await request(base(projectId));
       if (projectSelect.value !== projectId) return;
-      const paths = libraryPaths(listing);
-      folderSelect.innerHTML += listing.folders.sort((a, b) => comparePaths(paths.folders.get(a.id), paths.folders.get(b.id)))
-        .map((entry) => `<option value="${escape(entry.id)}">${escape(paths.folders.get(entry.id))}</option>`).join('');
+      folderSelect.innerHTML += folderOptions(listing);
     } catch (error) { toast(error.message); }
   };
   projectSelect.addEventListener('change', folders);
