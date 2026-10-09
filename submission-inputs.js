@@ -1,4 +1,5 @@
 import { maxImageBytes } from './image-files.js';
+import { fileFormats } from './public/library-format.js';
 
 // How a submission's inputs reach each native target, and the request limits
 // Frameboard knows. Pure: callers resolve and verify bytes first. Anything a
@@ -21,31 +22,24 @@ export const limits = {
 };
 const megabytes = (bytes) => `${Math.round(bytes / MiB)} MB`;
 
-// Common general-file formats by signature, for honest descriptions. Knowing
-// a format proves nothing about whether a model or tool can interpret it.
-const signatures = [
-  ['pdf', 0, '%PDF-'], ['zip', 0, 'PK\x03\x04'], ['gzip', 0, '\x1f\x8b'], ['7z', 0, '7z\xbc\xaf\x27\x1c'], ['rar', 0, 'Rar!\x1a\x07'],
-  ['wav', 8, 'WAVE'], ['mp3', 0, 'ID3'], ['flac', 0, 'fLaC'], ['ogg', 0, 'OggS'], ['m4a', 4, 'ftypM4A '], ['mov', 4, 'ftypqt  '], ['mp4', 4, 'ftyp'],
-  ['matroska', 0, '\x1a\x45\xdf\xa3'], ['woff2', 0, 'wOF2'], ['woff', 0, 'wOFF'], ['otf', 0, 'OTTO'], ['ttf', 0, '\x00\x01\x00\x00'],
-];
-export function fileFormat(bytes) {
-  const match = signatures.find(([, offset, magic]) => bytes.subarray(offset, offset + magic.length).equals(Buffer.from(magic, 'latin1')));
-  return match?.[0] ?? null;
-}
-const media = { pdf: 'PDF', wav: 'audio', mp3: 'audio', flac: 'audio', ogg: 'audio', m4a: 'audio', mov: 'video', mp4: 'video', matroska: 'video' };
 // Routes with no evidence for the installed harnesses stay unavailable.
 const claudeFileReason = (item) => ({
   PDF: `Claude PDF delivery is not enabled in Frameboard, and Claude chats have no file tools, so ${item.label} cannot be delivered. Remove it, or send it to Codex.`,
   audio: `Claude card chats take no audio input and have no file tools, so ${item.label} cannot be delivered. Remove it, supply a transcript, or send it to Codex.`,
   video: `Claude card chats take no video input and have no file tools, so ${item.label} cannot be delivered. Remove it, supply stills or a transcript, or send it to Codex.`,
-})[media[item.format]] ?? `Claude chats have no file tools, so ${item.label} cannot be delivered. Remove it, or send it to Codex.`;
+  'audio or video': `Claude card chats take no audio or video input and have no file tools, so ${item.label} cannot be delivered. Remove it, supply a transcript, or send it to Codex.`,
+})[fileFormats[item.format]?.media] ?? `Claude chats have no file tools, so ${item.label} cannot be delivered. Remove it, or send it to Codex.`;
+// Codex reads a workspace copy only with its shell tool, which the effective
+// configuration can turn off. A discovery that does not say leaves it on.
+export const hasShellTool = (discovery) => discovery?.tools?.shell !== false;
+export const noShellTool = 'This Codex setup has its shell tool turned off (features.shell_tool), so it has no tool to read workspace copies. Turn the shell tool on';
 
 // items: [{ key, label, kind: 'text' | 'image' | 'file', format?, size }] in
 // delivery order. textBytes counts the prompt and card text sent with them.
 // A model that reports its input modalities is held to them; otherwise the
-// provider decides. fileTools is false when the Codex setup has no shell tool
-// to read a workspace copy.
-export function planInputs(provider, items, { textBytes, model = null, fileTools = true }) {
+// provider decides. shellTool is false when the Codex setup cannot read a
+// workspace copy.
+export function planInputs(provider, items, { textBytes, model = null, shellTool = true }) {
   const claude = provider === 'claude';
   const problems = []; const warnings = [];
   const refuse = (item, reason, phase = 'limit') => problems.push({ key: item?.key ?? null, label: item?.label ?? 'This request', phase, reason });
@@ -60,7 +54,7 @@ export function planInputs(provider, items, { textBytes, model = null, fileTools
     }
     if (claude && item.format === 'text') refuse(item, `${item.label} is too much text to send inline, and Claude chats have no file tools to read it. Remove it, or send it to Codex.`);
     else if (claude) refuse(item, claudeFileReason(item), 'capability');
-    else if (!fileTools) refuse(item, `This Codex setup has its shell tool turned off (features.shell_tool), so it has no tool to read ${item.label}. Turn the shell tool on, or remove it.`, 'capability');
+    else if (!shellTool) refuse(item, `${noShellTool}, or remove ${item.label}.`, 'capability');
     return { ...item, method: 'copy' };
   });
   const images = inputs.filter((input) => input.method === 'image').length;

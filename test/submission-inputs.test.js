@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { planInputs, fileFormat } from '../submission-inputs.js';
+import { planInputs } from '../submission-inputs.js';
+import { fileFormat } from '../public/library-format.js';
 
 const MiB = 1024 * 1024;
 const script = { key: 'asset:script', label: 'script.md', kind: 'text', size: 12000 };
@@ -83,10 +84,10 @@ test('text too large to inline names its size, not missing file tools', () => {
 });
 
 test('a Codex setup without its shell tool has no route for a file and refuses it by name, keeping text and images usable', () => {
-  const plan = planInputs('codex', [script, logo, video], { textBytes: 0, fileTools: false });
+  const plan = planInputs('codex', [script, logo, video], { textBytes: 0, shellTool: false });
   assert.deepEqual(plan.problems.map(({ key, phase }) => ({ key, phase })), [{ key: 'asset:video', phase: 'capability' }]);
   assert.match(plan.problems[0].reason, /shell tool/);
-  assert.deepEqual(planInputs('codex', [script, logo], { textBytes: 0, fileTools: false }).problems, []);
+  assert.deepEqual(planInputs('codex', [script, logo], { textBytes: 0, shellTool: false }).problems, []);
 });
 
 test('PDFs, audio, video, archives and fonts are recognized by their signatures, never by filename', () => {
@@ -103,6 +104,10 @@ test('PDFs, audio, video, archives and fonts are recognized by their signatures,
   assert.equal(fileFormat(Buffer.from('wOF2\x00\x01', 'latin1')), 'woff2');
   assert.equal(fileFormat(Buffer.from([0, 1, 0, 0, 0, 12])), 'ttf');
   assert.equal(fileFormat(Buffer.from([0, 1, 2, 3, 255])), null);
+  assert.equal(fileFormat(at(8, 'WAVE')), null, 'WAVE needs its RIFF container');
+  assert.equal(fileFormat(at(4, 'ftypheic')), 'heif', 'an ISO still image is not video');
+  assert.equal(fileFormat(at(4, 'ftypzzzz')), null);
+  assert.equal(fileFormat(at(257, 'ustar', 512)), 'tar');
 });
 
 test('Claude names the unproven PDF, audio and video routes; Codex gets a tool copy, never a modality input', () => {

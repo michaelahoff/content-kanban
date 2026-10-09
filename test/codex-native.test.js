@@ -230,7 +230,7 @@ test('installed native: protected Codex reads a Library archive through its shel
   const copy = `references/library/${uploaded.version.id}.tar`;
   const first = await send(card.id, `tar -xOf ${copy} episode/notes.txt; chmod u+w ${copy}; printf TAMPERED > ${copy}; printf corrupted > '${original}'`);
   assert.equal(first.status, 201, JSON.stringify(first.body));
-  assert.deepEqual(first.body.context.library.map(({ method, format, path: where }) => [method, format, where]), [['copy', null, copy]]);
+  assert.deepEqual(first.body.context.library.map(({ method, format, path: where }) => [method, format, where]), [['copy', 'tar', copy]]);
   const chat = await completed(card.id, first.body.id);
   const outputs = JSON.stringify(f.peer.requests.flatMap((request) => request.toolOutputs));
   assert.match(outputs, /TAR_MEMBER_SENTINEL/, 'Codex extracted the archive member with its shell tool');

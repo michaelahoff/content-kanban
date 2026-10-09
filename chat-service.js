@@ -5,7 +5,7 @@ import { cardTools } from './card-tools.js';
 import { nativeImageBytes, storeImage, readRegularFile, within, sha256 as hash, maxImageBytes, imageFormat } from './image-files.js';
 import { referencePath } from './public/chat-context.js';
 import { sourceKey } from './public/library-format.js';
-import { planInputs } from './submission-inputs.js';
+import { planInputs, hasShellTool, noShellTool } from './submission-inputs.js';
 
 const fail = (status, message) => { throw Object.assign(new Error(message), { status }); };
 const problemMessage = (problems) => `Not sent. ${problems.map((problem) => `${problem.label}: ${problem.reason}`).join(' ')}`;
@@ -68,7 +68,7 @@ export function createChatService({ store, adapter, adapters = { codex: adapter 
         }
       }
       const textBytes = Buffer.byteLength(captured.prompt) + captured.context.fields.reduce((sum, field) => sum + Buffer.byteLength(String(field.value ?? '')), 0);
-      const plan = planInputs(captured.provider, [...items, ...library], { textBytes, model: models.find((model) => model.id === captured.model), fileTools: discovery?.tools?.shell !== false });
+      const plan = planInputs(captured.provider, [...items, ...library], { textBytes, model: models.find((model) => model.id === captured.model), shellTool: hasShellTool(discovery) });
       captured.context.library = plan.inputs.slice(items.length).map(({ key, label, ...file }) => ({ ...file, ...(file.method === 'text' ? {} : { path: store.library.copyPath(file) }) }));
       captured.context.warnings = plan.warnings;
       captured.problems = [...problems, ...plan.problems];
@@ -158,10 +158,10 @@ export function createChatService({ store, adapter, adapters = { codex: adapter 
     // target's shell tool to be read. Without it the attempt stops, naming each
     // such file, rather than sending its path for nothing to read.
     assertRoutes(submission, discovery, delivery) {
-      if (submission.provider !== 'codex' || discovery.tools?.shell !== false) return;
+      if (submission.provider !== 'codex' || hasShellTool(discovery)) return;
       const stranded = (submission.context.library ?? []).filter((file) => file.method === 'copy');
       if (!stranded.length) return;
-      const reason = 'This Codex setup now has its shell tool turned off (features.shell_tool), so it has no tool to read workspace copies. Turn the shell tool on, then Retry.';
+      const reason = `${noShellTool}, then Retry.`;
       const names = new Set(stranded.map((file) => file.versionId));
       throw Object.assign(new Error(`${stranded.map((file) => file.filename).join(', ')} could not be delivered. ${reason}`), { kind: 'input-unavailable',
         delivery: delivery.map((entry) => ({ ...entry, status: names.has(entry.versionId) ? 'failed' : 'not-sent', reason })) });

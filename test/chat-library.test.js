@@ -417,7 +417,7 @@ test('a selected folder sends its files recursively in path order with their pro
 test('a Codex setup with its shell tool off refuses a tool-only file by name and still sends text and images', async (t) => {
   const f = await libraryFixture(t); const card = await f.card();
   const script = await f.upload('script.md', Buffer.from('Script'));
-  const archive = await f.upload('fonts.zip', Buffer.from('PK\x03\x04archive', 'latin1'));
+  const archive = await f.upload('fonts.zip', Buffer.from('PK\x03\x04\x00archive', 'latin1'));
   const discover = f.codex.discover.bind(f.codex);
   f.codex.discover = async (input) => ({ ...await discover(input), tools: { shell: false } });
   const composer = await f.select(card.id, 'Use them', [asset(script), asset(archive)]);
@@ -432,7 +432,7 @@ test('a Codex setup with its shell tool off refuses a tool-only file by name and
 test('an attempt whose Codex target lost its shell tool after queueing fails naming each tool-only file; Retry delivers once it is back', async (t) => {
   const f = await libraryFixture(t); const card = await f.card();
   const script = await f.upload('script.md', Buffer.from('Script'));
-  const archive = await f.upload('fonts.zip', Buffer.from('PK\x03\x04archive', 'latin1'));
+  const archive = await f.upload('fonts.zip', Buffer.from('PK\x03\x04\x00archive', 'latin1'));
   const discover = f.codex.discover.bind(f.codex);
   let open; f.codex.openGate = new Promise((resolve) => { open = resolve; });
   const submission = await f.queue(card.id, await f.select(card.id, 'Use them', [asset(script), asset(archive)]));
@@ -494,4 +494,13 @@ test('text that is not valid UTF-8 is never decoded lossily: Codex reads an exac
   const refused = await f.call('POST', `/api/cards/${other.id}/chat/submissions`, { id: randomUUID(), composerRevision: composer.revision });
   assert.equal(refused.status, 409);
   assert.deepEqual(refused.body.problems.map(({ key, phase }) => ({ key, phase })), [{ key: `asset:${script.asset.id}`, phase: 'capability' }]);
+});
+
+test('a UTF-8 script that happens to begin like a media or font signature is still sent as full text', async (t) => {
+  const f = await claudeFixture(t); const card = await f.card();
+  const texts = ['ID3 tags explained for the episode\n', 'OTTO: Welcome back to the channel\n', 'The new WAVE of creators\n', '%PDF-style headers are a joke here\n'];
+  const uploaded = [];
+  for (const [index, text] of texts.entries()) uploaded.push(await f.upload(`script-${index}.md`, Buffer.from(text)));
+  const submission = await f.queue(card.id, await f.select(card.id, 'Use the scripts', uploaded.map(asset), { provider: 'claude', model: 'sonnet' }));
+  assert.deepEqual(submission.context.library.map((file) => file.method), ['text', 'text', 'text', 'text']);
 });

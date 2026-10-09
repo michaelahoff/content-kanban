@@ -10,7 +10,7 @@ Every selected Library file has exactly one route, or Send refuses it by name:
 - **Raster image** (PNG/JPEG/GIF/WebP): the native image route, both providers.
 - **Any other file**, including PDFs, archives, fonts, audio, video, text too large to inline and text that is not valid UTF-8: a **workspace copy** for Codex, read only through its shell tool. Claude has no route.
 
-`submission-inputs.js` `fileFormat()` recognizes common PDF, archive, audio, video and font signatures from a file's first bytes, never its filename. A recognized format stays a file even when it happens to read as text, so a PDF is never inlined as raw text. The format only shapes descriptions and refusals: it claims nothing about whether a model or tool can interpret the file, and no route depends on it.
+`public/library-format.js` `fileFormats` is the one table of recognized general-file formats: each entry's signature parts (all must match, within the first 512 bytes), display name and any modality it implies. `fileFormat()` names a file that is not text by its bytes, never its filename. Text is decided first, so a UTF-8 script that happens to begin with `ID3` or `OTTO` is still sent as text. The format only shapes descriptions and refusals: it claims nothing about whether a model or tool can interpret the file, and no route depends on it.
 
 Text that is not valid UTF-8 is never decoded with replacement characters or a guessed encoding. Codex receives its exact bytes as a copy; Claude refuses it.
 
@@ -36,7 +36,7 @@ The agent's message labels each copy with filename, asset/version IDs, SHA-256, 
 
 ## Acceptance evidence
 
-- `node --disable-warning=ExperimentalWarning --test test/submission-inputs.test.js`: format signatures; Codex without the shell tool refuses a file but keeps text and images; Claude names the unproven PDF, audio and video routes while Codex gets copies, never modality inputs.
+- `node --disable-warning=ExperimentalWarning --test test/submission-inputs.test.js`: format signatures, including multi-part (RIFF/WAVE), ISO brand (MP4 versus HEIF) and tar's offset-257 signatures; Codex without the shell tool refuses a file but keeps text and images; Claude names the unproven PDF, audio and video routes while Codex gets copies, never modality inputs.
 - `node --disable-warning=ExperimentalWarning --test test/codex-adapter.test.js`: discovery reports the shell tool from `config/read`.
 - `node --disable-warning=ExperimentalWarning --test test/chat-library.test.js`:
   - Send refuses a tool-only file by name when Codex has no shell tool.
@@ -44,12 +44,22 @@ The agent's message labels each copy with filename, asset/version IDs, SHA-256, 
   - A copy that was tampered with, replaced by a symlink or deleted is rebuilt exactly as an independent read-only file before each delivery, and the original still verifies.
   - Latin-1 text is never decoded: Codex reads the exact copy and Claude refuses it.
   - Claude names the PDF route that is not enabled.
+  - UTF-8 scripts that begin like a media or font signature are still sent as text.
 - `node --disable-warning=ExperimentalWarning --test test/library.test.js`: delivery descriptions.
 - `npm run test:native` (installed Codex 0.160.1, credential-free loopback peer, retained-data protection on). A protected HTTP Send of a real tar archive is read by Codex's own `exec_command`, which extracts a member and returns it to the model peer. The same command tries to overwrite the retained original and its copy: the original is untouched, and the next Send's `sha256sum` sees the rebuilt exact copy. After `features.shell_tool = false`, Send refuses the archive by name. This proves tool usability, not account access or a model's comprehension of any format.
-- `npm run test:library-large`: a 2 GiB opaque file through HTTP upload, download, a Send whose delivery materializes a verified exact workspace copy, export and restore. On 2026-10-08 it passed with a peak RSS of 170 MiB.
+- `npm run test:library-large`: a 2 GiB opaque file and an authored document go through HTTP upload/save, download, a Send that delivers the document inline and materializes a verified exact workspace copy of the large file, then export and restore. After restore, the copy is deleted, and a fresh-context Send rebuilds it exactly from the restored original. On 2026-10-08 it passed with a peak RSS of 168 MiB.
 - `npm run test:browser`: the composer previews a text file and an opaque file by route, with the shell-tool note, and history shows each attempt's route.
+
+## Review
+
+Parallel code review (Standards and Spec axes). Fixed, with failing tests first:
+- Short printable signatures (`ID3`, `OTTO`, `WAVE` without its `RIFF` container) outranked the UTF-8 check, so a script beginning that way would have been refused as audio. Text is decided first again, and WAV needs both parts.
+- `ftyp` alone was described as MP4 video, which included HEIC photos. ISO files are now named by brand.
+- Tar archives were unrecognized, because their signature sits at byte 257, past the 64-byte sample. The sample is now 512 bytes.
+
+The three format tables (signatures, names, modalities) became one `fileFormats` table. The shell-tool check and its wording are now shared by planning and delivery (`hasShellTool`, `noShellTool`). The large-file evidence now covers an authored document and a copy rebuilt after restore. The README describes `library-format.js`'s new role.
 
 Kept deliberately:
 - Copies are rewritten in full before each attempt instead of trusting an existing one. That costs one streamed copy per attempt and avoids hashing an agent-writable file before replacing it.
 - The shell-tool check covers the one tool a copy needs. Inherited configurations that remove tools some other way are not modeled; the native attempt then fails visibly in the transcript.
-- Format recognition covers common signatures only. An unrecognized file is still delivered as a copy, described without a format.
+- Format recognition covers common signatures only. Ogg is described as audio or video because its signature does not say which. An unrecognized file is still delivered as a copy, described without a format.
