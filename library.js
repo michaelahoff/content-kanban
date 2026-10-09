@@ -1,7 +1,6 @@
 // The project Library: uploaded files with stable asset identities and
 // immutable versions. Bytes live in retained storage; names are labels.
-import { libraryFilename, nameConflict, splitExtension } from './public/library-format.js';
-import { sourceKey } from './public/chat-context.js';
+import { libraryFilename, nameConflict, splitExtension, sourceKey } from './public/library-format.js';
 import { libraryKinds } from './store-retained.js';
 import { imageFormat } from './image-files.js';
 import { rasterFormats, limits } from './submission-inputs.js';

@@ -329,3 +329,38 @@ test('Send verifies every byte of a large selected file, even though previews on
   assert.equal(refused.status, 409);
   assert.deepEqual(refused.body.problems.map(({ label, phase }) => ({ label, phase })), [{ label: 'cut.mp4', phase: 'integrity' }]);
 });
+
+test('an attempt stopped after its inputs were prepared records them as not sent', async (t) => {
+  const f = await libraryFixture(t); const card = await f.card();
+  const script = await f.upload('script.md', Buffer.from('Script'));
+  const discover = f.codex.discover.bind(f.codex);
+  let entered; const reached = new Promise((resolve) => { entered = resolve; }); let release;
+  // The worker's final configuration check runs after inputs are prepared.
+  f.codex.discover = async (input) => {
+    if (f.codex.threads.size) { entered(); await new Promise((resolve) => { release = resolve; }); }
+    return discover(input);
+  };
+  const submission = await f.queue(card.id, await f.select(card.id, 'Use the script', [asset(script)]));
+  await reached;
+  await f.ok('POST', `/api/cards/${card.id}/chat/stop`, {});
+  release();
+  await waitFor(async () => (await f.chat(card.id)).submissions.find((row) => row.id === submission.id).status === 'interrupted');
+  assert.equal(f.codex.sends.length, 0);
+  assert.deepEqual((await f.chat(card.id)).attempts[0].delivery.map(({ filename, status }) => [filename, status]), [['script.md', 'not-sent']]);
+});
+
+test('a card image missing at delivery records every input as not sent with the reason', async (t) => {
+  const f = await libraryFixture(t);
+  const image = { id: '00000002-0000-4000-8000-000000000000.png', name: 'portrait.png' };
+  await writeFile(path.join(f.dataDir, 'images', image.id), png);
+  const card = await f.card({ images: [image], imageRoles: { original: image.id } });
+  const script = await f.upload('script.md', Buffer.from('Script'));
+  let open; f.codex.openGate = new Promise((resolve) => { open = resolve; });
+  await f.queue(card.id, await f.select(card.id, 'Use both', [asset(script)]));
+  await rm(path.join(f.dataDir, 'images', image.id));
+  open();
+  const attempt = await waitFor(async () => (await f.chat(card.id)).attempts[0]?.delivery && (await f.chat(card.id)).attempts[0]);
+  assert.deepEqual(attempt.delivery.map(({ filename, status }) => [filename, status]), [['portrait.png', 'not-sent'], ['script.md', 'not-sent']]);
+  assert.match(attempt.delivery[0].reason, /portrait\.png/);
+  assert.equal(f.codex.sends.length, 0);
+});

@@ -3,7 +3,8 @@ import path from 'node:path';
 import { configurationDiscovery, compileConfiguration } from './provider-configuration.js';
 import { cardTools } from './card-tools.js';
 import { nativeImageBytes, storeImage, readRegularFile, within, sha256 as hash, maxImageBytes, imageFormat } from './image-files.js';
-import { referencePath, sourceKey } from './public/chat-context.js';
+import { referencePath } from './public/chat-context.js';
+import { sourceKey } from './public/library-format.js';
 import { planInputs } from './submission-inputs.js';
 
 const fail = (status, message) => { throw Object.assign(new Error(message), { status }); };
@@ -44,14 +45,11 @@ export function createChatService({ store, adapter, adapters = { codex: adapter 
     // preview: the card images and selected Library files as one union, checked
     // for existence, ownership, byte integrity and the target's capabilities and
     // known limits. Problems are reported by source; nothing is silently dropped.
-    // The shared resolution, preflight and capture for a manual Send and its
-    // preview: the card images and selected Library files as one union, checked
-    // for existence, ownership, byte integrity and the target's capabilities and
-    // known limits. Problems are reported by source; nothing is silently dropped.
     // Send verifies every byte against the model it discovered; a preview
     // samples large files and uses the saved model catalog.
-    async preview(ctx, cardId, { verify = false, models = store.providerCatalog(ctx, store.chats.context(ctx, cardId).provider).discovery?.models ?? [] } = {}) {
+    async preview(ctx, cardId, { verify = false, models } = {}) {
       const captured = store.chats.context(ctx, cardId);
+      models ??= store.providerCatalog(ctx, captured.provider).discovery?.models ?? [];
       const items = [];
       for (const image of captured.context.images) {
         const bytes = await imageBytes(image);
@@ -133,9 +131,13 @@ export function createChatService({ store, adapter, adapters = { codex: adapter 
     // that cannot be delivered stops the attempt, recording what happened to
     // each input.
     async deliveryInputs(ctx, submission) {
-      const images = await this.references(submission);
-      const delivery = submission.context.images.map((image) => ({ imageId: image.id, filename: image.name, method: 'image' }));
       const library = submission.context.library ?? [];
+      const delivery = [...submission.context.images.map((image) => ({ imageId: image.id, filename: image.name, method: 'image' })),
+        ...library.map((file) => ({ versionId: file.versionId, filename: file.filename, method: file.method }))];
+      const stopped = (failed, reason) => delivery.map((entry) => ({ ...entry, status: entry === failed ? 'failed' : 'not-sent', reason }));
+      let images;
+      try { images = await this.references(submission); }
+      catch (error) { throw Object.assign(error, { delivery: stopped(null, error.message) }); }
       const texts = new Map();
       for (const [index, file] of library.entries()) {
         try {
@@ -145,12 +147,11 @@ export function createChatService({ store, adapter, adapters = { codex: adapter 
             if (file.method === 'image') images.push({ type: 'localImage', path: copy.path });
           }
         } catch (error) {
-          const outcome = (entry, status, reason) => ({ versionId: entry.versionId, filename: entry.filename, method: entry.method, status, ...(reason ? { reason } : {}) });
           throw Object.assign(new Error(`${file.filename} version ${file.versionId} could not be delivered: ${error.message} Repair it with its exact original bytes if it is damaged, then Retry.`), { kind: 'input-unavailable',
-            delivery: [...delivery.map((entry) => ({ ...entry, status: 'not-sent' })), ...library.slice(0, index).map((entry) => outcome(entry, 'not-sent')), outcome(file, 'failed', error.message), ...library.slice(index + 1).map((entry) => outcome(entry, 'not-sent'))] });
+            delivery: stopped(delivery[submission.context.images.length + index], error.message) });
         }
       }
-      return { texts, images, delivery: [...delivery, ...library.map((file) => ({ versionId: file.versionId, filename: file.filename, method: file.method }))] };
+      return { texts, images, delivery };
     },
     async references(submission) {
       const directory = path.join(workspace(submission.cardId), 'references');

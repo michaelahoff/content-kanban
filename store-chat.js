@@ -1,7 +1,8 @@
 // Durable card-chat state, exposed only through openStore(). Native work never
 // happens here. All mutations use the board store's transaction and activity log.
 import { randomUUID } from 'node:crypto';
-import { defaultSelections, contextFields, selectedContext, sourceKey } from './public/chat-context.js';
+import { defaultSelections, contextFields, selectedContext } from './public/chat-context.js';
+import { sourceKey } from './public/library-format.js';
 
 export const chatMigration = `
   CREATE TABLE card_field_versions (card_id TEXT NOT NULL REFERENCES cards(id), field TEXT NOT NULL, version INTEGER NOT NULL,

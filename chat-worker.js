@@ -67,6 +67,8 @@ export function createChatWorker({ store, adapter, adapters = { codex: adapter }
     }
   }
   function release(work) {
+    // Prepared inputs of an attempt that ended before sending were not sent.
+    if (!closed && !work.deliveryStatus) deliver(work, 'not-sent');
     flush(work);
     clearInterval(work.timer);
     if (live.get(work.submission.cardId) === work) live.delete(work.submission.cardId);
@@ -183,7 +185,10 @@ export function createChatWorker({ store, adapter, adapters = { codex: adapter }
       return { success: true, contentItems: [{ type: 'inputText', text: JSON.stringify(result) }] };
     } catch (error) { return { success: false, contentItems: [{ type: 'inputText', text: error.message }] }; }
   }
-  const deliver = (work, status) => { if (work.delivery?.length) store.chats.delivered(ctx, work.attempt.id, work.delivery.map((entry) => ({ ...entry, status }))); };
+  const deliver = (work, status) => {
+    work.deliveryStatus = status;
+    if (work.delivery?.length) store.chats.delivered(ctx, work.attempt.id, work.delivery.map((entry) => ({ ...entry, status })));
+  };
   // Before sending, a Stop or archive ends the attempt rather than leaving it
   // waiting for a native interruption that can never come.
   function stopped(work) {
@@ -241,7 +246,7 @@ export function createChatWorker({ store, adapter, adapters = { codex: adapter }
       if (store.chats.attempt(attempt.id)?.status === 'interrupt-requested') void interrupt(work);
     } catch (error) {
       if (closed) return;
-      if (error.kind === 'input-unavailable') store.chats.delivered(ctx, work.attempt.id, error.delivery);
+      if (error.delivery) { work.deliveryStatus = 'failed'; store.chats.delivered(ctx, work.attempt.id, error.delivery); }
       else if (!work.accepted) deliver(work, work.sent && ['timeout', 'process-exited', 'protocol', 'binding-mismatch'].includes(error.kind) ? 'uncertain' : 'not-sent');
       // Nothing reached Codex, or Codex refused it before acceptance: wait for
       // the provider and retry. Possible delivery is never retried this way.
