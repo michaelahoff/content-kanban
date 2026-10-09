@@ -1,4 +1,5 @@
 import { maxImageBytes } from './image-files.js';
+import { fileFormats } from './public/library-format.js';
 
 // How a submission's inputs reach each native target, and the request limits
 // Frameboard knows. Pure: callers resolve and verify bytes first. Anything a
@@ -21,11 +22,24 @@ export const limits = {
 };
 const megabytes = (bytes) => `${Math.round(bytes / MiB)} MB`;
 
+// Routes with no evidence for the installed harnesses stay unavailable.
+const claudeFileReason = (item) => ({
+  PDF: `Claude PDF delivery is not enabled in Frameboard, and Claude chats have no file tools, so ${item.label} cannot be delivered. Remove it, or send it to Codex.`,
+  audio: `Claude card chats take no audio input and have no file tools, so ${item.label} cannot be delivered. Remove it, supply a transcript, or send it to Codex.`,
+  video: `Claude card chats take no video input and have no file tools, so ${item.label} cannot be delivered. Remove it, supply stills or a transcript, or send it to Codex.`,
+  'audio or video': `Claude card chats take no audio or video input and have no file tools, so ${item.label} cannot be delivered. Remove it, supply a transcript, or send it to Codex.`,
+})[fileFormats[item.format]?.media] ?? `Claude chats have no file tools, so ${item.label} cannot be delivered. Remove it, or send it to Codex.`;
+// Codex reads a workspace copy only with its shell tool, which the effective
+// configuration can turn off. A discovery that does not say leaves it on.
+export const hasShellTool = (discovery) => discovery?.tools?.shell !== false;
+export const noShellTool = 'This Codex setup has its shell tool turned off (features.shell_tool), so it has no tool to read workspace copies. Turn the shell tool on';
+
 // items: [{ key, label, kind: 'text' | 'image' | 'file', format?, size }] in
 // delivery order. textBytes counts the prompt and card text sent with them.
 // A model that reports its input modalities is held to them; otherwise the
-// provider decides.
-export function planInputs(provider, items, { textBytes, model = null }) {
+// provider decides. shellTool is false when the Codex setup cannot read a
+// workspace copy.
+export function planInputs(provider, items, { textBytes, model = null, shellTool = true }) {
   const claude = provider === 'claude';
   const problems = []; const warnings = [];
   const refuse = (item, reason, phase = 'limit') => problems.push({ key: item?.key ?? null, label: item?.label ?? 'This request', phase, reason });
@@ -39,7 +53,8 @@ export function planInputs(provider, items, { textBytes, model = null }) {
       return { ...item, method: 'image' };
     }
     if (claude && item.format === 'text') refuse(item, `${item.label} is too much text to send inline, and Claude chats have no file tools to read it. Remove it, or send it to Codex.`);
-    else if (claude) refuse(item, `Claude chats have no file tools, so ${item.label} cannot be delivered. Remove it, or send it to Codex.`, 'capability');
+    else if (claude) refuse(item, claudeFileReason(item), 'capability');
+    else if (!shellTool) refuse(item, `${noShellTool}, or remove ${item.label}.`, 'capability');
     return { ...item, method: 'copy' };
   });
   const images = inputs.filter((input) => input.method === 'image').length;

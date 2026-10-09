@@ -1,7 +1,7 @@
 // The project Library: uploaded files with stable asset identities and
 // immutable versions. Bytes live in retained storage; names are labels.
 import { createHash } from 'node:crypto';
-import { availableFilename, comparePaths, libraryFilename, nameConflict, splitExtension, sourceKey } from './public/library-format.js';
+import { availableFilename, comparePaths, fileFormat, formatSampleBytes, libraryFilename, nameConflict, splitExtension, sourceKey } from './public/library-format.js';
 import { libraryKinds } from './store-retained.js';
 import { imageFormat } from './image-files.js';
 import { rasterFormats, limits } from './submission-inputs.js';
@@ -16,14 +16,15 @@ async function collect(stream, limit = Infinity) {
   finally { stream.destroy(); }
   return Buffer.concat(chunks);
 }
-// A supported raster image, UTF-8 text without NUL bytes, or any other file.
-// A large file whose start reads as text is a file of format text.
+// A supported raster image, UTF-8 text without NUL bytes, or any other file,
+// named by its recognized format when it has one. A large file whose start
+// reads as text is a file of format text.
 function classify(bytes, size) {
   const format = imageFormat(bytes);
   if (rasterFormats.includes(format)) return { kind: 'image', format };
   const readable = !bytes.includes(0) && (() => { try { utf8().decode(bytes, { stream: size > textProbeBytes }); return true; } catch { return false; } })();
   if (readable && size <= textProbeBytes) return { kind: 'text', format: 'utf-8' };
-  return { kind: 'file', format: format ?? (readable ? 'text' : null) };
+  return { kind: 'file', format: format ?? fileFormat(bytes) ?? (readable ? 'text' : null) };
 }
 // Workspace copies are named by version, never by the filename label.
 const copyPath = (file) => {
@@ -395,9 +396,9 @@ export function createLibrary({ retained, metadata, drafts, project, record }) {
     // small files whole but only sample large ones, trusting their last check.
     async inspect(ctx, projectId, versionId, { verify = true } = {}) {
       const { version } = owned(ctx, projectId, versionId);
-      if (verify || version.size <= textProbeBytes) return classify(await collect(await retained.read(ctx, version.id), version.size > textProbeBytes ? 64 : Infinity), version.size);
+      if (verify || version.size <= textProbeBytes) return classify(await collect(await retained.read(ctx, version.id), version.size > textProbeBytes ? formatSampleBytes : Infinity), version.size);
       if (!version.available) fail(409, `Retained version ${version.id} is unavailable. ${version.error}`);
-      return classify(await retained.peek(ctx, version.id, 64), version.size);
+      return classify(await retained.peek(ctx, version.id, formatSampleBytes), version.size);
     },
     copyPath,
     // A frozen text version, read verified, for inline delivery.

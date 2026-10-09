@@ -47,6 +47,12 @@ test('discovery starts the shared app-server only when asked and correlates conc
   assert.match(first.harness.userAgent, /fake-codex/);
 });
 
+test('discovery reports whether the effective configuration leaves Codex its shell tool for reading workspace files', async (t) => {
+  assert.deepEqual((await (await fixture(t)).adapter().discover()).tools, { shell: true });
+  const off = await fixture(t, { features: { shell_tool: false } });
+  assert.deepEqual((await off.adapter().discover()).tools, { shell: false });
+});
+
 const threadConfig = {
   developerInstructions: 'Frameboard card chat instructions.',
   config: { project_doc_max_bytes: 0 },

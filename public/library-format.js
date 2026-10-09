@@ -88,3 +88,45 @@ export function previewType(filename) {
 // A version saved from the document editor is UTF-8 text whatever the file is
 // named; uploaded bytes go by extension.
 export const assetPreview = (filename, version) => version?.written ? { kind: 'text', type: 'text/plain; charset=utf-8' } : previewType(filename);
+
+// Common general-file formats, recognized by signature parts ([offset, bytes])
+// that must all match, for honest descriptions. `media` names a modality no
+// card chat target accepts directly. Recognizing a format claims nothing about
+// whether a model or tool can interpret it, and never changes a file's route.
+const isoBrands = (...brands) => brands.map((brand) => [[4, `ftyp${brand}`]]);
+export const fileFormats = {
+  pdf: { name: 'PDF', media: 'PDF', signatures: [[[0, '%PDF-']]] },
+  zip: { name: 'ZIP archive', signatures: [[[0, 'PK\x03\x04']]] },
+  gzip: { name: 'gzip archive', signatures: [[[0, '\x1f\x8b']]] },
+  '7z': { name: '7z archive', signatures: [[[0, '7z\xbc\xaf\x27\x1c']]] },
+  rar: { name: 'RAR archive', signatures: [[[0, 'Rar!\x1a\x07']]] },
+  tar: { name: 'tar archive', signatures: [[[257, 'ustar']]] },
+  wav: { name: 'WAV audio', media: 'audio', signatures: [[[0, 'RIFF'], [8, 'WAVE']]] },
+  mp3: { name: 'MP3 audio', media: 'audio', signatures: [[[0, 'ID3']]] },
+  flac: { name: 'FLAC audio', media: 'audio', signatures: [[[0, 'fLaC']]] },
+  m4a: { name: 'M4A audio', media: 'audio', signatures: isoBrands('M4A ') },
+  ogg: { name: 'Ogg media', media: 'audio or video', signatures: [[[0, 'OggS']]] },
+  mp4: { name: 'MP4 video', media: 'video', signatures: isoBrands('isom', 'iso2', 'iso5', 'mp41', 'mp42', 'avc1', 'M4V ', 'dash') },
+  mov: { name: 'QuickTime video', media: 'video', signatures: isoBrands('qt  ') },
+  matroska: { name: 'Matroska video', media: 'video', signatures: [[[0, '\x1a\x45\xdf\xa3']]] },
+  heif: { name: 'HEIF image', signatures: isoBrands('heic', 'heix', 'mif1', 'msf1') },
+  woff2: { name: 'WOFF2 font', signatures: [[[0, 'wOF2']]] },
+  woff: { name: 'WOFF font', signatures: [[[0, 'wOFF']]] },
+  otf: { name: 'OpenType font', signatures: [[[0, 'OTTO']]] },
+  ttf: { name: 'TrueType font', signatures: [[[0, '\x00\x01\x00\x00']]] },
+};
+// Signatures reach at most this far into a file.
+export const formatSampleBytes = 512;
+const matches = (bytes, [offset, magic]) => offset + magic.length <= bytes.length && [...magic].every((char, index) => bytes[offset + index] === char.charCodeAt(0));
+export function fileFormat(bytes) {
+  return Object.keys(fileFormats).find((format) => fileFormats[format].signatures.some((parts) => parts.every((part) => matches(bytes, part)))) ?? null;
+}
+
+// How a selected file reaches its target, as previews and history describe it.
+// A workspace copy is only made available to Codex's tools.
+export function deliveryDescription(entry) {
+  if (entry.method === 'text') return 'full text inline';
+  if (entry.method === 'image') return 'native image';
+  const name = entry.format === 'text' ? 'large text' : fileFormats[entry.format]?.name ?? (entry.format ? entry.format.toUpperCase() : null);
+  return `${name ? `${name} · ` : ''}workspace copy for Codex tools`;
+}

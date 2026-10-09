@@ -158,7 +158,7 @@ const methods = {
   'hooks/list': ({ cwds }) => ({ data: (cwds ?? []).map((cwd) => ({ cwd, hooks: scenario.hooks ?? [], warnings: [], errors: [] })) }),
   'plugin/installed': () => ({ marketplaces: scenario.plugins?.length ? [{ name: 'fake', path: null, interface: null, plugins: scenario.plugins }] : [], marketplaceLoadErrors: [] }),
   'mcpServerStatus/list': () => ({ data: scenario.mcpServers ?? [], nextCursor: null }),
-  'config/read': () => ({ config: { mcp_servers: scenario.configuredMcpServers ?? {} }, origins: {} }),
+  'config/read': () => ({ config: { mcp_servers: scenario.configuredMcpServers ?? {}, ...(scenario.features ? { features: scenario.features } : {}) }, origins: {} }),
   'configRequirements/read': () => ({ requirements: scenario.requirements ?? null }),
   'thread/start': (params) => {
     requireModel(params.model);

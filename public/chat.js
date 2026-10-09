@@ -4,7 +4,7 @@ import { state, locateCard, flushCards, saveStatus, refreshSavedCard } from './s
 import { contextFields } from './chat-context.js';
 import { attemptMarkup, progressState, runningStatuses } from './chat-transcript.js';
 import { formatSize } from './library.js';
-import { comparePaths, libraryPaths, sourceKey } from './library-format.js';
+import { comparePaths, deliveryDescription, libraryPaths, sourceKey } from './library-format.js';
 
 const chats = new Map();
 // Each project's Library files and folders, for naming manual selections and the picker.
@@ -230,15 +230,14 @@ function pickLibraryFiles(item) {
       } });
   }, (error) => showError(item, error));
 }
-const methods = { text: 'full text', image: 'native image', copy: 'workspace copy for tools' };
 function libraryContextMarkup(context) {
   const library = context.library ?? [];
-  return `${library.length ? `<ul class="chat-library-inputs">${library.map((file) => `<li><strong>${escape(file.libraryPath ?? file.filename)}</strong> <small>v${file.number} · ${formatSize(file.size)} · ${methods[file.method]}${file.sources.length > 1 ? ` · selected ${file.sources.length} times` : ''}<br>Version ${escape(file.versionId)} · SHA-256 ${escape(file.hash)}</small></li>`).join('')}</ul>` : ''}${(context.warnings ?? []).map((warning) => `<p class="chat-hint">${escape(warning)}</p>`).join('')}`;
+  return `${library.length ? `<ul class="chat-library-inputs">${library.map((file) => `<li><strong>${escape(file.libraryPath ?? file.filename)}</strong> <small>v${file.number} · ${formatSize(file.size)} · ${escape(deliveryDescription(file))}${file.sources.length > 1 ? ` · selected ${file.sources.length} times` : ''}<br>Version ${escape(file.versionId)} · SHA-256 ${escape(file.hash)}</small></li>`).join('')}</ul>${library.some((file) => file.method === 'copy') ? '<p class="chat-hint">Codex can read workspace copies only with its shell tool. Frameboard does not extract, render, transcribe or convert them, and sent does not mean a file was read or understood.</p>' : ''}` : ''}${(context.warnings ?? []).map((warning) => `<p class="chat-hint">${escape(warning)}</p>`).join('')}`;
 }
 const deliveryLabels = { sending: 'sending, not confirmed', sent: 'sent', 'not-sent': 'not sent', uncertain: 'delivery uncertain', failed: 'failed' };
 function deliveryMarkup(attempt) {
   if (!attempt.delivery?.length) return '';
-  return `<ul class="chat-delivery" aria-label="Delivery">${attempt.delivery.map((entry) => `<li>${escape(entry.filename)} · ${methods[entry.method]} · ${deliveryLabels[entry.status] ?? escape(entry.status)}${entry.reason ? ` · ${escape(entry.reason)}` : ''}</li>`).join('')}</ul>`;
+  return `<ul class="chat-delivery" aria-label="Delivery">${attempt.delivery.map((entry) => `<li>${escape(entry.filename)} · ${escape(deliveryDescription(entry))} · ${deliveryLabels[entry.status] ?? escape(entry.status)}${entry.reason ? ` · ${escape(entry.reason)}` : ''}</li>`).join('')}</ul>`;
 }
 function outputMarkup(output) {
   if (!output) return '';

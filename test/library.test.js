@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { assetPreview, availableFilename, libraryFilename, previewType, libraryPaths, searchLibrary, folderHolders } from '../public/library-format.js';
+import { assetPreview, availableFilename, deliveryDescription, libraryFilename, previewType, libraryPaths, searchLibrary, folderHolders } from '../public/library-format.js';
 import { mkdtemp, rm, writeFile, chmod, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -20,6 +20,15 @@ test('Create new picks the first free numeric suffix before the extension', () =
   assert.equal(availableFilename('archive.tar.gz', ['archive.tar.gz']), 'archive.tar (1).gz');
   assert.equal(availableFilename('README', ['README']), 'README (1)');
   assert.equal(availableFilename('.env', ['.env']), '.env (1)');
+});
+
+test('delivery descriptions name the route and the recognized format without claiming comprehension', () => {
+  assert.equal(deliveryDescription({ method: 'text' }), 'full text inline');
+  assert.equal(deliveryDescription({ method: 'image', format: 'png' }), 'native image');
+  assert.equal(deliveryDescription({ method: 'copy', format: 'pdf' }), 'PDF · workspace copy for Codex tools');
+  assert.equal(deliveryDescription({ method: 'copy', format: 'matroska' }), 'Matroska video · workspace copy for Codex tools');
+  assert.equal(deliveryDescription({ method: 'copy', format: 'text' }), 'large text · workspace copy for Codex tools');
+  assert.equal(deliveryDescription({ method: 'copy', format: null }), 'workspace copy for Codex tools');
 });
 
 test('library filenames are labels, never paths', () => {

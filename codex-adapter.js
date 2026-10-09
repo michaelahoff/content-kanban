@@ -187,6 +187,9 @@ export function createCodexAdapter({
         skills: skills.data.flatMap((entry) => entry.skills).map((s) => ({ id: s.path, name: s.name, description: s.description, scope: s.scope })),
         hooks: hooks.data.flatMap((entry) => entry.hooks), plugins: plugins.marketplaces.flatMap((entry) => entry.plugins),
         mcpServers, configuredMcpServers: Object.keys(config.config.mcp_servers ?? {}), requirements: requirements.requirements,
+        // Workspace copies of Library files are readable only through the shell
+        // tool, which the effective configuration can turn off.
+        tools: { shell: config.config.features?.shell_tool !== false },
         errors: [...skills.data.flatMap((entry) => entry.errors), ...hooks.data.flatMap((entry) => [...entry.errors, ...entry.warnings]), ...plugins.marketplaceLoadErrors],
       };
     },
