@@ -819,14 +819,18 @@ test('remembered sources resolve to current versions: folders expand recursively
   f.library.createFolder(f.ctx, f.projectId, { name: 'Thumbnails' });
   const { project: other } = f.store.createProject(f.ctx, { name: 'Other' });
   const foreign = f.library.createFolder(f.ctx, other.id, { name: 'Elsewhere' });
-  const after = f.library.resolve(f.ctx, f.projectId, [...selection, { kind: 'folder', id: foreign.id }, { kind: 'folder', id: logo.asset.id }, { kind: 'path', id: 'script.md' }]);
+  const foreignFile = (await f.upload('logo.png', Buffer.from('foreign'), { projectId: other.id })).asset;
+  const after = f.library.resolve(f.ctx, f.projectId, [...selection, { kind: 'folder', id: foreign.id }, { kind: 'folder', id: logo.asset.id }, { kind: 'path', id: 'script.md' },
+    { kind: 'asset', id: foreignFile.id }, { kind: 'asset', id: thumbnails.id }]);
   assert.deepEqual(after.problems.map((problem) => [problem.key, problem.label, problem.phase, problem.reason]), [
     [`asset:${logo.asset.id}`, 'logo.png', 'resolve', 'It was removed from the Library.'],
     [`folder:${thumbnails.id}`, 'Thumbnails/', 'resolve', 'It was removed from the Library.'],
     [`asset:${script.asset.id}`, 'script.md', 'resolve', 'It was removed from the Library.'],
-    [`folder:${foreign.id}`, `folder:${foreign.id}`, 'resolve', 'It is not a folder in this project’s Library.'],
-    [`folder:${logo.asset.id}`, `folder:${logo.asset.id}`, 'resolve', 'It is not a folder in this project’s Library.'],
-    ['path:script.md', 'path:script.md', 'resolve', 'It is not a file in this project’s Library.']]);
+    [`folder:${foreign.id}`, `folder:${foreign.id}`, 'resolve', 'It is a folder in another project’s Library. Choose one from this project; nothing is matched by name.'],
+    [`folder:${logo.asset.id}`, `folder:${logo.asset.id}`, 'resolve', 'It is a file, not a folder. Select it as a file.'],
+    ['path:script.md', 'path:script.md', 'resolve', 'It is not a file in this project’s Library.'],
+    [`asset:${foreignFile.id}`, `asset:${foreignFile.id}`, 'resolve', 'It is a file in another project’s Library. Choose one from this project; nothing is matched by name.'],
+    [`asset:${thumbnails.id}`, `asset:${thumbnails.id}`, 'resolve', 'It is a folder, not a file. Select it as a folder.']]);
   assert.deepEqual(after.files, [], 'an existing empty folder adds no files, and nothing substitutes for removed sources');
 });
 

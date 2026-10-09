@@ -56,6 +56,14 @@
   .playbook-problems ul { margin-top: 4px; }
   .playbook-warnings { margin-bottom: 12px; color: var(--amber); }
   .playbook-missing { color: var(--amber); font-size: 11px; }
+  .playbook-assets { display: grid; gap: 6px; margin: 6px 0 10px; padding-left: 18px; }
+  .playbook-assets li > * { vertical-align: baseline; }
+  .playbook-assets li { overflow-wrap: anywhere; }
+  .playbook-assets li span { margin-right: 6px; }
+  .playbook-assets small { color: var(--muted); }
+  .playbook-unsaved-note { display: flex; align-items: center; gap: 8px; margin: 0; padding: 8px 22px; border-bottom: 1px solid var(--border); color: var(--amber); font-size: 12px; }
+  .playbook-preview-library { margin: 0; padding: 10px 22px 10px 40px; border-bottom: 1px solid var(--border); font-size: 12px; }
+  .playbook-preview-library small { color: var(--muted); }
   .playbook-reference { margin-top: 20px; padding-top: 14px; border-top: 1px solid var(--border); color: #babdc7; font-size: 12px; }
   .playbook-reference summary { cursor: pointer; color: var(--muted); font-weight: 550; }
   .playbook-reference p { margin-top: 8px; overflow-wrap: anywhere; }

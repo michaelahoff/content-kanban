@@ -431,6 +431,15 @@ export function createLibrary({ retained, metadata, drafts, project, record }) {
       const chainOf = (folderId) => { if (!chains.has(folderId)) chains.set(folderId, chain(ctx, folderId)); return chains.get(folderId); };
       const pathOf = (folderId) => labels(chainOf(folderId));
       let live;
+      // Why a source names nothing here: another project's source, or one of
+      // the other kind, is reported as such and never matched by name.
+      const unowned = (id, noun) => {
+        const object = metadata.object(ctx, id); const folder = metadata.folder(ctx, id);
+        const [kind, holder] = object && libraryKinds.includes(object.kind) ? ['file', object] : folder ? ['folder', folder] : [];
+        if (!holder) return `It is not a ${noun} in this project’s Library.`;
+        if (holder.project_id !== projectId) return `It is a ${kind} in another project’s Library. Choose one from this project; nothing is matched by name.`;
+        return `It is a ${kind}, not a ${noun}. Select it as a ${kind}.`;
+      };
       const include = (row, source) => {
         if (!files.has(row.id)) {
           const version = numberedVersion(ctx, metadata.version(ctx, row.current_version_id));
@@ -444,7 +453,7 @@ export function createLibrary({ retained, metadata, drafts, project, record }) {
         if (selection.kind === 'folder') {
           const row = metadata.folder(ctx, selection.id);
           const owned = row && row.project_id === projectId;
-          const reason = !owned ? 'It is not a folder in this project’s Library.' : row.removed_at ? 'It was removed from the Library.' : null;
+          const reason = !owned ? unowned(selection.id, 'folder') : row.removed_at ? 'It was removed from the Library.' : null;
           if (reason) { problems.push({ key, label: owned ? pathOf(row.id) : key, phase: 'resolve', reason }); continue; }
           resolved.push({ kind: 'folder', id: row.id, path: pathOf(row.id) });
           live ??= metadata.sources(ctx, projectId);
@@ -457,7 +466,7 @@ export function createLibrary({ retained, metadata, drafts, project, record }) {
         }
         const row = selection.kind === 'asset' ? metadata.object(ctx, selection.id) : null;
         const owned = row && row.project_id === projectId && libraryKinds.includes(row.kind);
-        const reason = !owned ? 'It is not a file in this project’s Library.' : row.removed_at ? 'It was removed from the Library.'
+        const reason = !owned ? unowned(selection.id, 'file') : row.removed_at ? 'It was removed from the Library.'
           : !row.current_version_id ? 'Its first upload has not finished.' : null;
         if (reason) { problems.push({ key, label: owned ? row.filename : key, phase: 'resolve', reason }); continue; }
         include(row, { kind: selection.kind, id: selection.id });
