@@ -43,23 +43,55 @@ export function createLaneRunner({ store, service, providers, ctx, paused = () =
     return info;
   }
 
+  // What a prepared run sends, from saved files, settings and the target.
+  // The card, its conversation, provider settings and Library sources are
+  // checked by the commit itself.
+  const preparedParts = (prepared) => ({ playbook: prepared.document?.hash, map: prepared.map?.hash ?? null,
+    skills: prepared.skills.map((skill) => [skill.name, skill.hash ?? null]), notes: prepared.notes.hash,
+    target: [prepared.provider, prepared.model], prompt: prepared.prompt });
+  const partNames = { playbook: 'lane playbook', map: 'project map', skills: 'named skills', notes: 'hand-off notes', target: 'provider or model', prompt: 'lane prompt' };
+  const changedWhilePreparing = (error) => error.status === 409 && /changed while preparing/.test(error.message);
+  // Repreparations in a row before a run that keeps changing fails visibly.
+  const preparations = 3;
+
   async function start(run) {
+    for (let attempt = 1; ; attempt += 1) {
+      try { return await prepareAndQueue(run); }
+      catch (error) {
+        if (closed || error.code === 'lane-run-closed') return;
+        if (!changedWhilePreparing(error)) return store.laneRuns.update(ctx, run.id, { status: 'failed', reason: error.message });
+        // Prepare again from what is saved now; the run is still pending.
+        if (attempt === preparations) {
+          return store.laneRuns.update(ctx, run.id, { status: 'failed',
+            reason: `${error.message} It changed during ${preparations} preparations in a row, so nothing was queued. Run playbook when it is settled.` });
+        }
+      }
+    }
+  }
+
+  async function prepareAndQueue(run) {
     const finish = (status, reason) => store.laneRuns.update(ctx, run.id, { status, reason });
     let info = current(run);
     if (!info) return;
-    if (waitingForChat.has(run.id)) {
-      if (store.chats.laneConversation(ctx, run.cardId).busy) return;
-      waitingForChat.delete(run.id);
-    }
     const trigger = run.trigger === 'manual' ? 'manual' : 'enter';
     const enabled = (settings) => settings.run !== 'off' && (trigger === 'manual' || settings.run === 'on-enter');
     const cancelDisabled = () => finish('cancelled', 'The playbook was turned off or its trigger changed before this run started.');
+    if (waitingForChat.has(run.id)) {
+      if (store.chats.laneConversation(ctx, run.cardId).busy) {
+        // Everything else is read when the chat is free; turning the
+        // playbook off or to manual ends a waiting automatic run now.
+        const saved = store.playbooks.settings(info.project.flowId, info.stage.id, info.card.template);
+        if (saved && !saved.settings.errors.length && !enabled(saved.settings)) { waitingForChat.delete(run.id); return cancelDisabled(); }
+        return;
+      }
+      waitingForChat.delete(run.id);
+    }
     let prepared = prepare(info.card, info.stage, info.project, info.stages, trigger);
     if (prepared.error) return finish('failed', prepared.error);
     if (!enabled(prepared.settings)) return cancelDisabled();
     // Models are listed once and saved; list them now if that never happened.
     if (!prepared.model && !store.providerCatalog(ctx, prepared.provider).discovery && providers) {
-      try { await providers.refresh(ctx, prepared.provider); } catch (error) { return finish('failed', error.message); }
+      await providers.refresh(ctx, prepared.provider);
       if (closed || !(info = current(run))) return;
       prepared = prepare(info.card, info.stage, info.project, info.stages, trigger);
       if (prepared.error) return finish('failed', prepared.error);
@@ -79,21 +111,29 @@ export function createLaneRunner({ store, service, providers, ctx, paused = () =
       }
       store.chats.fresh(ctx, card.id, { cancelQueued: true });
     }
-    try {
-      // queueLane links the run and its submission in one commit.
-      const submission = await service.queueLane(ctx, card.id, { id: `lane-${run.id}`, prompt: prepared.prompt, provider, model: prepared.model,
-        selections: settings.selections, assets: settings.assets, authority: { fields: settings.mayEdit },
-        lane: { runId: run.id, stageId: stage.id, stageName: stage.name, trigger: run.trigger, entry: store.laneRuns.entry(card.id),
-          playbook: { ...prepared.document }, map: prepared.map && { ...prepared.map },
-          skills: prepared.skills.map(({ name, path, hash, text }) => ({ name, path, hash: hash ?? null, text })),
-          notesHash: prepared.notes.hash, notesText: prepared.notes.text } });
-      if (!submission.lane || submission.lane.runId !== run.id) finish('failed', 'A different submission already uses this lane run’s ID.');
-    } catch (error) {
-      if (closed || error.code === 'lane-run-closed') return;
-      // The card changed while the provider was being checked; try again.
-      if (error.status === 409 && /changed while preparing/.test(error.message)) { again = true; return; }
-      finish('failed', error.message);
-    }
+    // Called synchronously with the commit, after the asynchronous discovery
+    // and byte checks: the run must still be pending in this lane, and every
+    // saved input and the target must be what was prepared.
+    const confirm = () => {
+      const now = current(run);
+      if (!now) throw Object.assign(new Error('This lane run was cancelled while it was being prepared.'), { status: 409, code: 'lane-run-closed' });
+      const latest = prepare(now.card, now.stage, now.project, now.stages, trigger);
+      // Preparing again reports the error or cancels the disabled run.
+      if (latest.error || !enabled(latest.settings)) throw Object.assign(new Error('The lane playbook changed while preparing the lane run.'), { status: 409 });
+      const [before, after] = [preparedParts(prepared), preparedParts(latest)];
+      const differs = Object.keys(before).filter((key) => JSON.stringify(before[key]) !== JSON.stringify(after[key]));
+      // The prompt holds the documents; name it only for a lane or project rename.
+      const changed = differs.length > 1 ? differs.filter((key) => key !== 'prompt') : differs;
+      if (changed.length) throw Object.assign(new Error(`The ${changed.map((key) => partNames[key]).join(', ')} changed while preparing the lane run.`), { status: 409 });
+    };
+    // queueLane links the run and its submission in one commit.
+    const submission = await service.queueLane(ctx, card.id, { id: `lane-${run.id}`, prompt: prepared.prompt, provider, model: prepared.model,
+      selections: settings.selections, assets: settings.assets, authority: { fields: settings.mayEdit }, confirm,
+      lane: { runId: run.id, stageId: stage.id, stageName: stage.name, trigger: run.trigger, entry: store.laneRuns.entry(card.id),
+        playbook: { ...prepared.document }, map: prepared.map && { ...prepared.map },
+        skills: prepared.skills.map(({ name, path, hash, text }) => ({ name, path, hash: hash ?? null, text })),
+        notesHash: prepared.notes.hash, notesText: prepared.notes.text } });
+    if (!submission.lane || submission.lane.runId !== run.id) finish('failed', 'A different submission already uses this lane run’s ID.');
   }
 
   async function drain() {
