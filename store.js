@@ -15,7 +15,7 @@ import { protectionMigration, createProtectionStore } from './store-protection.j
 import { imagesMigration, createImageStore } from './store-images.js';
 import { retainedMigration, foldersMigration, createRetainedMetadata } from './store-retained.js';
 import { createRetainedStorage } from './retained-storage.js';
-import { createLibrary } from './library.js';
+import { createLibrary, deliverableVersions } from './library.js';
 import { savedOutputsMigration, createSavedOutputStore } from './store-saved-outputs.js';
 import { libraryDraftsMigration, createDraftStore } from './store-drafts.js';
 
@@ -70,12 +70,16 @@ export function inspectBackupDatabase(filename) {
       label: row.label, ...(foldered ? { folderId: row.folder_id } : {}), filename: row.filename, path: `retained/versions/${row.id}`, size: row.size, sha256: row.hash,
       current: Boolean(row.current), removed: Boolean(row.removed), baseVersionId: row.base_version_id })) : [];
     for (const version of retained) if (!/^[a-f0-9-]{36}$/.test(version.versionId) || !/^[a-f0-9]{64}$/.test(version.sha256 ?? '') || !Number.isSafeInteger(version.size)) throw new Error('The database contains an invalid retained version.');
-    // Frozen submissions name the exact Library versions they captured; each
-    // must be a retained committed version with the recorded hash and size.
+    // Frozen submissions name the exact Library and reused saved output
+    // versions they captured; each must be a retained committed version with
+    // the recorded hash and size.
     const versions = new Map(retained.map((version) => [version.versionId, version]));
-    for (const row of db.prepare('SELECT id, frozen FROM chat_submissions').all()) for (const file of JSON.parse(row.frozen).context.library ?? []) {
-      const version = versions.get(file.versionId);
-      if (version?.sha256 !== file.hash || version.size !== file.size) throw new Error(`Submission ${row.id} references Library version ${file.versionId}, which is not retained with its recorded hash and size.`);
+    for (const row of db.prepare('SELECT id, frozen FROM chat_submissions').all()) {
+      const { context } = JSON.parse(row.frozen);
+      for (const [noun, files] of [['Library version', context.library ?? []], ['saved output version', context.savedOutputs ?? []]]) for (const file of files) {
+        const version = versions.get(file.versionId);
+        if (version?.sha256 !== file.hash || version.size !== file.size) throw new Error(`Submission ${row.id} references ${noun} ${file.versionId}, which is not retained with its recorded hash and size.`);
+      }
     }
     const archived = db.prepare("SELECT name FROM pragma_table_info('projects') WHERE name = 'archived_at'").get() ? 'archived_at' : 'NULL';
     const projects = db.prepare(`SELECT id, name, flow_id, ${archived} AS archived_at, deleted_at FROM projects ORDER BY position, rowid`).all()
@@ -1187,6 +1191,8 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
     api.retained = await createRetainedStorage({ dataDir, checkpoint: retainedCheckpoint, metadata });
     api.library = createLibrary({ retained: api.retained, metadata, drafts: createDraftStore({ all, get, run, transaction, now }), project: requireProject,
       record: (ctx, type, id, projectId, data, entity = 'asset') => transaction(() => recordChange(ctx, entity, id, type, { projectId, data })) });
+    // Saved outputs reused in their card chat are read for delivery like Library files.
+    api.savedOutputs.delivery = deliverableVersions({ retained: api.retained, metadata, kinds: ['output'], noun: 'saved output', directory: 'outputs' });
   } catch (error) { db.close(); throw error; }
   return api;
 }

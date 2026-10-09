@@ -647,6 +647,21 @@ These values apply when a card enters this lane.
   for (const asset of (await (await fetch(`${base}/api/projects/${entryProjectId}/library`)).json()).assets) await fetch(`${base}/api/projects/${entryProjectId}/library/assets/${asset.id}`, { method: 'DELETE' });
   console.log('PASS Save to project library creates a Library file, then asks Create new, Replace or Cancel and replaces with a new version');
   await snapshot('lane-run-result');
+  // Use in prompt sends the saved document's exact version with the next manual prompt.
+  const reuseButton = `.chat-saved-outputs li:last-child [data-action="chat-reuse-output"]`;
+  await click(reuseButton);
+  await waitFor(`document.querySelector('${reuseButton}')?.getAttribute('aria-pressed') === 'true' && document.querySelector('#chat-composer').textContent.includes('Saved outputs')`);
+  await waitFor(`document.querySelector('[aria-label="Reused saved outputs"]')?.textContent.includes('lane-reply.md')`);
+  await select('#chat-model', 'test-model');
+  await fill('#chat-prompt', 'Shorten the saved reply');
+  const sendsBeforeReuse = codex.sends.length;
+  await click('[data-action="chat-send"]');
+  for (let attempt = 0; codex.sends.length === sendsBeforeReuse && attempt < 100; attempt++) await pause(50);
+  const reuseSend = codex.sends.at(-1);
+  assert.ok(reuseSend.input[0].text.includes('Reused saved outputs from this card chat') && reuseSend.input[0].text.includes('lane-reply.md'), 'The saved document is sent as reference material');
+  codex.finish(reuseSend, 'completed', 'Shorter.');
+  await waitFor(`[...document.querySelectorAll('.chat-delivery')].some((list) => list.textContent.includes('lane-reply.md · full text inline · sent'))`);
+  console.log('PASS Use in prompt reuses a saved document in the next prompt and records its delivery');
   // A conflicting notes draft survives switching cards, then can be resolved.
   await fill('#lane-notes', 'My conflicting hand-off');
   const storedNotes = await (await fetch(`${base}/api/cards/${entryCardId}/notes`)).json();

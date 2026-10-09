@@ -27,9 +27,42 @@ function classify(bytes, size) {
   return { kind: 'file', format: format ?? fileFormat(bytes) ?? (readable ? 'text' : null) };
 }
 // Workspace copies are named by version, never by the filename label.
-const copyPath = (file) => {
+const copyPath = (file, directory) => {
   const extension = file.kind === 'image' ? file.format : splitExtension(file.filename)[1].toLowerCase();
-  return `references/library/${file.versionId}${/^[a-z0-9]{1,10}$/.test(extension) ? `.${extension}` : ''}`;
+  return `references/${directory}/${file.versionId}${/^[a-z0-9]{1,10}$/.test(extension) ? `.${extension}` : ''}`;
+};
+
+// A committed version of one of these retained kinds owned by the project.
+function ownedVersion(metadata, ctx, projectId, versionId, kinds, noun) {
+  const version = metadata.version(ctx, versionId);
+  const source = version && metadata.object(ctx, version.objectId);
+  if (!source || source.project_id !== projectId || !kinds.includes(source.kind) || version.state !== 'committed') fail(404, `This ${noun} version does not exist.`);
+  return { version, source };
+}
+// How a project's retained versions of these kinds are read for delivery:
+// Library files, and saved outputs reused in their card chat. Copies go
+// under references/<directory>/, named by version.
+export const deliverableVersions = ({ retained, metadata, kinds, noun, directory }) => {
+  const owned = (ctx, projectId, versionId) => ownedVersion(metadata, ctx, projectId, versionId, kinds, noun).version;
+  return {
+    // Sends verify every byte; previews read small files whole but only
+    // sample large ones, trusting their last check.
+    async inspect(ctx, projectId, versionId, { verify = true } = {}) {
+      const version = owned(ctx, projectId, versionId);
+      if (verify || version.size <= textProbeBytes) return classify(await collect(await retained.read(ctx, version.id), version.size > textProbeBytes ? formatSampleBytes : Infinity), version.size);
+      if (!version.available) fail(409, `Retained version ${version.id} is unavailable. ${version.error}`);
+      return classify(await retained.peek(ctx, version.id, formatSampleBytes), version.size);
+    },
+    copyPath: (file) => copyPath(file, directory),
+    // A frozen text version, read verified, for inline delivery.
+    async text(ctx, projectId, versionId) {
+      return utf8().decode(await collect(await retained.read(ctx, owned(ctx, projectId, versionId).id)));
+    },
+    // An independent verified workspace copy of a frozen version.
+    materialize(ctx, projectId, versionId, workspace, relative) {
+      return retained.materialize(ctx, owned(ctx, projectId, versionId).id, workspace, relative);
+    },
+  };
 };
 
 // Written documents are UTF-8 text; larger files are edited elsewhere.
@@ -96,12 +129,7 @@ export function createLibrary({ retained, metadata, drafts, project, record }) {
   const folderPath = (ctx, folderId) => labels(chain(ctx, folderId));
   const has = (input, key) => Object.hasOwn(input ?? {}, key);
   const numberedVersion = (ctx, version) => numbered(metadata.history(ctx, version.objectId)).find((entry) => entry.id === version.id);
-  function owned(ctx, projectId, versionId) {
-    const version = metadata.version(ctx, versionId);
-    const source = version && metadata.object(ctx, version.objectId);
-    if (!source || source.project_id !== projectId || !libraryKinds.includes(source.kind) || version.state !== 'committed') fail(404, 'This Library file version does not exist.');
-    return { version, source };
-  }
+  const owned = (ctx, projectId, versionId) => ownedVersion(metadata, ctx, projectId, versionId, libraryKinds, 'Library file');
 
   // A committed operation reported again, without new bytes.
   const savedResult = (ctx, outcome, prior) => ({ outcome, asset: assetFrom(ctx, metadata.object(ctx, prior.objectId)), version: numberedVersion(ctx, prior) });
@@ -518,25 +546,8 @@ export function createLibrary({ retained, metadata, drafts, project, record }) {
       }
       return { files: [...files.values()], selections: resolved, problems };
     },
-    // How a version can be delivered. Sends verify every byte; previews read
-    // small files whole but only sample large ones, trusting their last check.
-    async inspect(ctx, projectId, versionId, { verify = true } = {}) {
-      const { version } = owned(ctx, projectId, versionId);
-      if (verify || version.size <= textProbeBytes) return classify(await collect(await retained.read(ctx, version.id), version.size > textProbeBytes ? formatSampleBytes : Infinity), version.size);
-      if (!version.available) fail(409, `Retained version ${version.id} is unavailable. ${version.error}`);
-      return classify(await retained.peek(ctx, version.id, formatSampleBytes), version.size);
-    },
-    copyPath,
-    // A frozen text version, read verified, for inline delivery.
-    async text(ctx, projectId, versionId) {
-      const { version } = owned(ctx, projectId, versionId);
-      return utf8().decode(await collect(await retained.read(ctx, version.id)));
-    },
-    // An independent verified workspace copy of a frozen version.
-    materialize(ctx, projectId, versionId, workspace, relative) {
-      const { version } = owned(ctx, projectId, versionId);
-      return retained.materialize(ctx, version.id, workspace, relative);
-    },
+    // How a Library version can be delivered: inspect, copyPath, text, materialize.
+    ...deliverableVersions({ retained, metadata, kinds: libraryKinds, noun: 'Library file', directory: 'library' }),
     async read(ctx, projectId, versionId) {
       project(ctx, projectId, { allowArchived: true });
       const { version, source } = owned(ctx, projectId, versionId);
