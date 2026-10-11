@@ -482,7 +482,8 @@ const maxLaneOutputs = 20;
 export function composeLanePrompt({ projectName, laneName, lanes, trigger = 'enter', map, playbook, skills = [], notes = '', settings, template }) {
   const fields = setFields(template).filter((field) => field.editor !== false);
   const label = (key) => fields.find((field) => field.key === key)?.label ?? key;
-  const example = fields.find((field) => field.key !== 'title')?.key ?? 'title';
+  // The example names a long-text field when there is one, never a URL or the title.
+  const example = (fields.find((field) => field.control === 'textarea') ?? fields.find((field) => field.key !== 'title' && field.control !== 'url') ?? fields.find((field) => field.key !== 'title'))?.key ?? 'title';
   const roles = imageRoles(template).filter((role) => role.key !== 'cover').map((role) => role.label.toLowerCase());
   const trimmedNotes = notes.length > notesInPrompt ? `…(earlier notes omitted)\n${notes.slice(-notesInPrompt)}` : notes;
   const sections = [

@@ -3,7 +3,7 @@
 // Cards keep their values by field key in cards.fields, so a template change
 // touches cards only to add the keys it gained (and their field versions).
 // Exposed through openStore() as store.templates.
-import { youtubeVideoTemplate, validateTemplate, templateSlug, templateIdPattern } from './public/card-template.js';
+import { youtubeVideoTemplate, validateTemplate, templateSlug, templateIdPattern, contextFields, imageRoles } from './public/card-template.js';
 
 export const templatesMigration = `
   CREATE TABLE card_templates (
@@ -106,6 +106,16 @@ export function createTemplateStore({ all, get, run, transaction, recordChange, 
         }
         // New image roles need no backfill: reads fill them in (normalizeCard),
         // and rewriting image_roles here would bump every card's gallery version.
+        // Saved card chat composers drop fields, roles and edit authority the
+        // template no longer offers, so their next save and Send still work.
+        const fields = contextFields(template).map((field) => field.key); const roles = imageRoles(template).map((role) => role.key);
+        for (const chat of all('SELECT ch.card_id, ch.composer FROM card_chats ch JOIN cards c ON c.id = ch.card_id WHERE c.template = ?', id)) {
+          const composer = JSON.parse(chat.composer);
+          const keep = (list, allowed) => (Array.isArray(list) ? list.filter((entry) => allowed.includes(entry)) : list);
+          const next = { ...composer, selections: { ...composer.selections, fields: keep(composer.selections?.fields, fields), roles: keep(composer.selections?.roles, roles) },
+            authority: { ...composer.authority, fields: keep(composer.authority?.fields, fields) } };
+          if (JSON.stringify(next) !== JSON.stringify(composer)) run('UPDATE card_chats SET composer = ? WHERE card_id = ?', JSON.stringify(next), chat.card_id);
+        }
         cache.delete(id);
         recordChange(ctx, 'template', id, 'updated', { data: { revision: row.revision + 1, addedFields: added } });
         return api.list(ctx).find((entry) => entry.id === id);

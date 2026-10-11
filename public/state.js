@@ -1,6 +1,6 @@
 // The browser's copy of the workspace. Changes apply here immediately and are
 // queued for the server; card text is saved after a short pause in typing.
-import { request, send, enqueue, onSyncChange, syncState } from './api.js';
+import { request, send, enqueue, onSyncChange, syncState, retry } from './api.js';
 import { emptyFields, emptyImageRoles, editorFields, normalizeCard } from './card-template.js';
 import { id, showEdited } from './ui.js';
 
@@ -92,9 +92,11 @@ export function templateOf(card) {
 export const projectTemplate = (p = project()) => templateById(p?.templateId) ?? state.templates[0] ?? null;
 export function applyTemplates(templates) {
   state.templates = templates;
+  let dropped = false;
   for (const p of state.projects) for (const lane of p.lanes) for (const card of lane.cards) {
     const fields = Object.keys(card.fields); const roles = Object.keys(card.imageRoles);
-    Object.assign(card, normalizeCard(templateOf(card), card));
+    const template = templateOf(card);
+    Object.assign(card, normalizeCard(template, card));
     // Keys the template gained are not local edits: the server added them
     // to every card with an empty value and field version 1.
     const baseline = savedValues.get(card.id);
@@ -103,7 +105,15 @@ export function applyTemplates(templates) {
       if (card.fieldVersions) card.fieldVersions[key] ??= 1;
     }
     for (const role of Object.keys(card.imageRoles).filter((role) => !roles.includes(role))) if (baseline?.imageRoles) baseline.imageRoles[role] = null;
+    // A field the template dropped has no editor and the server refuses it in
+    // any write, so its local copy and any draft in it go. Stored values come
+    // back with the key if a template defines it again.
+    const gone = templateById(card.template) ? Object.keys(card.fields).filter((key) => !template.fields.some((field) => field.key === key)) : [];
+    for (const key of gone) { delete card.fields[key]; if (baseline) delete baseline[key]; }
+    if (gone.length) { dropped = true; fieldListeners.forEach((listener) => listener(card, gone)); }
   }
+  // A write that carried such a field before this tab heard of the change may be holding the queue.
+  if (dropped && syncState().error) retry();
 }
 export function searchText(card) {
   // Hidden fields such as Prompt are often shared by every card, so they would match everything.
@@ -446,8 +456,11 @@ export function deleteProject(p) {
 }
 // Only cards whose template has a Prompt field take the shared prompt.
 export const hasPromptField = (card) => templateOf(card).fields.some((field) => field.key === 'prompt');
+export const promptLimit = (card) => templateOf(card).fields.find((field) => field.key === 'prompt')?.max ?? null;
+// Throws before any card changes when the prompt is too long for one of them.
 export function setProjectPrompt(p, prompt) {
   const cards = p.lanes.flatMap((lane) => lane.cards).filter(hasPromptField);
+  for (const card of cards) if (prompt.length > promptLimit(card)) throw new Error(`Prompts for “${templateOf(card).name}” cards can be up to ${promptLimit(card).toLocaleString()} characters. Nothing was changed.`);
   for (const card of cards) {
     card.fields.prompt = prompt;
     cardChanged(card);

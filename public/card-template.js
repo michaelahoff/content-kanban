@@ -73,7 +73,8 @@ export function validateTemplate(input, { locked = [] } = {}) {
   const titleMax = titleInput.max === undefined ? 500 : titleInput.max;
   if (!Number.isInteger(titleMax) || titleMax < 1 || titleMax > 10000) errors.push('The title limit must be between 1 and 10,000 characters.');
   const fields = []; const keys = new Set();
-  if (!Array.isArray(input.fields) || input.fields.length > maxFields) errors.push(`A template can hold up to ${maxFields} fields.`);
+  if (!Array.isArray(input.fields)) errors.push('Fields must be a list.');
+  else if (input.fields.length > maxFields) errors.push(`A template can hold up to ${maxFields} fields.`);
   else for (const [index, raw] of input.fields.entries()) {
     const at = `Field ${index + 1}`;
     if (!isObject(raw)) { errors.push(`${at}: invalid field.`); continue; }
@@ -125,14 +126,22 @@ export function validateTemplate(input, { locked = [] } = {}) {
   }
   // Playbooks name fields and roles loosely, by key or label, so no two may
   // read the same once squashed; the title and the display image count too.
-  const owners = new Map([['title', 'the card title'], [squash(titleLabel), 'the card title'], ['display', 'the display image'], ['cover', 'the display image']]);
-  const claim = (name, owner, what) => {
+  // Owners are identities (a key), so two fields with one label collide too.
+  // Each pair of colliding owners is reported once, whichever names collide.
+  const owners = new Map([['title', { id: 'title', name: 'the card title' }],
+    ['display', { id: 'cover', name: 'the display image' }], ['cover', { id: 'cover', name: 'the display image' }]]);
+  const reported = new Set();
+  const claim = (name, owner) => {
     const taken = owners.get(name);
-    if (taken && taken !== owner) errors.push(`${what} reads the same as ${taken} in playbook settings. Use a distinct name.`);
-    else owners.set(name, owner);
+    if (!taken) owners.set(name, owner);
+    else if (taken.id !== owner.id && !reported.has(`${owner.id}|${taken.id}`)) {
+      reported.add(`${owner.id}|${taken.id}`);
+      errors.push(`${owner.name[0].toUpperCase()}${owner.name.slice(1)} reads the same as ${taken.name} in playbook settings. Use a distinct name.`);
+    }
   };
-  for (const field of fields) for (const name of new Set([squash(field.key), squash(field.label)])) claim(name, `the field “${field.label}”`, `The field “${field.label}”`);
-  for (const role of imageRoles) for (const name of new Set([squash(role.key), squash(role.label)])) claim(name, `the image role “${role.label}”`, `The image role “${role.label}”`);
+  claim(squash(titleLabel), { id: 'title', name: 'the card title' });
+  for (const field of fields) for (const name of new Set([squash(field.key), squash(field.label)])) claim(name, { id: `field:${field.key}`, name: `the field “${field.label}”` });
+  for (const role of imageRoles) for (const name of new Set([squash(role.key), squash(role.label)])) claim(name, { id: `role:${role.key}`, name: `the image role “${role.label}”` });
   const template = { name, title: { label: titleLabel, max: titleMax }, fields, imageRoles };
   if (JSON.stringify(template).length > maxTemplateJson) errors.push('This template is too large.');
   return { template: errors.length ? null : template, errors };

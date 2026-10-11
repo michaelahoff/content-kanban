@@ -2,7 +2,7 @@
 import { $, escape, iconButton, imageURL, toast, wordCount, confirmDelete, smallForm, setTheme, setAccent } from './ui.js';
 import { retry } from './api.js';
 import { fieldInputId } from './card-template.js';
-import { state, project, locateCard, cardCount, loadWorkspace, loadCards, loadTemplates, templateOf, cardChanged, flushCards, createCard, moveCard, deleteCard, deleteLane, deleteProject, archiveProject, unarchiveProject, saveStatus, hasUnsavedWork, onStatusChange, useSavedCard, undoLastMove, loadPlaybooks, applyStages } from './state.js';
+import { state, project, locateCard, cardCount, loadWorkspace, loadCards, loadTemplates, templateOf, projectTemplate, cardChanged, flushCards, createCard, moveCard, deleteCard, deleteLane, deleteProject, archiveProject, unarchiveProject, saveStatus, hasUnsavedWork, onStatusChange, useSavedCard, undoLastMove, loadPlaybooks, applyStages } from './state.js';
 import { view, selectProject, renderApp, renderBoard, renderStatus, editProject, editLane, editProjectPrompt, toggleCards, showTab } from './board.js';
 import { dropLibraryItems, libraryActivity, hasLibraryUploads } from './library.js';
 import { openCard, closeCard, cardPanelOpen, renderImages, copyText, copyTrifecta, fetchYoutube, addImages, originalVideoMarkup, videoLinkMarkup } from './editor.js';
@@ -372,8 +372,9 @@ try {
   onActivity((entry) => {
     cardPlaybookActivity(entry);
     libraryActivity(entry);
-    // Another tab changed the card templates: reload them and redraw the board.
-    if (entry.entity === 'template') void loadTemplates().then(() => { renderBoard(); templatesChanged(); }).catch(() => {});
+    // Another tab changed the card templates: reload them and redraw the board,
+    // or the whole app when the header's Set prompt button may have changed.
+    if (entry.entity === 'template') void loadTemplates().then(() => { if (projectTemplate()?.id === entry.entityId) renderApp(); else renderBoard(); templatesChanged(); }).catch(() => {});
     // Another tab chose this project's template for new cards.
     const retemplated = entry.entity === 'project' && entry.type === 'updated' && entry.data?.templateId && state.projects.find((item) => item.id === entry.entityId);
     if (retemplated) { retemplated.templateId = entry.data.templateId; if (retemplated === project()) renderApp(); else renderBoard(); }

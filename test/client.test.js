@@ -533,6 +533,76 @@ test('the shared prompt reaches only cards whose template has a Prompt field', a
   assert.equal(f.api.syncState().error, '');
 });
 
+test('a shared prompt over a card’s template limit is refused before any card changes', async (t) => {
+  const f = await fixture(t);
+  const projectId = f.client.state.projectId;
+  const youtube = (await f.call('GET', '/api/templates')).templates.find((template) => template.id === 'youtube-video');
+  const short = await f.call('POST', '/api/templates', { name: 'Short prompts', title: youtube.title, imageRoles: youtube.imageRoles,
+    fields: youtube.fields.map((field) => (field.key === 'prompt' ? { ...field, max: 5 } : field)) });
+  assert.equal(short.id, 'short-prompts');
+  await f.call('PATCH', `/api/projects/${projectId}`, { templateId: short.id });
+  // Reload as the fixture does: the project's template changed in another tab.
+  await f.client.loadWorkspace();
+  await f.client.loadCards(projectId);
+  const p = f.client.project();
+  const card = f.client.createCard(p.lanes[0]);
+  await f.idle();
+  assert.equal(f.client.promptLimit(card), 5);
+  assert.throws(() => f.client.setProjectPrompt(p, 'Too long prompt'), { name: 'Error', message: /“Short prompts”.*\b5 characters/ });
+  assert.equal(card.fields.prompt, '');
+  await f.idle();
+  assert.equal(f.api.syncState().pending, 0);
+  assert.equal(f.api.syncState().error, '');
+  assert.equal(f.client.hasUnsavedWork(), false);
+  assert.equal((await f.call('GET', `/api/cards/${card.id}`)).card.fields.prompt, '');
+  // The refusal queues nothing, so the next save goes straight through.
+  card.title = 'Edited after the refusal';
+  f.client.cardChanged(card);
+  f.client.flushCards();
+  await f.idle();
+  assert.equal((await f.call('GET', `/api/cards/${card.id}`)).card.title, 'Edited after the refusal');
+  assert.equal(f.client.setProjectPrompt(p, 'Short'), 1);
+  await f.idle();
+  assert.equal(f.api.syncState().error, '');
+  assert.equal(card.fields.prompt, 'Short');
+  assert.equal((await f.call('GET', `/api/cards/${card.id}`)).card.fields.prompt, 'Short');
+});
+
+test('a draft in a field the template dropped is let go and no longer holds the write queue', async (t) => {
+  const f = await fixture(t);
+  const card = await f.card();
+  const definitionOf = ({ name, title, fields, imageRoles }) => ({ name, title, fields, imageRoles });
+  const youtube = (await f.call('GET', '/api/templates')).templates.find((template) => template.id === 'youtube-video');
+  const gained = await f.call('PATCH', '/api/templates/youtube-video', { revision: youtube.revision, ...definitionOf(youtube), fields: [...youtube.fields, { key: 'hook', label: 'Hook', control: 'text' }] });
+  await f.client.loadTemplates();
+  card.fields.hook = 'typed in this tab';
+  f.client.cardChanged(card);
+  // Another tab drops the field (allowed: no live card stores a value) before
+  // this tab hears of it, so the save that was already on its way is refused.
+  await f.call('PATCH', '/api/templates/youtube-video', { revision: gained.revision, ...definitionOf(youtube) });
+  f.client.flushCards();
+  await waitFor(() => f.api.syncState().error);
+  assert.match(f.api.syncState().error, /Unknown card field/);
+  const later = f.client.createCard(f.client.project().lanes[0]);
+  assert.equal(f.api.syncState().pending, 2, 'The later write waits behind the refused save');
+  // Learning of the template change lets the field go, draft included, and the queue through.
+  await f.client.loadTemplates();
+  assert.equal(Object.hasOwn(card.fields, 'hook'), false, 'The dropped field leaves the card');
+  assert.equal(Object.hasOwn(later.fields, 'hook'), false, 'A card made from the stale template loses it too');
+  await f.idle();
+  assert.equal(f.api.syncState().error, '');
+  assert.deepEqual(f.client.saveStatus().conflicts, []);
+  assert.equal(f.client.hasUnsavedWork(), false);
+  assert.equal((await f.call('GET', `/api/cards/${later.id}`)).card.id, later.id, 'The later write reached the server');
+  // The card itself saves as before.
+  card.title = 'Still saves';
+  f.client.cardChanged(card);
+  f.client.flushCards();
+  await f.idle();
+  assert.equal(f.api.syncState().error, '');
+  assert.equal((await f.call('GET', `/api/cards/${card.id}`)).card.title, 'Still saves');
+});
+
 test('template saves do not wait behind a held card write', async (t) => {
   const f = await fixture(t);
   const card = await f.card();

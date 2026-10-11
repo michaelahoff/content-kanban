@@ -837,14 +837,18 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
       return { id, archivedAt: null };
     },
 
+    // Cards whose template has a Prompt field take the shared prompt; every
+    // affected card's own limit is checked before any card changes.
     setProjectPrompt(ctx, projectId, prompt) {
       requireProject(ctx, projectId);
-      check(isText(prompt, 200000), 'Prompts can be up to 200,000 characters.');
+      check(typeof prompt === 'string', 'Prompts must be text.');
       return transaction(() => {
         const at = now();
-        return all('SELECT * FROM cards WHERE project_id = ? AND deleted_at IS NULL', projectId).map(cardFrom)
-          .filter((card) => templates.forCard(card).fields.some((field) => field.key === 'prompt'))
-          .map((card) => {
+        const affected = all('SELECT * FROM cards WHERE project_id = ? AND deleted_at IS NULL', projectId).map(cardFrom)
+          .map((card) => ({ card, template: templates.forCard(card) })).map(({ card, template }) => ({ card, template, field: template.fields.find((field) => field.key === 'prompt') }))
+          .filter(({ field }) => field);
+        for (const { template, field } of affected) check(prompt.length <= field.max, `Prompts for “${template.name}” cards can be up to ${field.max.toLocaleString('en-US')} characters.`);
+        return affected.map(({ card }) => {
             run('UPDATE cards SET fields = ?, revision = revision + 1, updated_at = ? WHERE id = ?', JSON.stringify({ ...card.fields, prompt }), at, card.id);
             recordChange(ctx, 'card', card.id, 'updated', { projectId, data: { revision: card.revision + 1 }, at });
             recordSavedState(ctx, card.id, 'bulk_prompt', at);
@@ -993,13 +997,17 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
       const content = cardContent(templates.forCard(card), input, card);
       return transaction(() => {
         const at = now();
+        const roles = Object.keys(content.imageRoles).filter((role) => content.imageRoles[role] !== card.imageRoles[role]);
+        // Roles the template gained since the card was stored are null on read.
+        // Writing them back would read as a gallery edit to the version trigger,
+        // so a save that touches no role keeps the stored roles as they are.
+        const imageRoles = roles.length ? JSON.stringify(content.imageRoles) : get('SELECT image_roles FROM cards WHERE id = ?', id).image_roles;
         run('UPDATE cards SET title = ?, fields = ?, images = ?, image_roles = ?, revision = revision + 1, updated_at = ? WHERE id = ?',
-          content.title, JSON.stringify(content.fields), JSON.stringify(content.images), JSON.stringify(content.imageRoles), at, id);
+          content.title, JSON.stringify(content.fields), JSON.stringify(content.images), imageRoles, at, id);
         const before = new Set(card.images.map((image) => image.id));
         const after = new Set(content.images.map((image) => image.id));
         const added = [...after].filter((imageId) => !before.has(imageId));
         const removed = [...before].filter((imageId) => !after.has(imageId));
-        const roles = Object.keys(content.imageRoles).filter((role) => content.imageRoles[role] !== card.imageRoles[role]);
         const imagesChanged = JSON.stringify(content.images) !== JSON.stringify(card.images) || roles.length > 0;
         if (imagesChanged) {
           insertEvent(ctx.workspaceId, card, 'images_changed', ctx.actor, { data: { added, removed, roles }, at });

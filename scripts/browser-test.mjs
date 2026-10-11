@@ -1240,6 +1240,43 @@ These values apply when a card enters this lane.
   assert.deepEqual(blogTemplate.imageRoles, [{ key: 'hero', label: 'Hero' }]);
   await waitFor(`!!document.querySelector('.template-nav-item[data-id="blog-post"]')`);
   await snapshot('template-editor');
+  // A save that is slow to answer must not swallow what is typed meanwhile:
+  // the typed text stays as the unsaved draft on top of the saved copy.
+  await evaluate(`(() => {
+    const originalFetch = window.fetch;
+    window.restoreTemplateFetch = () => { window.fetch = originalFetch; };
+    window.fetch = async (url, options) => {
+      if (options?.method === 'PATCH' && String(url).includes('/api/templates/')) {
+        window.fetch = originalFetch;
+        const response = await originalFetch(url, options);
+        await new Promise(resolve => { window.releaseTemplateSave = resolve; });
+        return response;
+      }
+      return originalFetch(url, options);
+    };
+  })()`);
+  await fill('.template-main [name="name"]', 'Submitted name');
+  await click('[data-template-action="save"]');
+  await waitFor(`typeof window.releaseTemplateSave === 'function'`);
+  assert.equal(await evaluate(`document.querySelector('#template-status').textContent`), 'Saving…');
+  await fill('.template-main [name="name"]', 'Typed during save');
+  await evaluate(`window.releaseTemplateSave()`);
+  await waitFor(`document.querySelector('#template-status').textContent !== 'Saving…'`);
+  assert.equal(await evaluate(`document.querySelector('.template-main [name="name"]').value`), 'Typed during save', 'Typing while saving keeps the newer draft');
+  assert.equal(await evaluate(`document.querySelector('#template-status').textContent`), 'Unsaved changes · Ctrl+S saves');
+  assert.equal(await evaluate(`document.querySelector('#template-heading').textContent`), 'Typed during save');
+  const blogName = async () => (await api('GET', '/api/templates')).templates.find((template) => template.id === 'blog-post').name;
+  assert.equal(await blogName(), 'Submitted name', 'The save carried the name as submitted');
+  await click('[data-template-action="save"]');
+  await waitFor(`document.querySelector('#template-status')?.textContent === 'Saved'`);
+  assert.equal(await blogName(), 'Typed during save', 'The next save carries the newer draft');
+  await evaluate(`window.restoreTemplateFetch(); delete window.restoreTemplateFetch; delete window.releaseTemplateSave;`);
+  // Back to the name the rest of this section uses.
+  await fill('.template-main [name="name"]', 'Blog post');
+  await click('[data-template-action="save"]');
+  await waitFor(`document.querySelector('#template-status')?.textContent === 'Saved' && document.querySelector('#template-heading')?.textContent === 'Blog post'`);
+  assert.equal(await blogName(), 'Blog post');
+  console.log('PASS template edits typed during a slow save stay as the unsaved draft and save next');
   await click('[data-template-action="close"]');
   await waitFor(`!document.querySelector('#template-dialog').open`);
   const templateProjectId = await evaluate(`import('/state.js').then(m => m.state.projectId)`);
@@ -1284,6 +1321,37 @@ These values apply when a card enters this lane.
   await fill('#search', 'quokka');
   assert.deepEqual(await evaluate(`[...document.querySelectorAll('.card')].map(card => card.dataset.card)`), [blogCardId], 'Search reads the new template’s fields');
   await fill('#search', '');
+  // Two URL fields flagged for YouTube: each lookup button names its field,
+  // so the clicked one is looked up. The server refuses the stand-in video
+  // IDs; only the request matters here.
+  const blogSaved = (await api('GET', '/api/templates')).templates.find((template) => template.id === 'blog-post');
+  const videoFields = [{ key: 'firstVideo', label: 'First video', control: 'url', youtube: true }, { key: 'secondVideo', label: 'Second video', control: 'url', youtube: true }];
+  await api('PATCH', '/api/templates/blog-post', { revision: blogSaved.revision, ...definitionOf(blogSaved), fields: [...blogSaved.fields, ...videoFields] });
+  const blogFieldKeys = `import('/state.js').then(m => m.state.templates.find(t => t.id === 'blog-post')?.fields.map(f => f.key).join(' '))`;
+  await waitFor(`${blogFieldKeys}.then(keys => keys === 'headline body firstVideo secondVideo')`);
+  await click(`[data-action="open-card"][data-id="${blogCardId}"]`);
+  await waitFor(`document.querySelector('#card-dialog').open && !!document.querySelector('#card-first-video') && !!document.querySelector('#card-second-video')`);
+  await fill('#card-first-video', 'https://youtu.be/first');
+  await fill('#card-second-video', 'https://youtu.be/second');
+  assert.equal(await evaluate(`document.querySelector('#card-first-video-link [data-action="fetch-youtube"]')?.dataset.field`), 'firstVideo', 'Each lookup button names its field');
+  assert.equal(await evaluate(`document.querySelector('#card-second-video-link [data-action="fetch-youtube"]')?.dataset.field`), 'secondVideo');
+  await evaluate(`(() => {
+    const originalFetch = window.fetch;
+    window.youtubeLookups = { requests: [], restore: () => { window.fetch = originalFetch; } };
+    window.fetch = async (url, options) => {
+      if (options?.method === 'POST' && String(url).includes('/api/youtube')) window.youtubeLookups.requests.push(JSON.parse(options.body));
+      return originalFetch(url, options);
+    };
+  })()`);
+  await click('#card-second-video-link [data-action="fetch-youtube"][data-field="secondVideo"]');
+  await waitFor(`window.youtubeLookups.requests.length === 1`);
+  assert.deepEqual(await evaluate(`window.youtubeLookups.requests`), [{ url: 'https://youtu.be/second' }], 'The clicked button looks up its own field, not the first flagged one');
+  await waitFor(`document.querySelector('#card-second-video-link [data-action="fetch-youtube"]') && !document.querySelector('#card-second-video-link [data-action="fetch-youtube"]').disabled`);
+  await evaluate(`window.youtubeLookups.restore(); delete window.youtubeLookups`);
+  await click('[data-action="close-card"]');
+  await waitFor(`!document.querySelector('#card-dialog').open`);
+  await saved();
+  console.log('PASS the lookup button of each YouTube-flagged field looks up its own URL');
   // Later checks assume the built-in template and its cards.
   await click(`[data-action="open-card"][data-id="${blogCardId}"]`);
   await waitFor(`!!document.querySelector('#card-headline')`);
@@ -1291,6 +1359,10 @@ These values apply when a card enters this lane.
   await click('#small-form [type="submit"]');
   await waitFor(`!document.querySelector('#card-dialog').open && !document.querySelector('[data-card="${blogCardId}"]')`);
   await saved();
+  // The deleted card no longer locks the video fields: put the template back as saved above.
+  const blogWithVideos = (await api('GET', '/api/templates')).templates.find((template) => template.id === 'blog-post');
+  await api('PATCH', '/api/templates/blog-post', { revision: blogWithVideos.revision, ...definitionOf(blogSaved) });
+  await waitFor(`${blogFieldKeys}.then(keys => keys === 'headline body')`);
   await chooseProjectTemplate('youtube-video');
   await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
   console.log('PASS a template made in the editor drives the project’s new cards: fields, word count, image roles, search and no Trifecta');

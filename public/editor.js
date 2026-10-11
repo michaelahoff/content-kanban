@@ -17,7 +17,8 @@ onCardFieldsChange((card, keys) => {
   if (keys.includes('placement')) { $('#card-lane').value = card.stageId; renderBar(); }
   for (const key of keys) {
     const input = $(`#${fieldInputId(key)}`);
-    if (input) input.value = key === 'title' ? card.title : card.fields[key];
+    // A field the template dropped keeps its control until the card is reopened; it reads empty.
+    if (input) input.value = key === 'title' ? card.title : card.fields[key] ?? '';
     const field = templateOf(card).fields.find((item) => item.key === key);
     // Hidden fields (editor: false) have no count or link on the card.
     const count = field?.countWords && $(`#${key}-count`);
@@ -79,7 +80,7 @@ const youtubePattern = /^https?:\/\/(www\.|m\.|music\.)?(youtube\.com|youtube-no
 // The link row under a YouTube-flagged field: the lookup button and the open link.
 export function originalVideoMarkup(card, field) {
   const value = (card.fields[field.key] ?? '').trim();
-  const fetchButton = youtubePattern.test(value) ? button('fetch-youtube', 'Get title & thumbnail', 'download', 'button small primary') : '';
+  const fetchButton = youtubePattern.test(value) ? button('fetch-youtube', 'Get title & thumbnail', 'download', 'button small primary', `data-field="${escape(field.key)}"`) : '';
   return `${fetchButton}${videoLinkMarkup(value, field.videoLabel || field.label)}`;
 }
 // The template's field flagged for YouTube lookups, if it has one.
@@ -198,7 +199,8 @@ cardDialog.addEventListener('close', () => {
 export async function fetchYoutube(target) {
   const targetCardId = state.cardId;
   const { card } = locateCard(targetCardId);
-  const field = youtubeField(templateOf(card));
+  // The clicked button's field; a template may flag more than one URL field.
+  const field = templateOf(card).fields.find((item) => item.key === target.dataset.field && item.youtube) ?? youtubeField(templateOf(card));
   if (!field) return;
   const url = (card.fields[field.key] ?? '').trim();
   target.disabled = true;
@@ -226,8 +228,10 @@ export async function fetchYoutube(target) {
     current.images.unshift(result.image);
     if (hasOriginal) roles.original = result.image.id;
     roles.cover ||= result.image.id;
-    if (template.fields.some((item) => item.key === 'originalVideoTitle')) current.fields.originalVideoTitle = result.title;
-    if (!current.title.trim()) current.title = result.title;
+    // Clipped to the template's limits, which a custom template can set below a video title's length.
+    const titleField = template.fields.find((item) => item.key === 'originalVideoTitle');
+    if (titleField) current.fields.originalVideoTitle = result.title.slice(0, titleField.max);
+    if (!current.title.trim()) current.title = result.title.slice(0, template.title.max);
     cardChanged(current);
     if (state.cardId === targetCardId) {
       $('#card-title').value = current.title;

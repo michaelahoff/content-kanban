@@ -1,6 +1,6 @@
 // The project sidebar, the board of lanes and cards, and the project and lane forms.
 import { $, escape, icon, button, iconButton, imageURL, palette, smallForm, nameField, toast, themeSwitchMarkup, accentSwitchMarkup } from './ui.js';
-import { state, project, locateCard, cardCount, searchText, saveStatus, createProject, renameProject, setProjectTemplate, projectTemplate, addLane, updateLane, setProjectPrompt, latestMoveCard, hasPromptField } from './state.js';
+import { state, project, locateCard, cardCount, searchText, saveStatus, createProject, renameProject, setProjectTemplate, projectTemplate, addLane, updateLane, setProjectPrompt, latestMoveCard, hasPromptField, promptLimit } from './state.js';
 import { activityMarkup } from './chat.js';
 import { renderLibrary } from './library.js';
 
@@ -175,10 +175,12 @@ export function editProjectPrompt() {
   if (!cards.length) return toast('Add a card with a Prompt field before applying a shared prompt.');
   const current = cards.map((card) => card.fields.prompt);
   const commonPrompt = current.every((prompt) => prompt === current[0]) ? current[0] : '';
+  // The shortest Prompt limit among the affected cards' templates bounds the text.
+  const limit = Math.min(...cards.map(promptLimit));
   smallForm({
     title: 'Set prompt for all cards',
-    description: `This replaces the prompt on all ${cards.length} cards in “${p.name}”.`,
-    fields: `<label class="form-label" for="prompt-input">Shared prompt</label><textarea class="form-input prompt-input" id="prompt-input" name="prompt" maxlength="200000" placeholder="Write the prompt to apply to every card…">${escape(commonPrompt)}</textarea>`,
+    description: `This replaces the prompt on all ${cards.length} cards in “${p.name}” (up to ${limit.toLocaleString()} characters).`,
+    fields: `<label class="form-label" for="prompt-input">Shared prompt</label><textarea class="form-input prompt-input" id="prompt-input" name="prompt" maxlength="${limit}" placeholder="Write the prompt to apply to every card…">${escape(commonPrompt)}</textarea>`,
     submit: 'Apply to all cards',
     onSubmit: (data) => {
       setProjectPrompt(p, String(data.get('prompt') || ''));

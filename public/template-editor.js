@@ -5,7 +5,7 @@
 // stored by, so keys lock once a saved template has cards.
 import { $, escape, icon, toast, smallForm } from './ui.js';
 import { state, loadTemplates, createTemplate, updateTemplate, deleteTemplate } from './state.js';
-import { renderBoard } from './board.js';
+import { renderApp } from './board.js';
 import { validateTemplate, fieldKeyFrom, youtubeVideoTemplate, controls, maxFields, maxImageRoles, maxFieldLength } from './card-template.js';
 
 const dialog = $('#template-dialog');
@@ -223,12 +223,22 @@ async function save() {
   problems = errors;
   if (errors.length) { renderMain(); renderFooter(); $('.template-main', dialog).scrollTop = 0; return; }
   busy = true; renderFooter();
+  const submitted = JSON.stringify(draft);
   try {
     const saved = selected ? await updateTemplate(selected, { revision, ...template }) : await createTemplate(template);
     busy = false;
+    // Edits typed while the save was pending stay as the unsaved draft on
+    // top of the saved copy, with keys the save made permanent now locked.
+    const typed = JSON.stringify(draft) !== submitted ? draft : null;
     load(saved.id, saved);
+    if (typed) {
+      for (const row of typed.fields) row.locked = lockedKeys.fields.has(row.key) || undefined;
+      for (const row of typed.imageRoles) row.locked = lockedKeys.imageRoles.has(row.key) || undefined;
+      draft = typed;
+    }
     render();
-    renderBoard();
+    // The header's Set prompt button follows the project's template, so the whole app redraws.
+    renderApp();
     toast('Template saved.');
   } catch (error) {
     busy = false;
@@ -252,7 +262,7 @@ function remove() {
       busy = true; renderFooter();
       try { await deleteTemplate(template.id); } finally { busy = false; renderFooter(); }
       load(state.templates[0]?.id ?? null);
-      render(); renderBoard();
+      render(); renderApp();
       toast('Template deleted.');
     } });
 }

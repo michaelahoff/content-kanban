@@ -6,7 +6,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { fixture, waitFor } from './support/chat-fixture.js';
 import { setPlaybook } from './support/playbooks.js';
 import { supportedSchemaVersion } from '../store.js';
-import { youtubeVideoTemplate } from '../public/card-template.js';
+import { youtubeVideoTemplate, validateTemplate } from '../public/card-template.js';
 
 // A template with every control. "notes" is a reserved key (lane results
 // report hand-off notes under it), so the hidden field is keyed authorNotes.
@@ -255,11 +255,15 @@ test('a card chat with a custom template offers its roles and visible fields and
   assert.deepEqual(composer.selections.fields, ['title', 'headline', 'body', 'canonicalUrl']);
   const narrowed = await f.compose(card.id, 'Describe the hero', 'test-model', { selections: { ...composer.selections, roles: ['hero'] } });
   assert.deepEqual(narrowed.selections.roles, ['hero']);
-  const foreign = await f.call('PUT', `/api/cards/${card.id}/chat/composer`, { ...narrowed, selections: { ...narrowed.selections, roles: ['original'] } });
-  assert.equal(foreign.status, 400);
-  assert.match(foreign.body.error, /Invalid image roles/);
-  const hiddenField = await f.call('PUT', `/api/cards/${card.id}/chat/composer`, { ...narrowed, selections: { ...narrowed.selections, fields: ['title', 'authorNotes'] } });
-  assert.equal(hiddenField.status, 400);
+  // A role or field the template does not offer is dropped, never refused: a
+  // template edit must not lock a card chat whose saved composer names it.
+  const foreign = await f.call('PUT', `/api/cards/${card.id}/chat/composer`, { ...narrowed, selections: { ...narrowed.selections, roles: ['original', 'hero'] } });
+  assert.equal(foreign.status, 200);
+  assert.deepEqual(foreign.body.selections.roles, ['hero']);
+  const hiddenField = await f.call('PUT', `/api/cards/${card.id}/chat/composer`, { ...foreign.body, selections: { ...foreign.body.selections, fields: ['title', 'authorNotes'] }, authority: { fields: ['title', 'authorNotes'] } });
+  assert.equal(hiddenField.status, 200);
+  assert.deepEqual(hiddenField.body.selections.fields, ['title']);
+  assert.deepEqual(hiddenField.body.authority.fields, ['title']);
   const every = await f.compose(card.id, 'Describe every image', 'test-model', { selections: { ...composer.selections, roles: ['hero', 'thumbnail', 'cover'] } });
   await f.queue(card.id, every);
   const [submission] = (await f.chat(card.id)).submissions;
@@ -410,6 +414,13 @@ test('adding an image role to a template leaves cards’ gallery version alone a
   assert.equal(loaded.revision, card.revision);
   assert.equal(loaded.imageRoles.thumbnail, null, 'The new role is filled on read');
   assert.equal(loaded.imageRoles.hero, image.id);
+  // Text saves after the change, on the field-change and the revision path, are not gallery edits either.
+  const texted = await f.ok('PATCH', `/api/cards/${card.id}`, { changes: { headline: 'Text' }, baseVersions: { headline: loaded.fieldVersions.headline } });
+  assert.deepEqual(texted.conflicts, []);
+  const titled = await f.ok('PATCH', `/api/cards/${card.id}`, { title: 'Renamed', revision: texted.revision });
+  assert.equal(titled.fieldVersions.imageRoles, card.fieldVersions.imageRoles, 'Saving text does not bump the gallery version');
+  assert.equal(titled.fieldVersions.images, card.fieldVersions.images);
+  assert.equal(titled.imageRoles.thumbnail, null);
   // A role edit based on the versions from before the template change still saves.
   const saved = await f.ok('PATCH', `/api/cards/${card.id}`, { changes: { imageRoles: { thumbnail: image.id } }, baseVersions: { imageRoles: card.fieldVersions.imageRoles, images: card.fieldVersions.images } });
   assert.deepEqual(saved.conflicts, []);
@@ -425,9 +436,12 @@ test('creating a template refuses an empty role, reserved keys, names that read 
     [{ ...blogPost, imageRoles: [''] }, /Image role 1: image roles need a label/],
     [{ ...blogPost, fields: [field('lane')] }, /the key “lane” is reserved/],
     [{ ...blogPost, fields: [field('image')] }, /the key “image” is reserved/],
-    [{ ...blogPost, fields: [{ key: 'intro', label: 'Hook' }, { key: 'hook', label: 'Intro' }] }, /The field “Intro” reads the same as the field “Hook” in playbook settings/],
+    // One sentence for the pair, although both of the second field's names collide.
+    [{ ...blogPost, fields: [{ key: 'intro', label: 'Hook' }, { key: 'hook', label: 'Intro' }] }, 'The field “Intro” reads the same as the field “Hook” in playbook settings. Use a distinct name.'],
     [{ ...blogPost, imageRoles: [{ key: 'thumb', label: 'Display' }] }, /The image role “Display” reads the same as the display image in playbook settings/],
+    [{ ...blogPost, title: { label: 'Display' } }, 'The card title reads the same as the display image in playbook settings. Use a distinct name.'],
     [{ ...blogPost, title: { label: 'Card title', max: 0 } }, 'The title limit must be between 1 and 10,000 characters.'],
+    [{ ...blogPost, fields: undefined }, 'Fields must be a list.'],
   ];
   for (const [input, message] of refused) {
     const response = await f.call('POST', '/api/templates', input);
@@ -435,4 +449,90 @@ test('creating a template refuses an empty role, reserved keys, names that read 
     if (typeof message === 'string') assert.equal(response.body.error, message); else assert.match(response.body.error, message);
   }
   assert.deepEqual((await templates(f)).map((template) => template.id), ['youtube-video'], 'Refused templates are not created');
+});
+
+test('a saved composer drops the fields and roles a template edit hides or removes, in storage and on a stale save', async (t) => {
+  const f = await fixture(t);
+  const images = [{ id: '00000004-0000-4000-8000-000000000000.png', name: 'Original.png' }, { id: '00000005-0000-4000-8000-000000000000.png', name: 'Inspiration.png' }];
+  for (const [index, image] of images.entries()) await writeFile(path.join(f.dataDir, 'images', image.id), Buffer.from(`image-${index}`));
+  const card = await f.card({ title: 'Edited later', fields: { intro: 'The hook' }, images, imageRoles: { original: images[0].id, inspiration: images[1].id } });
+  const { composer: initial } = await f.chat(card.id);
+  const saved = await f.compose(card.id, 'Explain the hook', 'test-model',
+    { selections: { ...initial.selections, fields: ['title', 'intro', 'script'], roles: ['original', 'inspiration'] }, authority: { fields: ['intro'] } });
+  assert.deepEqual(saved.selections.fields, ['title', 'intro', 'script']);
+  assert.deepEqual(saved.selections.roles, ['original', 'inspiration']);
+  assert.deepEqual(saved.authority.fields, ['intro']);
+  const video = await templateById(f, 'youtube-video');
+  const edited = await saveTemplate(f, video, { fields: video.fields.map((field) => (field.key === 'intro' ? { ...field, editor: false } : field)),
+    imageRoles: video.imageRoles.filter((role) => role.key !== 'inspiration') });
+  assert.deepEqual(keys(edited.imageRoles), ['original']);
+  // The stored composer is reconciled at once, without a revision bump.
+  const { composer: reconciled } = await f.chat(card.id);
+  assert.deepEqual(reconciled.selections.fields, ['title', 'script']);
+  assert.deepEqual(reconciled.selections.roles, ['original']);
+  assert.deepEqual(reconciled.authority.fields, []);
+  assert.equal(reconciled.revision, saved.revision, 'Reconciling is not a composer edit');
+  // A browser that still holds the earlier composer saves it: the names are dropped, not refused.
+  const stale = await f.call('PUT', `/api/cards/${card.id}/chat/composer`, saved);
+  assert.equal(stale.status, 200, JSON.stringify(stale.body));
+  assert.deepEqual(stale.body.selections.fields, ['title', 'script']);
+  assert.deepEqual(stale.body.selections.roles, ['original']);
+  assert.deepEqual(stale.body.authority.fields, []);
+  const sent = await f.queue(card.id, await f.compose(card.id, 'Send it'));
+  assert.equal(sent.status, 'queued');
+  const [submission] = (await f.chat(card.id)).submissions;
+  assert.equal(submission.id, sent.id);
+  assert.deepEqual(submission.context.fields.map((field) => field.key), ['title', 'script']);
+  assert.deepEqual(submission.context.images.map((image) => [image.name, image.labels]), [['Original.png', ['Original']]]);
+  assert.deepEqual(submission.authority.fields, []);
+  assert.ok(!JSON.stringify(submission.context).includes('The hook'), 'The hidden value is not sent');
+});
+
+test('a shared prompt is refused for the whole project when it exceeds a card template’s prompt limit', async (t) => {
+  const f = await fixture(t);
+  const template = await f.ok('POST', '/api/templates', { name: 'Short prompt', title: youtubeVideoTemplate.title, imageRoles: youtubeVideoTemplate.imageRoles,
+    fields: youtubeVideoTemplate.fields.map((field) => (field.key === 'prompt' ? { ...field, max: 5 } : field)) });
+  assert.equal(template.fields.find((field) => field.key === 'prompt').max, 5);
+  const { project, stages } = await createProject(f, 'Shorts', template.id);
+  const cards = [await createCard(f, project, stages[0].id, { title: 'One' }), await createCard(f, project, stages[0].id, { title: 'Two' })];
+  const refused = await f.call('POST', `/api/projects/${project.id}/prompt`, { prompt: 'Too long prompt' });
+  assert.equal(refused.status, 400);
+  assert.equal(refused.body.error, 'Prompts for “Short prompt” cards can be up to 5 characters.');
+  for (const card of cards) {
+    const unchanged = await getCard(f, card.id);
+    assert.equal(unchanged.fields.prompt, '', 'No card takes a refused prompt');
+    assert.equal(unchanged.revision, card.revision);
+  }
+  const updated = await f.ok('POST', `/api/projects/${project.id}/prompt`, { prompt: 'Short' });
+  assert.deepEqual(updated.cards.map((entry) => entry.id).sort(), cards.map((card) => card.id).sort());
+  for (const card of cards) {
+    const changed = await getCard(f, card.id);
+    assert.equal(changed.fields.prompt, 'Short');
+    assert.equal(changed.revision, card.revision + 1);
+  }
+});
+
+test('validateTemplate tells fields and roles apart by key, so a shared label or a label that spells another key is refused', () => {
+  const errorsOf = (input) => validateTemplate({ name: 'Check', ...input }).errors;
+  assert.deepEqual(errorsOf({ fields: [{ key: 'first', label: 'Same' }, { key: 'second', label: 'Same' }] }),
+    ['The field “Same” reads the same as the field “Same” in playbook settings. Use a distinct name.']);
+  assert.deepEqual(errorsOf({ fields: [{ key: 'first', label: 'Second' }, { key: 'second', label: 'Second' }] }),
+    ['The field “Second” reads the same as the field “Second” in playbook settings. Use a distinct name.']);
+  assert.deepEqual(errorsOf({ fields: [{ key: 'intro', label: 'Hook' }, { key: 'hook', label: 'Intro' }] }),
+    ['The field “Intro” reads the same as the field “Hook” in playbook settings. Use a distinct name.']);
+  assert.deepEqual(errorsOf({ fields: [{ key: 'hero', label: 'Hero image' }], imageRoles: [{ key: 'main', label: 'Hero' }] }),
+    ['The image role “Hero” reads the same as the field “Hero image” in playbook settings. Use a distinct name.']);
+  // The title's label is claimed like a field's, so it cannot read as the display image.
+  for (const label of ['Display', 'Cover']) assert.deepEqual(errorsOf({ title: { label }, fields: [] }),
+    ['The card title reads the same as the display image in playbook settings. Use a distinct name.']);
+  assert.deepEqual(errorsOf({ title: { label: 'Title' }, fields: [] }), []);
+  assert.deepEqual(errorsOf({ title: { label: 'Name' }, fields: [{ key: 'name', label: 'Name' }] }),
+    ['The field “Name” reads the same as the card title in playbook settings. Use a distinct name.']);
+  assert.deepEqual(errorsOf({}), ['Fields must be a list.']);
+  assert.deepEqual(errorsOf({ fields: 'headline' }), ['Fields must be a list.']);
+  // A field whose key and label read alike is one owner, not a collision.
+  assert.deepEqual(validateTemplate(youtubeVideoTemplate).errors, []);
+  const one = validateTemplate({ name: 'One', fields: [{ key: 'intro', label: 'Intro' }] });
+  assert.deepEqual(one.errors, []);
+  assert.deepEqual(one.template.fields, [{ key: 'intro', label: 'Intro', control: 'text', max: 500 }]);
 });
