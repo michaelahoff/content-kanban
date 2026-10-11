@@ -97,10 +97,14 @@ function dataURL(blob) {
 // Each MIME type represents the same complete packet. Image-first chat inputs
 // can consume the PNG alone without losing the prompt, titles, or intro.
 export function createTrifectaItem(card) {
-  const { prompt, intro, titleOptions, originalVideoTitle } = card.fields;
+  // A template may lack some of these fields or roles; the missing ones pack as empty.
+  const prompt = card.fields.prompt ?? '';
+  const intro = card.fields.intro ?? '';
+  const titleOptions = card.fields.titleOptions ?? '';
+  const originalVideoTitle = card.fields.originalVideoTitle ?? '';
   const titles = [card.title, ...titleOptions.split('\n'), originalVideoTitle]
     .map((title) => title.trim()).filter(Boolean);
-  const selected = [['Original', card.imageRoles.original], ['Inspiration', card.imageRoles.inspiration]]
+  const selected = [['Original', card.imageRoles.original ?? null], ['Inspiration', card.imageRoles.inspiration ?? null]]
     .filter(([, id]) => id).map(([label, id]) => ({ label, id }));
   const plain = ['PROMPT', prompt || '(empty)', '\nTITLES', titles.join('\n') || '(none)',
     ...(selected.length ? ['\nIMAGES', 'The attached Trifecta image contains the labeled original and inspiration selections.'] : []),

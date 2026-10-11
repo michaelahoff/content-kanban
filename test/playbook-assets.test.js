@@ -10,8 +10,9 @@ import { randomUUID } from 'node:crypto';
 import { fixture, waitFor } from './support/chat-fixture.js';
 import { setPlaybook } from './support/playbooks.js';
 import { parseDocument, playbookSettings, withAssets } from '../public/playbook-format.js';
+import { youtubeVideoTemplate } from '../public/card-template.js';
 
-const settingsOf = (text) => playbookSettings(parseDocument(text), 'youtube-video');
+const settingsOf = (text) => playbookSettings(parseDocument(text), youtubeVideoTemplate);
 
 test('assets: inline and block lists name the same ordered mixed Library sources', () => {
   const inline = settingsOf('---\nlane: drafting\nassets: [asset:script-1, folder:thumbs-2, "asset:guide-3"]\n---\nWrite.');

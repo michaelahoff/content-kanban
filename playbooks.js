@@ -62,9 +62,9 @@ export function createPlaybooks({ dataDir }) {
   const api = {
     root: flowRoot,
     // Creates the folder with a starter map the first time a flow is used.
-    ensure(flowId, { projectName, lanes }) {
+    ensure(flowId, { projectName, lanes, template }) {
       const filename = resolve(flowId, 'MAP.md');
-      if (!existsSync(filename)) writeText(filename, mapTemplate(projectName, lanes));
+      if (!existsSync(filename)) writeText(filename, mapTemplate(projectName, lanes, template));
       for (const folder of ['lanes', 'skills']) mkdirSync(path.join(flowRoot(flowId), folder), { recursive: true });
     },
     read(flowId, relative) { return documentFrom(relative, readText(resolve(flowId, relative))); },
@@ -83,9 +83,10 @@ export function createPlaybooks({ dataDir }) {
     forStage(flowId, stageId) {
       return laneDocuments(flowId).find((document) => document.laneId === stageId) ?? null;
     },
-    settings(flowId, stageId, templateId) {
+    // `template` is the card template definition the settings are checked against.
+    settings(flowId, stageId, template) {
       const document = api.forStage(flowId, stageId);
-      return document ? { document, settings: playbookSettings(parseDocument(document.text), templateId) } : null;
+      return document ? { document, settings: playbookSettings(parseDocument(document.text), template) } : null;
     },
     // Compare-and-swap: baseHash is the hash the editor loaded, or null to
     // create a document that must not exist yet.

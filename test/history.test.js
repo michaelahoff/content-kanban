@@ -44,6 +44,8 @@ test('upgrading an already-versioned database repairs legacy move foreign keys a
   f.close();
   const db = new DatabaseSync(path.join(f.dataDir, 'frameboard.db'));
   db.exec(`PRAGMA foreign_keys = OFF;
+    ALTER TABLE projects DROP COLUMN template_id;
+    DROP TABLE card_templates;
     ALTER TABLE card_moves RENAME TO current_card_moves;
     CREATE TABLE card_moves (
       id INTEGER PRIMARY KEY AUTOINCREMENT, card_id TEXT NOT NULL REFERENCES cards(id),

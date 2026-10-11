@@ -1,10 +1,11 @@
 // The browser's copy of the workspace. Changes apply here immediately and are
 // queued for the server; card text is saved after a short pause in typing.
 import { request, send, enqueue, onSyncChange, syncState } from './api.js';
-import { defaultTemplate, emptyFields, emptyImageRoles, templates } from './card-template.js';
+import { emptyFields, emptyImageRoles, editorFields, normalizeCard } from './card-template.js';
 import { id, showEdited } from './ui.js';
 
-export const state = { projects: [], projectId: null, cardId: null, uploads: 0, undoingCardId: null };
+// `templates` holds the workspace's card template definitions by ID.
+export const state = { projects: [], projectId: null, cardId: null, uploads: 0, undoingCardId: null, templates: [] };
 const dirty = new Set();
 const queuedCards = new Set();
 const conflicts = new Map();
@@ -82,16 +83,40 @@ export function locateCard(targetId = state.cardId) {
   return null;
 }
 export function cardCount(p) { return p.loaded ? p.lanes.reduce((sum, lane) => sum + lane.cards.length, 0) : p.cardCount; }
+// Card template definitions come with the workspace. A card keeps the template
+// it was created with; a project names the template for its new cards.
+export const templateById = (templateId) => state.templates.find((template) => template.id === templateId) ?? null;
+export function templateOf(card) {
+  return templateById(card.template) ?? { id: card.template, name: card.template, title: { label: 'Card title', max: 500 }, fields: [], imageRoles: [] };
+}
+export const projectTemplate = (p = project()) => templateById(p?.templateId) ?? state.templates[0] ?? null;
+export function applyTemplates(templates) {
+  state.templates = templates;
+  for (const p of state.projects) for (const lane of p.lanes) for (const card of lane.cards) {
+    const fields = Object.keys(card.fields); const roles = Object.keys(card.imageRoles);
+    Object.assign(card, normalizeCard(templateOf(card), card));
+    // Keys the template gained are not local edits: the server added them
+    // to every card with an empty value and field version 1.
+    const baseline = savedValues.get(card.id);
+    for (const key of Object.keys(card.fields).filter((key) => !fields.includes(key))) {
+      if (baseline) baseline[key] = '';
+      if (card.fieldVersions) card.fieldVersions[key] ??= 1;
+    }
+    for (const role of Object.keys(card.imageRoles).filter((role) => !roles.includes(role))) if (baseline?.imageRoles) baseline.imageRoles[role] = null;
+  }
+}
 export function searchText(card) {
   // Hidden fields such as Prompt are often shared by every card, so they would match everything.
-  return [card.title, ...templates[card.template].fields.filter((field) => field.editor !== false).map((field) => card.fields[field.key] || '')].join('\n');
+  return [card.title, ...editorFields(templateOf(card)).map((field) => card.fields[field.key] || '')].join('\n');
 }
 
 const toLane = (stage) => ({ ...stage, cards: [] });
 export async function loadWorkspace() {
-  const { projects, flows } = await request('/api/workspace');
+  const { projects, flows, templates } = await request('/api/workspace');
+  state.templates = templates ?? [];
   state.projects = projects.map((item) => ({ ...item, loaded: false, lanes: flows.find((flow) => flow.id === item.flowId).stages.map(toLane) }));
 }
+export const loadTemplates = async () => applyTemplates((await request('/api/templates')).templates);
 export async function loadCards(projectId) {
   const p = state.projects.find((item) => item.id === projectId);
   if (!p || p.loaded) return;
@@ -237,12 +262,13 @@ export function refreshSavedCard(saved) {
 
 export function createCard(lane, p = project()) {
   const at = now();
-  const card = { id: id(), projectId: p.id, stageId: lane.id, template: defaultTemplate, title: '', fields: emptyFields(), images: [], imageRoles: emptyImageRoles(), revision: 1, lastMove: null, enteredStageAt: at, createdAt: at, updatedAt: at };
+  const template = projectTemplate(p);
+  const card = { id: id(), projectId: p.id, stageId: lane.id, template: template.id, title: '', fields: emptyFields(template), images: [], imageRoles: emptyImageRoles(template), revision: 1, lastMove: null, enteredStageAt: at, createdAt: at, updatedAt: at };
   rememberSaved(card);
   lane.cards.push(card);
   enqueue(async () => {
     const previousValues = contentValues(card);
-    const saved = await send('POST', `${url('projects', p.id)}/cards`, { id: card.id, stageId: lane.id, title: card.title, fields: card.fields, images: card.images, imageRoles: card.imageRoles });
+    const saved = await send('POST', `${url('projects', p.id)}/cards`, { id: card.id, stageId: lane.id, template: card.template, title: card.title, fields: card.fields, images: card.images, imageRoles: card.imageRoles });
     updateLocalValues(card, contentValues(saved), previousValues);
     adopt(card, saved, true);
     savedValues.set(card.id, structuredClone(editableValues(saved))); renewLease(card.id);
@@ -383,8 +409,8 @@ export function deleteLane(p, laneId) {
 }
 
 // Projects get their default lanes from the server, so creation waits for it.
-export async function createProject(name) {
-  const { project: created, flow } = await enqueue(() => send('POST', '/api/projects', { id: id(), name }));
+export async function createProject(name, templateId = undefined) {
+  const { project: created, flow } = await enqueue(() => send('POST', '/api/projects', { id: id(), name, ...(templateId ? { templateId } : {}) }));
   const p = { ...created, loaded: true, lanes: flow.stages.map(toLane) };
   state.projects.push(p);
   return p;
@@ -393,6 +419,16 @@ export function renameProject(p, name) {
   p.name = name;
   enqueue(() => send('PATCH', url('projects', p.id), { name }));
 }
+// The template new cards in this project use. Existing cards keep theirs.
+export function setProjectTemplate(p, templateId) {
+  p.templateId = templateId;
+  enqueue(() => send('PATCH', url('projects', p.id), { templateId }));
+}
+// Card templates are workspace settings, independent of card writes, so they
+// are sent directly rather than queued behind a card save that may be failing.
+export const createTemplate = async (input) => { const created = await send('POST', '/api/templates', input); await loadTemplates(); return created; };
+export const updateTemplate = async (templateId, input) => { const updated = await send('PATCH', url('templates', templateId), input); await loadTemplates(); return updated; };
+export const deleteTemplate = async (templateId) => { await send('DELETE', url('templates', templateId)); await loadTemplates(); };
 // Archive and unarchive wait for the server: archiving cancels the project's
 // work there, and the board then shows the project read-only.
 export async function archiveProject(p) {
@@ -408,8 +444,10 @@ export function deleteProject(p) {
   state.projects = state.projects.filter((item) => item.id !== p.id);
   enqueue(() => send('DELETE', url('projects', p.id)));
 }
+// Only cards whose template has a Prompt field take the shared prompt.
+export const hasPromptField = (card) => templateOf(card).fields.some((field) => field.key === 'prompt');
 export function setProjectPrompt(p, prompt) {
-  const cards = p.lanes.flatMap((lane) => lane.cards);
+  const cards = p.lanes.flatMap((lane) => lane.cards).filter(hasPromptField);
   for (const card of cards) {
     card.fields.prompt = prompt;
     cardChanged(card);

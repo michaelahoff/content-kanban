@@ -1,7 +1,9 @@
 // Older-schema fixtures start from the current store. Remove this milestone
 // before reconstructing their old tables and setting the historical version.
 export function dropChatSchema(db) {
-  db.exec(`DROP TABLE saved_outputs;
+  db.exec(`ALTER TABLE projects DROP COLUMN template_id;
+    DROP TABLE card_templates;
+    DROP TABLE saved_outputs;
     ALTER TABLE projects DROP COLUMN archived_at;
     ALTER TABLE projects DROP COLUMN archive_generation;
     DROP TABLE library_drafts;

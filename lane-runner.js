@@ -13,7 +13,8 @@ export function createLaneRunner({ store, service, providers, ctx, paused = () =
 
   // Everything a run would send, without queueing it. Also used for previews.
   function prepare(card, stage, project, stages, trigger) {
-    const found = store.playbooks.settings(project.flowId, stage.id, card.template);
+    const template = store.templates.forCard(card);
+    const found = store.playbooks.settings(project.flowId, stage.id, template);
     if (!found) return { error: `${stage.name} has no lane playbook.` };
     const { document, settings } = found;
     if (settings.errors.length) return { error: `The playbook ${document.path} has errors: ${settings.errors.join(' ')}`, document, settings };
@@ -27,7 +28,7 @@ export function createLaneRunner({ store, service, providers, ctx, paused = () =
     const skills = settings.skills.map((name) => store.playbooks.skill(project.flowId, name));
     const notes = store.playbooks.notes(card.id);
     const prompt = composeLanePrompt({ projectName: project.name, laneName: stage.name, lanes: stages, trigger, map, playbook: document,
-      skills, notes: notes.text, settings, templateId: card.template });
+      skills, notes: notes.text, settings, template });
     return { document, settings, chat, provider, model, map, skills, notes, prompt,
       warning: model ? '' : `No ${providerName(provider)} model is available. Refresh models in Settings or name one with model: in the playbook.` };
   }
@@ -85,7 +86,7 @@ export function createLaneRunner({ store, service, providers, ctx, paused = () =
       if (store.chats.laneConversation(ctx, run.cardId).busy) {
         // Everything else is read when the chat is free; turning the
         // playbook off or to manual ends a waiting automatic run now.
-        const saved = store.playbooks.settings(info.project.flowId, info.stage.id, info.card.template);
+        const saved = store.playbooks.settings(info.project.flowId, info.stage.id, store.templates.forCard(info.card));
         if (saved && !saved.settings.errors.length && !enabled(saved.settings)) { waitingForChat.delete(run.id); return cancelDisabled(); }
         return;
       }
@@ -196,7 +197,8 @@ export async function applyLaneResult({ store, ctx, attempt, submission, text })
   const live = store.chats.attempt(attempt.id);
   if (!live || !['dispatching', 'accepted', 'running'].includes(live.status)) throw new Error('This attempt no longer has card-tool authority.');
   const card = store.getCard(ctx, submission.cardId).card;
-  const result = parseLaneResult(text, card.template);
+  const template = store.templates.forCard(card);
+  const result = parseLaneResult(text, template);
   const outcome = { applied: [], proposed: [], move: null, notes: false, outputs: [], errors: [] };
   store.transaction(() => {
     if (!result) outcome.errors.push('The reply had no frameboard-result block, so nothing was applied.');
@@ -250,7 +252,7 @@ export async function applyLaneResult({ store, ctx, attempt, submission, text })
     } catch (error) { outcome.outputs.push({ filename: output.filename, status: 'failed', error: error.message }); }
   }
   const saved = outcome.outputs.filter((output) => output.status === 'saved').map((output) => output.filename);
-  const labels = (keys) => keys.map((key) => setFields(card.template).find((field) => field.key === key)?.label ?? key).join(', ');
+  const labels = (keys) => keys.map((key) => setFields(template).find((field) => field.key === key)?.label ?? key).join(', ');
   const summary = [
     outcome.applied.length ? `Applied ${labels(outcome.applied)}.` : '',
     outcome.proposed.length ? `Proposed ${labels(outcome.proposed)} for your review.` : '',

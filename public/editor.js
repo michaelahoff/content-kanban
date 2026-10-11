@@ -1,10 +1,10 @@
 // The card editor dialog: text fields, images, YouTube lookup, and copying.
 import { createTrifectaItem } from './trifecta.js';
 import { $, escape, icon, button, iconButton, imageURL, wordCount, lastEditedMarkup, toast } from './ui.js';
-import { state, locateCard, cardChanged, flushCards, onCardFieldsChange, beginCardEditing, endCardEditing } from './state.js';
+import { state, locateCard, templateOf, cardChanged, flushCards, onCardFieldsChange, beginCardEditing, endCardEditing } from './state.js';
 import { renderBoard, renderStatus, archivedNotice } from './board.js';
 import { request } from './api.js';
-import { templates, fieldInputId } from './card-template.js';
+import { fieldInputId, editorFields } from './card-template.js';
 import { mountChat, unmountChat } from './chat.js';
 import { cardPlaybookMarkup, notesMarkup, mountCardPlaybook, renderBar } from './card-playbook.js';
 
@@ -18,9 +18,12 @@ onCardFieldsChange((card, keys) => {
   for (const key of keys) {
     const input = $(`#${fieldInputId(key)}`);
     if (input) input.value = key === 'title' ? card.title : card.fields[key];
-    const field = templates[card.template].fields.find((field) => field.key === key);
-    if (field?.countWords) $(`#${key}-count`).textContent = `${wordCount(card.fields[key]).toLocaleString()} words`;
-    if (field?.control === 'url') $(`#${fieldInputId(key)}-link`).innerHTML = field.youtube ? originalVideoMarkup(card) : videoLinkMarkup(card.fields[key], field.videoLabel || field.label);
+    const field = templateOf(card).fields.find((item) => item.key === key);
+    // Hidden fields (editor: false) have no count or link on the card.
+    const count = field?.countWords && $(`#${key}-count`);
+    if (count) count.textContent = `${wordCount(card.fields[key]).toLocaleString()} words`;
+    const link = field?.control === 'url' && $(`#${fieldInputId(key)}-link`);
+    if (link) link.innerHTML = field.youtube ? originalVideoMarkup(card, field) : videoLinkMarkup(card.fields[key], field.videoLabel || field.label);
   }
 });
 
@@ -66,18 +69,21 @@ function editorField(field, card) {
   const input = field.control === 'textarea'
     ? `<textarea ${attributes}>${escape(value)}</textarea>`
     : `<input class="form-input" ${attributes} type="${field.control || 'text'}" value="${escape(value)}" autocomplete="off"${field.control === 'url' ? ' autocapitalize="off" spellcheck="false"' : ''}>`;
-  const link = field.control === 'url' ? `<div class="video-link-row" id="${inputId}-link">${field.youtube ? originalVideoMarkup(card) : videoLinkMarkup(value, field.videoLabel || field.label)}</div>` : '';
+  const link = field.control === 'url' ? `<div class="video-link-row" id="${inputId}-link">${field.youtube ? originalVideoMarkup(card, field) : videoLinkMarkup(value, field.videoLabel || field.label)}</div>` : '';
   if (field.placement === 'header') return `<section class="original-video">${label}<div class="original-video-row">${input}${link}</div></section>`;
   const hint = field.countWords ? `<span id="${escape(field.key)}-count">${wordCount(value).toLocaleString()} words</span>` : '';
   const tools = field.copy ? `<div class="field-tools">${hint}${button('copy-field', `Copy ${escape(field.label.toLowerCase())}`, null, 'button small secondary', `data-field="${escape(field.key)}"`)}</div>` : hint;
   return `<section class="writing-section ${field.control === 'url' ? 'video-url' : field.section || fieldInputId(field.key).slice(5)}-section"><div class="field-heading">${label}${tools}</div>${input}${link}</section>`;
 }
 const youtubePattern = /^https?:\/\/(www\.|m\.|music\.)?(youtube\.com|youtube-nocookie\.com|youtu\.be)\//i;
-export function originalVideoMarkup(card) {
-  const value = card.fields.originalVideoUrl.trim();
+// The link row under a YouTube-flagged field: the lookup button and the open link.
+export function originalVideoMarkup(card, field) {
+  const value = (card.fields[field.key] ?? '').trim();
   const fetchButton = youtubePattern.test(value) ? button('fetch-youtube', 'Get title & thumbnail', 'download', 'button small primary') : '';
-  return `${fetchButton}${videoLinkMarkup(value, 'original video')}`;
+  return `${fetchButton}${videoLinkMarkup(value, field.videoLabel || field.label)}`;
 }
+// The template's field flagged for YouTube lookups, if it has one.
+const youtubeField = (template) => template.fields.find((field) => field.youtube);
 export function openCard(targetId) {
   const found = locateCard(targetId);
   if (!found) return;
@@ -88,18 +94,20 @@ export function openCard(targetId) {
   state.cardId = targetId;
   lastCardTrigger = document.activeElement;
   const { card, lane, project: p } = found;
-  const template = templates[card.template];
+  const template = templateOf(card);
+  // Hidden fields (editor: false) stay out of the editor, header included.
+  const fields = editorFields(template);
   cardDialog.innerHTML = `<div class="editor-header"><div class="editor-breadcrumb">${icon('board')}<label class="sr-only" for="card-lane">Move card to lane</label><select id="card-lane">${p.lanes.map((item) => `<option value="${item.id}" ${item.id === lane.id ? 'selected' : ''}>${escape(item.name)}</option>`).join('')}</select></div><div class="editor-header-right">${iconButton('undo-move', 'Undo last move', 'undo', 'data-undo-move="card" disabled')}<span class="save-status" data-save-status></span>${iconButton('close-card', 'Close card editor', 'close')}</div></div>
     <div id="editor-save-error" class="error-banner" role="alert" hidden></div>
-    ${template.fields.filter((field) => field.placement === 'header').map((field) => editorField(field, card)).join('')}
+    ${fields.filter((field) => field.placement === 'header').map((field) => editorField(field, card)).join('')}
     <div class="editor-title"><label class="sr-only" for="card-title">${escape(template.title.label)}</label><input id="card-title" placeholder="Untitled card" maxlength="${template.title.max}" value="${escape(card.title)}" autocomplete="off"></div>
     ${cardPlaybookMarkup()}
     <div class="editor-content"><div class="writing-panel">
-      ${template.fields.filter((field) => field.placement !== 'header' && field.editor !== false).map((field) => editorField(field, card)).join('')}
+      ${fields.filter((field) => field.placement !== 'header').map((field) => editorField(field, card)).join('')}
       ${notesMarkup()}
     </div>
     <aside class="images-panel" aria-label="Card images"><div class="field-heading"><h2>Images</h2><span id="image-count"></span></div><div id="card-images"></div><label class="image-drop" id="image-drop">${icon('upload')}<strong>Add images</strong><span>Drop, paste or <u>browse files</u></span><input id="image-files" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/avif" multiple aria-label="Upload images"></label><p id="upload-status" class="upload-status" role="status"></p></aside></div>
-    <div class="editor-footer">${button('delete-card', 'Delete card', 'trash', 'text-button danger')}${button('copy-trifecta', 'Trifecta copy', 'text', 'button secondary')}<span class="edited-at" data-edited-card="${card.id}">${lastEditedMarkup(card)}</span>${button('close-card', 'Done', 'check', 'button primary')}</div>`;
+    <div class="editor-footer">${button('delete-card', 'Delete card', 'trash', 'text-button danger')}${template.fields.some((field) => ['titleOptions', 'intro', 'prompt'].includes(field.key)) ? button('copy-trifecta', 'Trifecta copy', 'text', 'button secondary') : ''}<span class="edited-at" data-edited-card="${card.id}">${lastEditedMarkup(card)}</span>${button('close-card', 'Done', 'check', 'button primary')}</div>`;
   // Cards in an archived project are read-only; the server refuses changes too.
   cardDialog.classList.toggle('archived', Boolean(p.archivedAt));
   if (p.archivedAt) {
@@ -112,17 +120,27 @@ export function openCard(targetId) {
   mountCardPlaybook(targetId);
   mountChat(targetId);
   document.body.classList.add('card-panel-open');
-  if (!card.title && !p.archivedAt) $(card.fields.originalVideoUrl ? '#card-title' : '#card-original-video-url').focus();
+  // With no title yet, start on the YouTube link when the card has none, else on the title.
+  const youtube = youtubeField(template);
+  const youtubeInput = youtube && !card.fields[youtube.key] ? $(`#${fieldInputId(youtube.key)}`) : null;
+  const focusTarget = youtubeInput ?? $('#card-title');
+  if (!card.title && !p.archivedAt) focusTarget.focus();
 }
 export function renderImages() {
   const found = locateCard();
   if (!found || !$('#card-images')) return;
   const { card } = found;
+  const template = templateOf(card);
   $('#image-count').textContent = card.images.length ? `${card.images.length} ${card.images.length === 1 ? 'image' : 'images'}` : '';
-  const { cover: coverImageId, original: originalImageId, inspiration: inspirationImageId } = card.imageRoles;
+  const { cover: coverImageId } = card.imageRoles;
   const cover = card.images.find((image) => image.id === coverImageId);
+  // One button per template role; the role's chosen image shows a check.
+  const roleButtons = (item) => template.imageRoles.map((role) => {
+    const chosen = item.id === card.imageRoles[role.key];
+    return `<button class="set-image-role ${chosen ? 'selected' : ''}" data-action="set-image-role" data-role="${role.key}" data-id="${item.id}" aria-pressed="${chosen}">${chosen ? '✓ ' : ''}${escape(role.label)}</button>`;
+  }).join('');
   $('#card-images').innerHTML = `${cover ? `<div class="display-image"><button data-action="preview-image" data-id="${cover.id}" aria-label="Preview display image"><img src="${imageURL(cover.id)}" alt="${escape(cover.name)}"></button><span class="display-badge">${icon('star')} Display image</span></div>` : ''}
-    ${card.images.length ? `<div class="image-gallery">${card.images.map((item) => `<div class="image-tile ${item.id === coverImageId ? 'is-display' : ''}"><button class="thumbnail" data-action="preview-image" data-id="${item.id}" aria-label="Preview ${escape(item.name)}"><img src="${imageURL(item.id)}" alt="${escape(item.name)}" loading="lazy"></button>${iconButton('remove-image', `Remove ${item.name}`, 'close', `data-id="${item.id}"`)}<div class="image-flags"><button class="set-display" data-action="set-display" data-id="${item.id}" aria-pressed="${item.id === coverImageId}">${icon(item.id === coverImageId ? 'check' : 'star')}${item.id === coverImageId ? 'Display image' : 'Set as display'}</button><button class="set-image-role ${item.id === originalImageId ? 'selected' : ''}" data-action="set-image-role" data-role="original" data-id="${item.id}" aria-pressed="${item.id === originalImageId}">${item.id === originalImageId ? '✓ ' : ''}Original</button><button class="set-image-role ${item.id === inspirationImageId ? 'selected' : ''}" data-action="set-image-role" data-role="inspiration" data-id="${item.id}" aria-pressed="${item.id === inspirationImageId}">${item.id === inspirationImageId ? '✓ ' : ''}Inspiration</button></div></div>`).join('')}</div>` : ''}`;
+    ${card.images.length ? `<div class="image-gallery">${card.images.map((item) => `<div class="image-tile ${item.id === coverImageId ? 'is-display' : ''}"><button class="thumbnail" data-action="preview-image" data-id="${item.id}" aria-label="Preview ${escape(item.name)}"><img src="${imageURL(item.id)}" alt="${escape(item.name)}" loading="lazy"></button>${iconButton('remove-image', `Remove ${item.name}`, 'close', `data-id="${item.id}"`)}<div class="image-flags"><button class="set-display" data-action="set-display" data-id="${item.id}" aria-pressed="${item.id === coverImageId}">${icon(item.id === coverImageId ? 'check' : 'star')}${item.id === coverImageId ? 'Display image' : 'Set as display'}</button>${roleButtons(item)}</div></div>`).join('')}</div>` : ''}`;
 }
 // The panel swings back toward the board edge before the dialog closes.
 // Opening a card mid-animation cancels it, so the close never lands.
@@ -180,7 +198,9 @@ cardDialog.addEventListener('close', () => {
 export async function fetchYoutube(target) {
   const targetCardId = state.cardId;
   const { card } = locateCard(targetCardId);
-  const url = card.fields.originalVideoUrl.trim();
+  const field = youtubeField(templateOf(card));
+  if (!field) return;
+  const url = (card.fields[field.key] ?? '').trim();
   target.disabled = true;
   target.setAttribute('aria-busy', 'true');
   target.lastChild.textContent = 'Fetching…';
@@ -191,24 +211,28 @@ export async function fetchYoutube(target) {
     const found = locateCard(targetCardId);
     if (!found) return;
     const current = found.card;
-    if (current.fields.originalVideoUrl.trim() !== url) return toast('The Original URL changed while fetching. Fetch again for the new link.');
-    // Replace the thumbnail from an earlier fetch instead of piling up copies.
+    const template = templateOf(current);
+    if ((current.fields[field.key] ?? '').trim() !== url) return toast(`The ${field.label} changed while fetching. Fetch again for the new link.`);
+    // The original role and the video title field are used only when the template has them.
+    const hasOriginal = template.imageRoles.some((role) => role.key === 'original');
     const roles = current.imageRoles;
-    const previous = roles.original;
+    // Replace the thumbnail from an earlier fetch instead of piling up copies.
+    const previous = hasOriginal ? roles.original : null;
     if (previous && current.images.find((image) => image.id === previous)?.name.endsWith(' thumbnail.jpg')) {
       current.images = current.images.filter((image) => image.id !== previous);
       if (roles.cover === previous) roles.cover = null;
     }
     if (current.images.length >= 200) throw new Error('A card can hold up to 200 images.');
     current.images.unshift(result.image);
-    roles.original = result.image.id;
+    if (hasOriginal) roles.original = result.image.id;
     roles.cover ||= result.image.id;
-    current.fields.originalVideoTitle = result.title;
+    if (template.fields.some((item) => item.key === 'originalVideoTitle')) current.fields.originalVideoTitle = result.title;
     if (!current.title.trim()) current.title = result.title;
     cardChanged(current);
     if (state.cardId === targetCardId) {
       $('#card-title').value = current.title;
-      $('#card-original-video-title').value = current.fields.originalVideoTitle;
+      const videoTitle = $(`#${fieldInputId('originalVideoTitle')}`);
+      if (videoTitle) videoTitle.value = current.fields.originalVideoTitle;
       renderImages();
     }
     renderBoard();
@@ -218,7 +242,8 @@ export async function fetchYoutube(target) {
   } finally {
     state.uploads--;
     renderStatus();
-    if (state.cardId === targetCardId && $('#card-original-video-url-link')) $('#card-original-video-url-link').innerHTML = originalVideoMarkup(locateCard(targetCardId).card);
+    const link = state.cardId === targetCardId && $(`#${fieldInputId(field.key)}-link`);
+    if (link) link.innerHTML = originalVideoMarkup(locateCard(targetCardId).card, field);
     flushCards();
   }
 }

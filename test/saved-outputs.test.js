@@ -12,6 +12,7 @@ import { createClaudeAdapter } from '../claude-adapter.js';
 import { createBackup, restoreBackup } from '../backup.js';
 import { createApp } from '../server.js';
 import { ControlledCodex } from './support/controlled-codex.js';
+import { youtubeVideoTemplate } from '../public/card-template.js';
 
 const reply = 'Here is the script.\n\n# Black holes\n\nThey are not holes.';
 const completed = async (f, card, text = reply) => {
@@ -124,7 +125,7 @@ test('a lane result may declare inline documents or workspace files with their s
     { filename: 'bad-sources.md', text: 'x', sources: 'v1' },
     { filename: 'both.md', text: 'x', path: 'both.md' },
     { filename: 'blank-path.bin', path: ' ' },
-  ] }), 'youtube-video');
+  ] }), youtubeVideoTemplate);
   assert.deepEqual(parsed.fields, { intro: 'Hi' });
   assert.deepEqual(parsed.outputs, [
     { filename: 'script.md', text: '# Script', sources: ['v1', 'v2'] },
@@ -138,8 +139,8 @@ test('a lane result may declare inline documents or workspace files with their s
   assert.match(parsed.errors[2], /bad-sources\.md.*sources/);
   assert.match(parsed.errors[3], /both\.md.*not both/);
   assert.match(parsed.errors[4], /blank-path\.bin.*path/);
-  assert.deepEqual(parseLaneResult(block({ notes: 'n' }), 'youtube-video').outputs, []);
-  assert.match(parseLaneResult(block({ outputs: { filename: 'x' } }), 'youtube-video').errors[0], /“outputs” must be a list/);
+  assert.deepEqual(parseLaneResult(block({ notes: 'n' }), youtubeVideoTemplate).outputs, []);
+  assert.match(parseLaneResult(block({ outputs: { filename: 'x' } }), youtubeVideoTemplate).errors[0], /“outputs” must be a list/);
 });
 
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jS1kAAAAASUVORK5CYII=', 'base64');

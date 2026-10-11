@@ -1,20 +1,24 @@
 // Shared selection vocabulary. Values and image versions are resolved on the
-// server at queue time, never from the browser's unsaved card draft.
-import { templates } from './card-template.js';
+// server at queue time, never from the browser's unsaved card draft. Every
+// function takes the card's template definition, never a template ID.
+import { contextFields, imageRoles, roleLabel } from './card-template.js';
 
-export function contextFields(template) {
-  return [{ key: 'title', label: 'Card title' }, ...templates[template].fields.filter((field) => field.key !== 'prompt')];
-}
+export { contextFields };
 export function defaultSelections(template) {
-  return { fields: contextFields(template).map((field) => field.key), roles: ['original', 'inspiration'], images: [], library: [], savedOutputs: [] };
+  return { fields: contextFields(template).map((field) => field.key), roles: template.imageRoles.map((role) => role.key), images: [], library: [], savedOutputs: [] };
 }
 // Exact references come from the card gallery or this card chat's saved
 // image versions. A chat version need not be adopted to be edited. One image
 // version is one input, labeled with every role and source that chose it: an
 // adopted chat output is both an attachment and a chat version.
-export function selectedContext(card, selections, versions, outputs = []) {
-  const fields = selections.fields.map((key) => ({ key, label: contextFields(card.template).find((field) => field.key === key).label,
-    value: key === 'title' ? card.title : card.fields[key], version: versions[key] }));
+export function selectedContext(card, template, selections, versions, outputs = []) {
+  // A saved selection may still name a field the template has since hidden
+  // or removed; such fields are left out rather than failing the Send.
+  const readable = contextFields(template);
+  const fields = selections.fields.flatMap((key) => {
+    const field = readable.find((entry) => entry.key === key);
+    return field ? [{ key, label: field.label, value: key === 'title' ? card.title : card.fields[key], version: versions[key] }] : [];
+  });
   const images = new Map();
   function add(id, label) {
     if (!id) return;
@@ -24,7 +28,8 @@ export function selectedContext(card, selections, versions, outputs = []) {
     if (!images.has(id)) images.set(id, { id, name: (gallery ?? output).name, labels: [], source: gallery ? 'gallery' : 'chat-output', ...(output ? { outputId: output.outputId } : {}) });
     images.get(id).labels.push(label);
   }
-  for (const role of selections.roles) add(card.imageRoles[role], { original: 'Original', inspiration: 'Inspiration', cover: 'Display' }[role]);
+  const known = imageRoles(template).map((role) => role.key);
+  for (const role of selections.roles.filter((key) => known.includes(key))) add(card.imageRoles[role], roleLabel(template, role));
   for (const id of selections.images) {
     const inGallery = card.images.some((image) => image.id === id);
     if (inGallery) add(id, 'Attachment');

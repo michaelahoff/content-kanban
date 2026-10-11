@@ -1,12 +1,13 @@
 // Starts the app and routes clicks, typing, pasting, and dragging to the board and editor.
 import { $, escape, iconButton, imageURL, toast, wordCount, confirmDelete, smallForm, setTheme, setAccent } from './ui.js';
 import { retry } from './api.js';
-import { templates, fieldInputId } from './card-template.js';
-import { state, project, locateCard, cardCount, loadWorkspace, loadCards, cardChanged, flushCards, createCard, moveCard, deleteCard, deleteLane, deleteProject, archiveProject, unarchiveProject, saveStatus, hasUnsavedWork, onStatusChange, useSavedCard, undoLastMove, loadPlaybooks, applyStages } from './state.js';
+import { fieldInputId } from './card-template.js';
+import { state, project, locateCard, cardCount, loadWorkspace, loadCards, loadTemplates, templateOf, cardChanged, flushCards, createCard, moveCard, deleteCard, deleteLane, deleteProject, archiveProject, unarchiveProject, saveStatus, hasUnsavedWork, onStatusChange, useSavedCard, undoLastMove, loadPlaybooks, applyStages } from './state.js';
 import { view, selectProject, renderApp, renderBoard, renderStatus, editProject, editLane, editProjectPrompt, toggleCards, showTab } from './board.js';
 import { dropLibraryItems, libraryActivity, hasLibraryUploads } from './library.js';
 import { openCard, closeCard, cardPanelOpen, renderImages, copyText, copyTrifecta, fetchYoutube, addImages, originalVideoMarkup, videoLinkMarkup } from './editor.js';
 import { openPlaybooks, playbooksChanged } from './playbook-editor.js';
+import { openTemplates, templatesChanged } from './template-editor.js';
 import { renderBar, cardPlaybookActivity, hasUnsavedNotes } from './card-playbook.js';
 import { initializeChats, hasUnsentChatChanges, flushComposers, onActivity } from './chat.js';
 
@@ -58,6 +59,10 @@ document.addEventListener('click', (event) => {
     openPlaybooks({ laneId: targetId });
   }
   if (action === 'open-playbooks') openPlaybooks();
+  if (action === 'manage-templates') {
+    if (formDialog.open) formDialog.close();
+    openTemplates();
+  }
   if (action === 'add-card') makeCard(target.dataset.laneId);
   if (action === 'open-card') openCard(targetId);
   if (action === 'close-card') closeCard();
@@ -85,7 +90,7 @@ document.addEventListener('click', (event) => {
   }
   if (action === 'copy-field') {
     const field = target.dataset.field;
-    const name = templates[locateCard().card.template].fields.find((item) => item.key === field).label;
+    const name = templateOf(locateCard().card).fields.find((item) => item.key === field).label;
     return copyText(locateCard().card.fields[field], name);
   }
   if (action === 'copy-trifecta') return copyTrifecta(target);
@@ -176,7 +181,7 @@ document.addEventListener('input', (event) => {
   const found = target.id?.startsWith('card-') && locateCard();
   if (!found) return;
   const { card } = found;
-  const field = templates[card.template].fields.find((item) => fieldInputId(item.key) === target.id);
+  const field = templateOf(card).fields.find((item) => fieldInputId(item.key) === target.id);
   if (target.id === 'card-title') {
     if (card.title === target.value) return;
     card.title = target.value;
@@ -185,8 +190,9 @@ document.addEventListener('input', (event) => {
     if (!key || card.fields[key] === target.value) return;
     card.fields[key] = target.value;
   }
-  if (field?.countWords) $(`#${field.key}-count`).textContent = `${wordCount(target.value).toLocaleString()} words`;
-  if (field?.control === 'url') $(`#${target.id}-link`).innerHTML = field.youtube ? originalVideoMarkup(card) : videoLinkMarkup(target.value, field.videoLabel || field.label);
+  const count = field?.countWords && $(`#${field.key}-count`);
+  if (count) count.textContent = `${wordCount(target.value).toLocaleString()} words`;
+  if (field?.control === 'url') $(`#${target.id}-link`).innerHTML = field.youtube ? originalVideoMarkup(card, field) : videoLinkMarkup(target.value, field.videoLabel || field.label);
   cardChanged(card);
 });
 document.addEventListener('change', (event) => {
@@ -366,6 +372,11 @@ try {
   onActivity((entry) => {
     cardPlaybookActivity(entry);
     libraryActivity(entry);
+    // Another tab changed the card templates: reload them and redraw the board.
+    if (entry.entity === 'template') void loadTemplates().then(() => { renderBoard(); templatesChanged(); }).catch(() => {});
+    // Another tab chose this project's template for new cards.
+    const retemplated = entry.entity === 'project' && entry.type === 'updated' && entry.data?.templateId && state.projects.find((item) => item.id === entry.entityId);
+    if (retemplated) { retemplated.templateId = entry.data.templateId; if (retemplated === project()) renderApp(); else renderBoard(); }
     // Another tab archived or unarchived a project.
     const changed = entry.entity === 'project' && ['archived', 'unarchived'].includes(entry.type) && state.projects.find((item) => item.id === entry.entityId);
     if (changed && Boolean(changed.archivedAt) !== (entry.type === 'archived')) {

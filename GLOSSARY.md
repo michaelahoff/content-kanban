@@ -22,9 +22,25 @@ A reviewed transfer summary waiting to accompany the first manual prompt to the 
 **Summary source checkpoint**:
 The boundary in a retained conversation identifying the messages on which a transfer summary was based. A summary is stale when newer source messages exist beyond that boundary.
 
+**Card template**:
+The set of text fields and image roles a card carries. Each card keeps the template it was created with; a project chooses the template for its new cards, and changing that choice never changes existing cards. The built-in YouTube video template is in every workspace and provides Title Options, Intro, Script and the video links.
+_Avoid_: Schema, card type, preset
+
+**Template field**:
+A text field a card template defines, with a key, label, control (text, text area or URL), length limit and display options such as header placement, copy and word-count tools. A key is permanent once cards hold a value for it; labels, controls and limits can change. A hidden field is left out of the card editor, search, chats and lane results, but a playbook's `set:` can still fill it, as with the shared prompt.
+_Avoid_: Column, property, attribute
+
+**Image role**:
+A label a card template gives to one of a card's gallery images, such as Original or Inspiration. A role names one image at a time, and one image can hold several roles. The display image is the role every card has, in every template; playbooks call it `display`.
+_Avoid_: Image tag, image type
+
 **Lane playbook**:
-A Markdown file that says what happens when a card enters a lane: values to set at once, and instructions for an agent with the fields it may edit and the Library files it sends. One per lane, identified by the lane's ID in its settings.
+A Markdown file that says what happens when a card enters a lane: values to set at once, and instructions for an agent with the fields it may edit and the Library files it sends. One per lane, identified by the lane's ID in its settings. Its settings are edited with the playbook settings form or as raw Markdown, and the fields and image roles offered come from the project's card template.
 _Avoid_: Lane command, command graph, graph prompt
+
+**Playbook settings form**:
+The controls over a lane playbook's settings block (the Markdown between `---` lines): run mode, provider and model, context, fields it may edit, set values, skills and Library files, each built from the project's card template. The Markdown file stays the source of truth. A control change rewrites only its own setting in the draft, so comments and other settings survive.
+_Avoid_: Settings UI, playbook builder
 
 **Project map**:
 The Markdown file that describes a project and its lanes. Every lane run reads it first.

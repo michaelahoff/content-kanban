@@ -13,6 +13,7 @@ import { ControlledCodex } from './support/controlled-codex.js';
 import { setPlaybook } from './support/playbooks.js';
 import { parseDocument, playbookSettings } from '../public/playbook-format.js';
 import { fixture, waitFor } from './support/chat-fixture.js';
+import { youtubeVideoTemplate } from '../public/card-template.js';
 
 const sha256 = (value) => createHash('sha256').update(value).digest('hex');
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jS1kAAAAASUVORK5CYII=', 'base64');
@@ -225,7 +226,7 @@ test('export and restore keep reuse choices and frozen reused outputs with their
 test('lane playbooks select only Library assets and folders: a saved output ID is never reused by a lane run', async (t) => {
   const f = await fixture(t); const card = await f.card();
   const { output } = await savedDocument(f, card);
-  assert.deepEqual(playbookSettings(parseDocument(`---\nlane: drafting\nassets: [output:${output.id}]\n---\nWrite.`), 'youtube-video').assets, [], 'output:<id> is not a playbook source');
+  assert.deepEqual(playbookSettings(parseDocument(`---\nlane: drafting\nassets: [output:${output.id}]\n---\nWrite.`), youtubeVideoTemplate).assets, [], 'output:<id> is not a playbook source');
   const workspace = await f.ok('GET', '/api/workspace'); const project = workspace.projects[0];
   const stage = workspace.flows.find((flow) => flow.id === project.flowId).stages[0];
   await setPlaybook(f.ok, project.flowId, stage, { run: 'manual', model: 'test-model', assets: [`asset:${output.id}`] }, 'Use the saved script.');
