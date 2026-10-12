@@ -7,7 +7,7 @@ import { existsSync } from 'node:fs';
 import { rename, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { emptyFields, emptyImageRoles, normalizeCard, youtubeVideoTemplate } from './public/card-template.js';
-import { templatesMigration, createTemplateStore } from './store-templates.js';
+import { templatesMigration, templatesTable, projectTemplateColumn, createTemplateStore } from './store-templates.js';
 import { readLegacyBoard } from './legacy-board.js';
 import { createPlaybooks } from './playbooks.js';
 import { parseDocument, playbookSettings, describeSettings } from './public/playbook-format.js';
@@ -116,8 +116,36 @@ const criterionRules = { field: 'filled', imageRole: 'set' };
 // Released migration text embeds the retired lane command graph's empty value.
 const emptyGraphJson = '{"version":1,"nodes":[{"id":"entry","type":"entry","position":{"x":48,"y":100}}],"edges":[]}';
 
+// Before the feature branches merged, v16 could mean delivery rather than
+// drafts. Older retained/archive definitions also lacked these columns, and a
+// v20 written by an earlier copy of this repair predates templates. Adds only
+// what a database lacks; the entire upgrade remains atomic.
+function schemaRepairMigration(db) {
+  if (!hasColumn(db, 'projects', 'archive_generation')) {
+    db.exec('ALTER TABLE projects ADD COLUMN archive_generation INTEGER NOT NULL DEFAULT 0;');
+  }
+  if (!hasColumn(db, 'retained_versions', 'filename')) {
+    // These versions never stored a separate filename. Keep the only known
+    // label, from their retained object, without changing bytes or provenance.
+    db.exec(`ALTER TABLE retained_versions ADD COLUMN filename TEXT NOT NULL DEFAULT '';
+      UPDATE retained_versions SET filename = COALESCE((SELECT filename FROM retained_objects WHERE id = retained_versions.object_id), '');`);
+  }
+  if (!hasTable(db, 'library_drafts')) db.exec(libraryDraftsMigration);
+  if (!hasTable(db, 'card_templates')) db.exec(templatesTable);
+  if (!hasColumn(db, 'projects', 'template_id')) db.exec(projectTemplateColumn);
+}
+
+function hasTable(db, table) {
+  return Boolean(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table));
+}
+
+function hasColumn(db, table, column) {
+  return Boolean(db.prepare('SELECT name FROM pragma_table_info(?) WHERE name = ?').get(table, column));
+}
+
 // Each entry upgrades the schema by one version. Never edit a released entry;
-// append a new one instead. Functions handle known earlier schema variants.
+// append a new one instead. Function entries handle known earlier schema
+// variants; applyMigration's delivery skip is the one released-entry exception.
 const migrations = [`
   CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
   CREATE TABLE workspaces (id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at TEXT NOT NULL);
@@ -253,36 +281,14 @@ const migrations = [`
 `, libraryDraftsMigration, `
   -- What each delivery attempt actually did with a submission's inputs.
   ALTER TABLE chat_attempts ADD COLUMN delivery TEXT;
-`, foldersMigration, savedOutputsMigration, templatesMigration, (db) => {
-  // Before the feature branches merged, v16 could mean delivery rather than
-  // drafts. Older retained/archive definitions also lacked these columns, and
-  // a v20 written by this repair predates templates. Repair those layouts
-  // additively; the entire upgrade remains atomic.
-  if (!hasColumn(db, 'projects', 'archive_generation')) {
-    db.exec('ALTER TABLE projects ADD COLUMN archive_generation INTEGER NOT NULL DEFAULT 0;');
-  }
-  if (!hasColumn(db, 'retained_versions', 'filename')) {
-    // These versions never stored a separate filename. Keep the only known
-    // label, from their retained object, without changing bytes or provenance.
-    db.exec(`ALTER TABLE retained_versions ADD COLUMN filename TEXT;
-      UPDATE retained_versions SET filename = (SELECT filename FROM retained_objects WHERE id = retained_versions.object_id);`);
-  }
-  if (!db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'library_drafts'").get()) {
-    db.exec(libraryDraftsMigration);
-  }
-  if (!db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'card_templates'").get()) {
-    db.exec(templatesMigration);
-  }
-}];
+`, foldersMigration, savedOutputsMigration, templatesMigration, schemaRepairMigration];
 
-function hasColumn(db, table, column) {
-  return Boolean(db.prepare('SELECT name FROM pragma_table_info(?) WHERE name = ?').get(table, column));
-}
+// Delivery was already v16 on an earlier feature branch, so the released v17
+// entry (this index) runs only where that column is still missing.
+const deliveryMigrationIndex = 16;
 
 function applyMigration(db, migration, index) {
-  // Delivery was already v16 on an earlier feature branch. Current v17 must
-  // retain its existing values rather than adding the same column twice.
-  if (index === 16 && hasColumn(db, 'chat_attempts', 'delivery')) return;
+  if (index === deliveryMigrationIndex && hasColumn(db, 'chat_attempts', 'delivery')) return;
   if (typeof migration === 'function') migration(db);
   else db.exec(migration);
 }

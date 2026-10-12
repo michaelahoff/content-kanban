@@ -5,7 +5,6 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fixture, waitFor } from './support/chat-fixture.js';
 import { setPlaybook } from './support/playbooks.js';
-import { supportedSchemaVersion } from '../store.js';
 import { youtubeVideoTemplate, validateTemplate } from '../public/card-template.js';
 
 // A template with every control. "notes" is a reserved key (lane results
@@ -333,7 +332,8 @@ test('a database from before templates gains the built-in template and project d
   await f.close();
   const db = new DatabaseSync(path.join(f.dataDir, 'frameboard.db'));
   db.exec('ALTER TABLE projects DROP COLUMN template_id; DROP TABLE card_templates;');
-  db.prepare("UPDATE meta SET value = ? WHERE key = 'schema_version'").run(String(supportedSchemaVersion - 1));
+  // v19, the version before templates, so the upgrade runs the templates migration itself.
+  db.prepare("UPDATE meta SET value = ? WHERE key = 'schema_version'").run('19');
   db.close();
   await f.restart();
   const workspace = await f.ok('GET', '/api/workspace');

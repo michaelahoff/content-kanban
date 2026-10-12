@@ -6,11 +6,27 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { openStore, supportedSchemaVersion } from '../store.js';
 
+const noTemplates = 'DROP TABLE card_templates; ALTER TABLE projects DROP COLUMN template_id;';
+const noRetainedColumns = 'ALTER TABLE projects DROP COLUMN archive_generation; ALTER TABLE retained_versions DROP COLUMN filename;';
+const noFolders = 'DROP TABLE saved_outputs; ALTER TABLE retained_objects DROP COLUMN folder_id; DROP TABLE library_folders;';
+
 // Feature branches used v16 for either drafts or delivery, earlier
 // retained/archive schemas did not have the columns added before merge, and
-// the repair itself was once v20, before templates took that number.
-for (const layout of ['delivery-v16', 'drafts-v16', 'merged-v19', 'repaired-v20']) {
-  test(`upgrades ${layout} without losing card history or retained bytes`, async (t) => {
+// the repair itself was once v20, before templates took that number. An
+// upstream v20 already has everything, and must pass through unchanged.
+const layouts = [
+  { name: 'delivery-v16', version: 16, drop: `${noTemplates} ${noRetainedColumns} ${noFolders} DROP TABLE library_drafts;` },
+  { name: 'drafts-v16', version: 16, drop: `${noTemplates} ${noRetainedColumns} ${noFolders} ALTER TABLE chat_attempts DROP COLUMN delivery;` },
+  { name: 'merged-v19', version: 19, drop: `${noTemplates} ${noRetainedColumns}` },
+  { name: 'repaired-v20', version: 20, drop: noTemplates },
+  { name: 'upstream-v20', version: 20, drop: '' },
+  { name: 'v20 with only the template column', version: 20, drop: 'DROP TABLE card_templates;' },
+  { name: 'v20 with only the template table', version: 20, drop: 'ALTER TABLE projects DROP COLUMN template_id;' },
+];
+const schemaOf = (db) => db.prepare("SELECT type, name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name").all();
+
+for (const layout of layouts) {
+  test(`upgrades ${layout.name} without losing card history or retained bytes`, async (t) => {
     const dataDir = await mkdtemp(path.join(tmpdir(), 'frameboard-schema-'));
     let store;
     t.after(async () => { store?.close(); await rm(dataDir, { recursive: true, force: true }); });
@@ -25,22 +41,14 @@ for (const layout of ['delivery-v16', 'drafts-v16', 'merged-v19', 'repaired-v20'
     const version = await store.retained.publish(ctx, { operationId: 'kept-file', projectId: project.id, kind: 'asset', filename: 'reference.txt' }, Buffer.from('Kept bytes'));
     store.close(); store = null;
 
+    let original;
     const db = new DatabaseSync(path.join(dataDir, 'frameboard.db'));
     try {
-      db.exec(`PRAGMA foreign_keys = OFF;
-        DROP TABLE card_templates;
-        ALTER TABLE projects DROP COLUMN template_id;`);
-      if (layout !== 'repaired-v20') db.exec(`ALTER TABLE projects DROP COLUMN archive_generation;
-        ALTER TABLE retained_versions DROP COLUMN filename;`);
-      if (!layout.startsWith('merged') && !layout.startsWith('repaired')) {
-        db.exec(`DROP TABLE saved_outputs;
-          ALTER TABLE retained_objects DROP COLUMN folder_id;
-          DROP TABLE library_folders;`);
-        if (layout === 'delivery-v16') db.exec('DROP TABLE library_drafts;');
-        else db.exec('ALTER TABLE chat_attempts DROP COLUMN delivery;');
-      }
-      db.prepare("UPDATE meta SET value = ? WHERE key = 'schema_version'").run(layout.match(/v(\d+)$/)[1]);
+      original = schemaOf(db);
+      db.exec(`PRAGMA foreign_keys = OFF; ${layout.drop}`);
+      db.prepare("UPDATE meta SET value = ? WHERE key = 'schema_version'").run(String(layout.version));
     } finally { db.close(); }
+
 
     store = await openStore({ dataDir });
     assert.deepEqual(store.events(ctx), events);
@@ -66,6 +74,7 @@ for (const layout of ['delivery-v16', 'drafts-v16', 'merged-v19', 'repaired-v20'
         assert.ok(checked.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
       }
       assert.ok(checked.prepare("SELECT name FROM pragma_table_info('chat_attempts') WHERE name = 'delivery'").get());
+      if (layout.name === 'upstream-v20') assert.deepEqual(schemaOf(checked), original);
     } finally { checked.close(); }
     store = await openStore({ dataDir });
     assert.equal(store.getCard(ctx, card.id).card.title, 'Keep this card');
