@@ -7,7 +7,7 @@ import { existsSync } from 'node:fs';
 import { rename, rm } from 'node:fs/promises';
 import path from 'node:path';
 import { emptyFields, emptyImageRoles, normalizeCard, youtubeVideoTemplate } from './public/card-template.js';
-import { templatesMigration, createTemplateStore } from './store-templates.js';
+import { templatesMigration, templatesTable, projectTemplateColumn, createTemplateStore } from './store-templates.js';
 import { readLegacyBoard } from './legacy-board.js';
 import { createPlaybooks } from './playbooks.js';
 import { parseDocument, playbookSettings, describeSettings } from './public/playbook-format.js';
@@ -116,8 +116,36 @@ const criterionRules = { field: 'filled', imageRole: 'set' };
 // Released migration text embeds the retired lane command graph's empty value.
 const emptyGraphJson = '{"version":1,"nodes":[{"id":"entry","type":"entry","position":{"x":48,"y":100}}],"edges":[]}';
 
+// Before the feature branches merged, v16 could mean delivery rather than
+// drafts. Older retained/archive definitions also lacked these columns, and a
+// v20 written by an earlier copy of this repair predates templates. Adds only
+// what a database lacks; the entire upgrade remains atomic.
+function schemaRepairMigration(db) {
+  if (!hasColumn(db, 'projects', 'archive_generation')) {
+    db.exec('ALTER TABLE projects ADD COLUMN archive_generation INTEGER NOT NULL DEFAULT 0;');
+  }
+  if (!hasColumn(db, 'retained_versions', 'filename')) {
+    // These versions never stored a separate filename. Keep the only known
+    // label, from their retained object, without changing bytes or provenance.
+    db.exec(`ALTER TABLE retained_versions ADD COLUMN filename TEXT NOT NULL DEFAULT '';
+      UPDATE retained_versions SET filename = COALESCE((SELECT filename FROM retained_objects WHERE id = retained_versions.object_id), '');`);
+  }
+  if (!hasTable(db, 'library_drafts')) db.exec(libraryDraftsMigration);
+  if (!hasTable(db, 'card_templates')) db.exec(templatesTable);
+  if (!hasColumn(db, 'projects', 'template_id')) db.exec(projectTemplateColumn);
+}
+
+function hasTable(db, table) {
+  return Boolean(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table));
+}
+
+function hasColumn(db, table, column) {
+  return Boolean(db.prepare('SELECT name FROM pragma_table_info(?) WHERE name = ?').get(table, column));
+}
+
 // Each entry upgrades the schema by one version. Never edit a released entry;
-// append a new one instead.
+// append a new one instead. Function entries handle known earlier schema
+// variants; applyMigration's delivery skip is the one released-entry exception.
 const migrations = [`
   CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
   CREATE TABLE workspaces (id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at TEXT NOT NULL);
@@ -253,7 +281,17 @@ const migrations = [`
 `, libraryDraftsMigration, `
   -- What each delivery attempt actually did with a submission's inputs.
   ALTER TABLE chat_attempts ADD COLUMN delivery TEXT;
-`, foldersMigration, savedOutputsMigration, templatesMigration];
+`, foldersMigration, savedOutputsMigration, templatesMigration, schemaRepairMigration];
+
+// Delivery was already v16 on an earlier feature branch, so the released v17
+// entry (this index) runs only where that column is still missing.
+const deliveryMigrationIndex = 16;
+
+function applyMigration(db, migration, index) {
+  if (index === deliveryMigrationIndex && hasColumn(db, 'chat_attempts', 'delivery')) return;
+  if (typeof migration === 'function') migration(db);
+  else db.exec(migration);
+}
 
 // The newest schema this version can open; restore refuses newer backups.
 export const supportedSchemaVersion = migrations.length;
@@ -524,7 +562,7 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
   async function initialize() {
     const legacy = await readLegacyBoard(legacyFile);
     transaction(() => {
-      for (const sql of migrations) db.exec(sql);
+      migrations.forEach((migration, index) => applyMigration(db, migration, index));
       run("INSERT INTO meta (key, value) VALUES ('schema_version', ?)", String(supportedSchemaVersion));
       const workspaceId = randomUUID();
       const userId = randomUUID();
@@ -558,7 +596,7 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
     const version = schemaVersion();
     if (version > supportedSchemaVersion) throw new Error('This data was saved by a newer version of Frameboard.');
     if (version < supportedSchemaVersion) transaction(() => {
-      for (const sql of migrations.slice(version)) db.exec(sql);
+      migrations.slice(version).forEach((migration, index) => applyMigration(db, migration, version + index));
       recordMissingBaselines();
       run("UPDATE meta SET value = ? WHERE key = 'schema_version'", String(supportedSchemaVersion));
     });

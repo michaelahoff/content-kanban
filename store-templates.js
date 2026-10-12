@@ -5,13 +5,17 @@
 // Exposed through openStore() as store.templates.
 import { youtubeVideoTemplate, validateTemplate, templateSlug, templateIdPattern, contextFields, imageRoles } from './public/card-template.js';
 
-export const templatesMigration = `
+// The table and the project column, separately, so a schema repair can add
+// whichever one a database lacks.
+export const templatesTable = `
   CREATE TABLE card_templates (
     id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL REFERENCES workspaces(id), name TEXT NOT NULL, definition TEXT NOT NULL,
     revision INTEGER NOT NULL DEFAULT 1, builtin INTEGER NOT NULL DEFAULT 0, position INTEGER NOT NULL DEFAULT 0,
-    created_at TEXT NOT NULL, updated_at TEXT NOT NULL, deleted_at TEXT);
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL, deleted_at TEXT);`;
+export const projectTemplateColumn = `
   -- The template new cards in a project use. NULL means the workspace default.
-  ALTER TABLE projects ADD COLUMN template_id TEXT;
+  ALTER TABLE projects ADD COLUMN template_id TEXT;`;
+export const templatesMigration = `${templatesTable}${projectTemplateColumn}
 `;
 
 const fail = (status, message) => { throw Object.assign(new Error(message), { status }); };
