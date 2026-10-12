@@ -5,7 +5,7 @@
 // do. Drafts stay here until Save and are the single source for both modes.
 import { $, escape, icon, toast, smallForm } from './ui.js';
 import { request } from './api.js';
-import { project, projectTemplate, loadPlaybooks, savePlaybook, deletePlaybook, previewLaneRun, checkPlaybookAssets, loadLibraryListing } from './state.js';
+import { project, flow, flowOfLane, flowTemplate, loadPlaybooks, savePlaybook, deletePlaybook, previewLaneRun, checkPlaybookAssets, loadLibraryListing } from './state.js';
 import { renderBoard } from './board.js';
 import { parseDocument, playbookSettings, describeSettings, playbookTemplate, skillTemplate, setFields, skillName, withAssets, withBody } from './playbook-format.js';
 import { deliveryDescription, parseSourceKey, sourceKey } from './library-format.js';
@@ -32,7 +32,9 @@ const modeKey = 'frameboard-playbook-mode';
 const mode = () => { try { return localStorage.getItem(modeKey) === 'markdown' ? 'markdown' : 'form'; } catch { return 'form'; } };
 const setMode = (value) => { try { localStorage.setItem(modeKey, value); } catch { /* Optional display preference. */ } };
 const emptyTemplate = { id: '', name: '', title: { label: 'Card title', max: 500 }, fields: [], imageRoles: [] };
-const template = () => projectTemplate() ?? emptyTemplate;
+// The flow whose playbook folder is open: the board's, or the given lane's.
+let editing = null;
+const template = () => flowTemplate(editing) ?? emptyTemplate;
 const settingsOf = (path) => playbookSettings(parseDocument(textOf(path)), template());
 const control = (action, label, symbol, cls = 'button secondary', attrs = '') => `<button type="button" class="${cls}" data-playbook-action="${action}" ${attrs}>${symbol ? icon(symbol) : ''}${label}</button>`;
 const slug = (name) => String(name).toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'lane';
@@ -40,8 +42,8 @@ const laneDocument = (laneId) => [...saved.values()].find((document) => document
 const currentPath = () => (selection.kind === 'lane' ? laneDocument(selection.laneId)?.path ?? null : selection.path);
 // Lane playbooks whose lane was deleted, that name no lane, or that name a
 // lane another file already claims (the first file by name wins).
-const unattached = () => [...saved.values()].filter((document) => document.path.startsWith('lanes/') && (!project().lanes.some((lane) => lane.id === document.laneId) || laneDocument(document.laneId) !== document));
-const unattachedMeta = (document) => (!document.laneId ? 'No lane: setting' : project().lanes.some((lane) => lane.id === document.laneId) ? 'Another file already claims this lane' : 'Its lane was deleted');
+const unattached = () => [...saved.values()].filter((document) => document.path.startsWith('lanes/') && (!editing.lanes.some((lane) => lane.id === document.laneId) || laneDocument(document.laneId) !== document));
+const unattachedMeta = (document) => (!document.laneId ? 'No lane: setting' : editing.lanes.some((lane) => lane.id === document.laneId) ? 'Another file already claims this lane' : 'Its lane was deleted');
 const textOf = (path) => (drafts.has(path) ? drafts.get(path) : saved.get(path)?.text ?? '');
 const dirty = (path) => drafts.has(path) && drafts.get(path) !== saved.get(path)?.text;
 const runLabel = { 'on-enter': 'Auto', manual: 'Manual', off: 'Off' };
@@ -57,19 +59,21 @@ function remember(listing) {
 export async function openPlaybooks({ laneId = null } = {}) {
   if (busy) return toast('Wait for the playbook save to finish.');
   const p = project();
-  if (!p) return;
+  const f = p && (laneId ? flowOfLane(p, laneId) : flow(p));
+  if (!f) return;
+  editing = f;
   // Drafts survive a close that skipped the discard prompt (a browser can
   // force a dialog shut): reopening the same folder keeps them, flagging
   // any whose file changed meanwhile, as reloadFromDisk does.
   const before = new Map([...saved].map(([path, document]) => [path, document.hash]));
   const previousFolder = folder;
-  try { remember(await loadPlaybooks(p)); } catch (error) { return toast(error.message); }
+  try { remember(await loadPlaybooks(f)); } catch (error) { return toast(error.message); }
   if (folder !== previousFolder) { drafts = new Map(); conflicts = new Set(); }
   else for (const path of drafts.keys()) if (dirty(path) && before.get(path) !== saved.get(path)?.hash) conflicts.add(path);
   resolutions = new Map(); previewing = null; lastFooter = '';
   selection = laneId ? { kind: 'lane', laneId } : { kind: 'map', path: 'MAP.md' };
   void loadModels();
-  dialog.innerHTML = `<header class="playbook-header"><div><div class="playbook-breadcrumb">${escape(p.name)} ${icon('chevron')} Playbooks</div><h2 id="playbook-heading"></h2></div>${control('close', '<span class="sr-only">Close playbooks</span>', 'close', 'icon-button')}</header>
+  dialog.innerHTML = `<header class="playbook-header"><div><div class="playbook-breadcrumb">${escape(p.name)} ${icon('chevron')} ${escape(f.name)} ${icon('chevron')} Playbooks</div><h2 id="playbook-heading"></h2></div>${control('close', '<span class="sr-only">Close playbooks</span>', 'close', 'icon-button')}</header>
     <div class="playbook-workspace"><nav class="playbook-nav" aria-label="Playbook documents"></nav><div class="playbook-main"></div><aside class="playbook-inspector" aria-label="What this document does"></aside></div>
     <footer class="playbook-footer"><p id="playbook-status" role="status"></p><div class="playbook-footer-actions"></div></footer>`;
   render();
@@ -92,14 +96,13 @@ const enabledModels = () => (models ?? []).filter((entry) => entry.enabled)
 const skillNames = () => [...new Set([...saved.keys(), ...drafts.keys()].filter((entry) => entry.startsWith('skills/')).map((entry) => entry.slice(7, -3)))].sort();
 
 function renderNav() {
-  const p = project();
   const item = (attrs, label, meta, active, unsaved) => `<button type="button" class="playbook-nav-item ${active ? 'active' : ''}" ${attrs} ${active ? 'aria-current="true"' : ''}><span>${label}</span>${unsaved ? '<i class="playbook-unsaved" title="Unsaved changes"></i>' : ''}${meta ? `<small>${meta}</small>` : ''}</button>`;
   const skills = [...saved.values()].filter((document) => document.path.startsWith('skills/'));
   const draftSkills = [...drafts.keys()].filter((path) => path.startsWith('skills/') && !saved.has(path));
-  $('.playbook-nav', dialog).innerHTML = `<span class="playbook-nav-heading">Project</span>
-    ${item('data-playbook-action="select" data-kind="map"', 'Project map', 'MAP.md', selection.kind === 'map', dirty('MAP.md'))}
+  $('.playbook-nav', dialog).innerHTML = `<span class="playbook-nav-heading">Flow</span>
+    ${item('data-playbook-action="select" data-kind="map"', 'Flow map', 'MAP.md', selection.kind === 'map', dirty('MAP.md'))}
     <span class="playbook-nav-heading">Lanes</span>
-    ${p.lanes.map((lane) => {
+    ${editing.lanes.map((lane) => {
       const document = laneDocument(lane.id);
       const settings = document && settingsOf(document.path);
       const meta = !document ? 'No playbook' : settings.errors.length ? 'Has errors' : settings.instructions ? runLabel[settings.run] : Object.keys(settings.set).length ? 'Sets fields' : 'Empty';
@@ -112,10 +115,10 @@ function renderNav() {
 }
 
 function heading() {
-  if (selection.kind === 'map') return 'Project map';
+  if (selection.kind === 'map') return 'Flow map';
   if (selection.kind === 'skill') return `Skill · ${selection.path.slice(7, -3)}`;
   if (selection.kind === 'file') return selection.path;
-  return `${project().lanes.find((lane) => lane.id === selection.laneId)?.name ?? 'Lane'} playbook`;
+  return `${editing.lanes.find((lane) => lane.id === selection.laneId)?.name ?? 'Lane'} playbook`;
 }
 
 function renderMain() {
@@ -131,7 +134,7 @@ function renderMain() {
   }
   const path = currentPath();
   if (selection.kind === 'lane' && !path) {
-    const lane = project().lanes.find((item) => item.id === selection.laneId);
+    const lane = editing.lanes.find((item) => item.id === selection.laneId);
     main.innerHTML = `<div class="playbook-empty">${icon('playbook')}<h3>${escape(lane.name)} has no playbook yet</h3><p>A playbook is a Markdown file that says what should happen when a card enters this lane: the work to do, the fields an agent may change and anything to set straight away.</p>${control('create-lane', 'Create playbook', 'plus', 'button primary')}</div>`;
     return;
   }
@@ -161,9 +164,9 @@ function formMarkup(path) {
 }
 function formContext(path) {
   const text = textOf(path); const parsed = parseDocument(text); const settings = playbookSettings(parsed, template());
-  const lane = selection.kind === 'lane' ? project().lanes.find((item) => item.id === selection.laneId) : null;
+  const lane = selection.kind === 'lane' ? editing.lanes.find((item) => item.id === selection.laneId) : null;
   return { text, template: template(), document: parsed, settings, kind: selection.kind, lane: lane ? { id: lane.id, name: lane.name } : null,
-    lanes: project().lanes.map((item) => ({ id: item.id, name: item.name, taken: Boolean(laneDocument(item.id)) })), skillNames: skillNames(), models: enabledModels(), libraryMarkup: libraryMarkup(settings) };
+    lanes: editing.lanes.map((item) => ({ id: item.id, name: item.name, taken: Boolean(laneDocument(item.id)) })), skillNames: skillNames(), models: enabledModels(), libraryMarkup: libraryMarkup(settings) };
 }
 // Refreshes the form alone, e.g. when a Library check completes or the
 // instructions mention another skill, unless the user is working in it.
@@ -193,12 +196,12 @@ function renderInspector() {
     return;
   }
   if (selection.kind === 'file') {
-    inspector.innerHTML = `<h3>Not used by any lane</h3><p class="field-help">Choose a lane in the form, set <code>lane:</code> to a lane's ID in Markdown, or delete the file. Lane IDs: ${project().lanes.map((lane) => `${escape(lane.name)} <code>${escape(lane.id)}</code>`).join(', ')}</p>`;
+    inspector.innerHTML = `<h3>Not used by any lane</h3><p class="field-help">Choose a lane in the form, set <code>lane:</code> to a lane's ID in Markdown, or delete the file. Lane IDs: ${editing.lanes.map((lane) => `${escape(lane.name)} <code>${escape(lane.id)}</code>`).join(', ')}</p>`;
     return;
   }
   if (selection.kind === 'skill') {
     const name = selection.path.slice(7, -3);
-    const users = project().lanes.filter((lane) => {
+    const users = editing.lanes.filter((lane) => {
       const document = laneDocument(lane.id);
       return document && settingsOf(document.path).skills.includes(name);
     });
@@ -206,7 +209,7 @@ function renderInspector() {
     return;
   }
   if (!path) {
-    inspector.innerHTML = `<h3>How lane runs work</h3><ol class="playbook-steps"><li>When a card enters the lane, any <code>set:</code> values apply at once. Undo last move reverses them.</li><li>If the playbook has instructions and <code>run: on-enter</code>, the card chat receives the project map, this playbook, its skills and the card's hand-off notes.</li><li>The agent replies with a result block. Fields listed under <code>may_edit</code> update; other changes and lane moves wait for your review.</li></ol>`;
+    inspector.innerHTML = `<h3>How lane runs work</h3><ol class="playbook-steps"><li>When a card enters the lane, any <code>set:</code> values apply at once. Undo last move reverses them.</li><li>If the playbook has instructions and <code>run: on-enter</code>, the card chat receives the flow map, this playbook, its skills and the card's hand-off notes.</li><li>The agent replies with a result block. Fields listed under <code>may_edit</code> update; other changes and lane moves wait for your review.</li></ol>`;
     return;
   }
   const settings = settingsOf(path);
@@ -214,7 +217,7 @@ function renderInspector() {
   const label = (key) => fields.find((field) => field.key === key)?.label ?? key;
   const knownSkills = new Set(skillNames());
   const roleWords = new Intl.ListFormat('en', { type: 'conjunction' }).format(imageRoles(template()).map((role) => role.label.toLowerCase()));
-  const lane = project().lanes.find((item) => item.id === selection.laneId);
+  const lane = editing.lanes.find((item) => item.id === selection.laneId);
   inspector.innerHTML = `<h3>${escape(describeSettings(settings, template()))}</h3>
     ${settings.errors.length ? `<div class="playbook-problems" role="alert"><strong>Fix before this lane can run</strong><ul>${settings.errors.map((error) => `<li>${escape(error)}</li>`).join('')}</ul></div>` : ''}
     ${settings.warnings.length ? `<ul class="playbook-warnings">${settings.warnings.map((warning) => `<li>${escape(warning)}</li>`).join('')}</ul>` : ''}
@@ -244,7 +247,7 @@ function resolution(keys) {
   const key = keys.join(',');
   if (!resolutions.has(key)) {
     resolutions.set(key, { loading: true });
-    checkPlaybookAssets(project(), keys).then((result) => resolutions.set(key, result), (error) => resolutions.set(key, { error: error.message }))
+    checkPlaybookAssets(editing, keys).then((result) => resolutions.set(key, result), (error) => resolutions.set(key, { error: error.message }))
       .finally(() => { if (dialog.open && !previewing) { renderInspector(); refreshForm(); } });
   }
   return resolutions.get(key);
@@ -312,13 +315,13 @@ async function save() {
   busy = true;
   renderFooter();
   try {
-    const document = await savePlaybook(project(), path, submittedText, saved.get(path)?.hash ?? null);
+    const document = await savePlaybook(editing, path, submittedText, saved.get(path)?.hash ?? null);
     saved.set(path, { ...document, laneId: path.startsWith('lanes/') ? parseDocument(document.text).data.lane ?? null : undefined });
     if (drafts.get(path) === submittedText) drafts.delete(path);
     conflicts.delete(path);
     // A file attached to a lane with the form now lives under that lane.
     const laneId = saved.get(path).laneId;
-    if (selection.kind === 'file' && laneId && project().lanes.some((lane) => lane.id === laneId)) selection = { kind: 'lane', laneId };
+    if (selection.kind === 'file' && laneId && editing.lanes.some((lane) => lane.id === laneId)) selection = { kind: 'lane', laneId };
     renderBoard();
     toast(`${name} saved.`);
   } catch (error) {
@@ -330,7 +333,7 @@ async function save() {
 // Newer saved copies replace ours; a draft based on an older copy is flagged.
 async function reloadFromDisk() {
   const before = new Map([...saved].map(([path, document]) => [path, document.hash]));
-  remember(await loadPlaybooks(project()));
+  remember(await loadPlaybooks(editing));
   resolutions = new Map();
   for (const path of drafts.keys()) if (dirty(path) && before.get(path) !== saved.get(path)?.hash) conflicts.add(path);
   const path = currentPath();
@@ -433,12 +436,12 @@ dialog.addEventListener('click', async (event) => {
     if (action === 'revert') { drafts.delete(currentPath()); conflicts.delete(currentPath()); render(); }
     if (action === 'copy-folder') { await navigator.clipboard.writeText(folder); toast('Folder path copied.'); }
     if (action === 'create-lane') {
-      const lane = project().lanes.find((item) => item.id === selection.laneId);
+      const lane = editing.lanes.find((item) => item.id === selection.laneId);
       let path = `lanes/${slug(lane.name)}.md`;
       for (let index = 2; saved.has(path); index++) path = `lanes/${slug(lane.name)}-${index}.md`;
       busy = true;
       try {
-        const document = await savePlaybook(project(), path, playbookTemplate(lane), null);
+        const document = await savePlaybook(editing, path, playbookTemplate(lane), null);
         saved.set(path, { ...document, laneId: lane.id });
       } finally { busy = false; }
       renderBoard(); render();
@@ -452,7 +455,7 @@ dialog.addEventListener('click', async (event) => {
           if (!skillName.test(name)) throw new Error('Use letters, numbers, - and _ only.');
           const path = `skills/${name}.md`;
           if (saved.has(path)) throw new Error('A skill with that name already exists.');
-          const document = await savePlaybook(project(), path, skillTemplate(name), null);
+          const document = await savePlaybook(editing, path, skillTemplate(name), null);
           saved.set(path, document);
           select({ kind: 'skill', path });
         } });
@@ -461,7 +464,7 @@ dialog.addEventListener('click', async (event) => {
       const path = currentPath();
       smallForm({ title: `Delete ${path}?`, description: selection.kind === 'lane' ? 'The lane keeps its cards. Cards entering it will no longer run anything until you create a new playbook.' : 'Lanes that mention this skill will include a note that it is missing.',
         submit: 'Delete file', danger: true, onSubmit: async () => {
-          await deletePlaybook(project(), path, saved.get(path).hash);
+          await deletePlaybook(editing, path, saved.get(path).hash);
           saved.delete(path); drafts.delete(path);
           if (selection.kind === 'skill' || selection.kind === 'file') selection = { kind: 'map', path: 'MAP.md' };
           renderBoard(); render();
@@ -469,7 +472,7 @@ dialog.addEventListener('click', async (event) => {
     }
     if (action === 'preview') {
       const cardId = $('#playbook-preview-card').value;
-      const card = project().lanes.flatMap((lane) => lane.cards).find((item) => item.id === cardId);
+      const card = editing.lanes.flatMap((lane) => lane.cards).find((item) => item.id === cardId);
       const result = await previewLaneRun(cardId);
       // With no draft to keep, a newer saved file replaces the editor's copy.
       const newer = Boolean(result.path && result.hash && !dirty(result.path) && saved.get(result.path)?.hash !== result.hash);

@@ -199,8 +199,30 @@
   .project-link > span:first-of-type { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .project-link .icon { width: 20px; height: 20px; }
   .project-link:hover { background: var(--raised); }
-  .project-link.active { background: var(--raised); font-weight: 500; }
-  .project-link.active:hover { background: var(--raised-hover); }
+  .project-link.active { font-weight: 500; }
+  /* A project's flows, nested under it. The current flow carries the highlight. */
+  .flow-list { display: grid; gap: 1px; margin: 0 0 8px 21px; padding: 0 0 0 10px; list-style: none; border-left: 1px solid var(--border); }
+  .flow-row { display: flex; align-items: center; border-radius: 8px; }
+  .flow-row:hover { background: var(--raised); }
+  .flow-row.active { background: var(--raised); }
+  .flow-row.active:hover { background: var(--raised-hover); }
+  .flow-link { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; min-height: 32px; padding: 0 4px 0 10px; text-align: left; font-size: 13px; color: var(--muted); }
+  .flow-link > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .flow-row:hover .flow-link, .flow-row.active .flow-link { color: var(--text); }
+  .flow-row.active .flow-link { font-weight: 500; }
+  .flow-count { margin-left: auto; font-size: 12px; font-weight: 400; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .flow-row .icon-button { flex: none; width: 28px; height: 28px; opacity: 0; }
+  .flow-row .icon-button .icon { width: 16px; height: 16px; }
+  .flow-row:hover .icon-button, .flow-row:focus-within .icon-button, .flow-row.active .icon-button { opacity: 1; }
+  .flow-link.drag-over { color: var(--text); border-radius: 8px; box-shadow: inset 0 0 0 2px var(--accent); }
+  /* Quiet until pointed at, then plainly a button. */
+  .add-flow-link { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 30px; margin-top: 2px; padding: 0 10px; border: 1px solid transparent; border-radius: 8px; font-size: 12px; color: var(--muted); opacity: .55;
+    transition: opacity .12s ease, color .12s ease, background-color .12s ease, border-color .12s ease; }
+  .add-flow-link .icon { width: 14px; height: 14px; }
+  .add-flow-link:hover, .add-flow-link:focus-visible { opacity: 1; color: var(--text); background: var(--raised); border-color: var(--field-border); cursor: pointer; }
+  .add-flow-link:hover .icon, .add-flow-link:focus-visible .icon { color: var(--accent); }
+  .add-flow-link:active { background: var(--raised-hover); }
+  @media (prefers-reduced-motion: reduce) { .add-flow-link { transition: none; } }
   .project-count { margin-left: auto; min-width: 20px; font-size: 12px; font-weight: 400; text-align: right; color: var(--muted); font-variant-numeric: tabular-nums; }
   .sidebar-bottom { display: grid; gap: 14px; justify-items: start; margin-top: auto; padding: 20px 12px 0; border-top: 1px solid var(--border); }
   .theme-switch { display: flex; gap: 8px; }
@@ -219,12 +241,13 @@
   .archived-badge { padding: 2px 10px; border-radius: 6px; background: var(--raised); color: var(--muted); font-size: 12px; font-weight: 500; }
   .archived-banner { margin: 0 32px 18px; padding: 12px 16px; border-radius: 12px; background: var(--raised); color: var(--muted); font-size: 14px; }
   #card-dialog .archived-banner { margin: 0 24px 12px; }
-  .archived-projects .project-link { opacity: .7; }
+  .archived-projects .project-link, .archived-projects .flow-list { opacity: .7; }
   .header-actions { display: flex; flex-wrap: wrap; gap: 8px; flex-shrink: 0; }
   .board-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 20px; margin: 0 32px; border-bottom: 1px solid var(--border); min-height: 48px; }
   .board-tab { display: flex; gap: 8px; align-items: center; align-self: stretch; padding: 0 4px; font-size: 16px; font-weight: 500; color: var(--text); border-bottom: 2px solid var(--accent); margin-bottom: -1px; }
   .board-tab > .icon { width: 18px; height: 18px; }
   .board-tab > span { min-width: 22px; padding: 1px 7px; border-radius: 10px; background: var(--raised); color: var(--muted); font-size: 12px; font-weight: 500; text-align: center; font-variant-numeric: tabular-nums; }
+  .board-tab { white-space: nowrap; }
   .board-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
   .paste-hint { display: flex; gap: 6px; align-items: center; margin-inline: 6px; color: var(--muted); font-size: 12px; }
   .paste-hint .icon { width: 16px; height: 16px; }

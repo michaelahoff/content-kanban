@@ -184,6 +184,6 @@ test('an empty selection adds no Library inputs and keeps every gallery photo, t
   assert.deepEqual(submission.context.images.map((image) => image.id), images.map((image) => image.id));
   assert.deepEqual(submission.context.library, []);
   const sent = send.input.filter((entry) => entry.type === 'text').map((entry) => entry.text).join('\n');
-  assert.ok(sent.includes('## Project map (MAP.md)') && sent.includes('# Skill voice: be warm.'));
+  assert.ok(sent.includes('## Flow map (MAP.md)') && sent.includes('# Skill voice: be warm.'));
   assert.ok(!sent.includes('LIBRARY VOICE'));
 });

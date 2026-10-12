@@ -62,9 +62,9 @@ export function createPlaybooks({ dataDir }) {
   const api = {
     root: flowRoot,
     // Creates the folder with a starter map the first time a flow is used.
-    ensure(flowId, { projectName, lanes, template }) {
+    ensure(flowId, { flowName, lanes, template }) {
       const filename = resolve(flowId, 'MAP.md');
-      if (!existsSync(filename)) writeText(filename, mapTemplate(projectName, lanes, template));
+      if (!existsSync(filename)) writeText(filename, mapTemplate(flowName, lanes, template));
       for (const folder of ['lanes', 'skills']) mkdirSync(path.join(flowRoot(flowId), folder), { recursive: true });
     },
     read(flowId, relative) { return documentFrom(relative, readText(resolve(flowId, relative))); },

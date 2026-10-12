@@ -118,7 +118,8 @@ export function createProtectionStore({ all, get, run, transaction, requireCard,
         const card = requireCard(ctx, a.card_id);
         let result;
         if (tool === 'read_card') result = { card, fieldVersions: versions(card.id), placementVersion: card.placementVersion,
-          lanes: all('SELECT s.id, s.name FROM stages s JOIN projects p ON p.flow_id = s.flow_id WHERE p.id = ? AND s.deleted_at IS NULL ORDER BY s.position', card.projectId) };
+          lanes: all(`SELECT s.id, s.name, f.name AS flow FROM stages s JOIN flows f ON f.id = s.flow_id
+            WHERE f.project_id = ? AND f.deleted_at IS NULL AND s.deleted_at IS NULL ORDER BY f.position, f.rowid, s.position`, card.projectId) };
         else if (tool === 'edit_fields' || tool === 'propose_changes') {
           const submission = JSON.parse(get('SELECT frozen FROM chat_submissions WHERE id = ?', a.submission_id).frozen);
           const bases = input.baseVersions ?? Object.fromEntries(submission.context.fields.map((f) => [f.key, f.version]));
@@ -140,7 +141,8 @@ export function createProtectionStore({ all, get, run, transaction, requireCard,
           result = { applied: Object.keys(applied), proposalId };
         } else if (tool === 'propose_move') {
           check(typeof input.toStageId === 'string', 'Choose a destination lane.');
-          const target = get('SELECT s.id FROM stages s JOIN projects p ON p.flow_id = s.flow_id WHERE p.id = ? AND s.id = ? AND s.deleted_at IS NULL', card.projectId, input.toStageId);
+          // Any lane of a live flow in the card's project, as for a move.
+          const target = get('SELECT s.id FROM stages s JOIN flows f ON f.id = s.flow_id WHERE f.project_id = ? AND s.id = ? AND f.deleted_at IS NULL AND s.deleted_at IS NULL', card.projectId, input.toStageId);
           check(target, 'Choose a lane in this project.');
           result = { proposalId: proposal(ctx, a, 'move', { toStageId: input.toStageId, placementVersion: card.placementVersion, fieldVersions: versions(card.id) }) };
         } else if (tool === 'register_image' && artifact) {

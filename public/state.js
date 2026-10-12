@@ -5,7 +5,8 @@ import { emptyFields, emptyImageRoles, editorFields, normalizeCard } from './car
 import { id, showEdited } from './ui.js';
 
 // `templates` holds the workspace's card template definitions by ID.
-export const state = { projects: [], projectId: null, cardId: null, uploads: 0, undoingCardId: null, templates: [] };
+// `flowIds` remembers the flow shown for each project, by project ID.
+export const state = { projects: [], projectId: null, flowIds: {}, cardId: null, uploads: 0, undoingCardId: null, templates: [] };
 const dirty = new Set();
 const queuedCards = new Set();
 const conflicts = new Map();
@@ -75,25 +76,31 @@ export function hasUnsavedWork() {
 }
 
 export function project() { return state.projects.find((item) => item.id === state.projectId); }
+// A project holds one or more flows, each a board of lanes. The board shows
+// one flow at a time; a card can move to a lane of any flow in its project.
+export function flow(p = project()) { return p?.flows.find((item) => item.id === state.flowIds[p.id]) ?? p?.flows[0] ?? null; }
+export const lanesOf = (p) => p.flows.flatMap((item) => item.lanes);
+export const flowOfLane = (p, laneId) => p.flows.find((item) => item.lanes.some((lane) => lane.id === laneId)) ?? null;
 export function locateCard(targetId = state.cardId) {
-  for (const p of state.projects) for (const lane of p.lanes) {
+  for (const p of state.projects) for (const f of p.flows) for (const lane of f.lanes) {
     const card = lane.cards.find((item) => item.id === targetId);
-    if (card) return { card, lane, project: p };
+    if (card) return { card, lane, flow: f, project: p };
   }
   return null;
 }
-export function cardCount(p) { return p.loaded ? p.lanes.reduce((sum, lane) => sum + lane.cards.length, 0) : p.cardCount; }
+export function cardCount(p) { return p.loaded ? lanesOf(p).reduce((sum, lane) => sum + lane.cards.length, 0) : p.cardCount; }
+export const flowCardCount = (f) => f.lanes.reduce((sum, lane) => sum + lane.cards.length, 0);
 // Card template definitions come with the workspace. A card keeps the template
-// it was created with; a project names the template for its new cards.
+// it was created with; a flow names the template for its new cards.
 export const templateById = (templateId) => state.templates.find((template) => template.id === templateId) ?? null;
 export function templateOf(card) {
   return templateById(card.template) ?? { id: card.template, name: card.template, title: { label: 'Card title', max: 500 }, fields: [], imageRoles: [] };
 }
-export const projectTemplate = (p = project()) => templateById(p?.templateId) ?? state.templates[0] ?? null;
+export const flowTemplate = (f = flow()) => templateById(f?.templateId) ?? state.templates[0] ?? null;
 export function applyTemplates(templates) {
   state.templates = templates;
   let dropped = false;
-  for (const p of state.projects) for (const lane of p.lanes) for (const card of lane.cards) {
+  for (const p of state.projects) for (const lane of lanesOf(p)) for (const card of lane.cards) {
     const fields = Object.keys(card.fields); const roles = Object.keys(card.imageRoles);
     const template = templateOf(card);
     Object.assign(card, normalizeCard(template, card));
@@ -121,17 +128,18 @@ export function searchText(card) {
 }
 
 const toLane = (stage) => ({ ...stage, cards: [] });
+const toFlow = ({ stages, ...rest }) => ({ ...rest, lanes: stages.map(toLane) });
 export async function loadWorkspace() {
   const { projects, flows, templates } = await request('/api/workspace');
   state.templates = templates ?? [];
-  state.projects = projects.map((item) => ({ ...item, loaded: false, lanes: flows.find((flow) => flow.id === item.flowId).stages.map(toLane) }));
+  state.projects = projects.map(({ flowId, ...item }) => ({ ...item, loaded: false, flows: flows.filter((entry) => entry.projectId === item.id).map(toFlow) }));
 }
 export const loadTemplates = async () => applyTemplates((await request('/api/templates')).templates);
 export async function loadCards(projectId) {
   const p = state.projects.find((item) => item.id === projectId);
   if (!p || p.loaded) return;
   const { cards } = await request(`${url('projects', projectId)}/cards`);
-  for (const lane of p.lanes) { lane.cards = cards.filter((card) => card.stageId === lane.id); lane.cards.forEach(rememberSaved); }
+  for (const lane of lanesOf(p)) { lane.cards = cards.filter((card) => card.stageId === lane.id); lane.cards.forEach(rememberSaved); }
   p.loaded = true;
 }
 
@@ -258,7 +266,7 @@ export function refreshSavedCard(saved) {
   }
   card.revision = saved.revision;
   if (saved.placementVersion !== card.placementVersion) {
-    const destination = found.project.lanes.find((lane) => lane.id === saved.stageId);
+    const destination = lanesOf(found.project).find((lane) => lane.id === saved.stageId);
     if (destination) {
       found.lane.cards = found.lane.cards.filter((c) => c.id !== card.id);
       card.stageId = saved.stageId; card.position = saved.position;
@@ -272,7 +280,7 @@ export function refreshSavedCard(saved) {
 
 export function createCard(lane, p = project()) {
   const at = now();
-  const template = projectTemplate(p);
+  const template = flowTemplate(flowOfLane(p, lane.id));
   const card = { id: id(), projectId: p.id, stageId: lane.id, template: template.id, title: '', fields: emptyFields(template), images: [], imageRoles: emptyImageRoles(template), revision: 1, lastMove: null, enteredStageAt: at, createdAt: at, updatedAt: at };
   rememberSaved(card);
   lane.cards.push(card);
@@ -286,11 +294,11 @@ export function createCard(lane, p = project()) {
   return card;
 }
 
-// Moves a card before another card, or to the end of a lane. Returns false
-// when the card is already there.
+// Moves a card before another card, or to the end of a lane, which may be in
+// another flow of its project. Returns false when the card is already there.
 export function moveCard(targetId, laneId, beforeId = null) {
   const source = locateCard(targetId);
-  const destination = source?.project.lanes.find((lane) => lane.id === laneId);
+  const destination = source && lanesOf(source.project).find((lane) => lane.id === laneId);
   if (!source || !destination || targetId === beforeId || state.undoingCardId === targetId) return false;
   const oldIndex = source.lane.cards.indexOf(source.card);
   source.lane.cards.splice(oldIndex, 1);
@@ -321,8 +329,9 @@ export function moveCard(targetId, laneId, beforeId = null) {
   return true;
 }
 
+// Across the whole project, so a move to another flow can be undone from where it started.
 export function latestMoveCard(p = project()) {
-  return p?.lanes.flatMap((lane) => lane.cards).filter((card) => card.lastMove)
+  return (p ? lanesOf(p) : []).flatMap((lane) => lane.cards).filter((card) => card.lastMove)
     .sort((a, b) => b.lastMove.id - a.lastMove.id)[0] ?? null;
 }
 export async function undoLastMove(cardId, moveId = locateCard(cardId)?.card.lastMove?.id) {
@@ -339,7 +348,7 @@ export async function undoLastMove(cardId, moveId = locateCard(cardId)?.card.las
       const previousValues = contentValues(card);
       const result = await send('POST', `${url('cards', cardId)}/undo-move`, { moveId, revision: card.revision, fieldVersions: card.fieldVersions, placementVersion: card.placementVersion });
       const current = locateCard(cardId);
-      const destination = current?.project.lanes.find((lane) => lane.id === result.card.stageId);
+      const destination = current && lanesOf(current.project).find((lane) => lane.id === result.card.stageId);
       if (!current || !destination) return;
       current.lane.cards.splice(current.lane.cards.indexOf(card), 1);
       const index = destination.cards.findIndex((item) => item.id === result.beforeCardId);
@@ -372,56 +381,60 @@ export function deleteCard(cardId) {
   enqueue(() => send('DELETE', url('cards', cardId)));
 }
 
-export function addLane(p, { name, color }) {
-  const lane = toLane({ id: id(), flowId: p.flowId, name, color, playbook: null, position: p.lanes.length, instructions: '', exitCriteria: [], approveTo: null, sendBackTo: null, automations: [] });
-  p.lanes.push(lane);
-  enqueue(() => send('POST', `${url('flows', p.flowId)}/stages`, { id: lane.id, name, color }));
+// Lanes belong to a flow; `f` is a flow from a project's `flows`.
+export function addLane(f, { name, color }) {
+  const lane = toLane({ id: id(), flowId: f.id, name, color, playbook: null, position: f.lanes.length, instructions: '', exitCriteria: [], approveTo: null, sendBackTo: null, automations: [] });
+  f.lanes.push(lane);
+  enqueue(() => send('POST', `${url('flows', f.id)}/stages`, { id: lane.id, name, color }));
 }
-export function updateLane(p, lane, { name, color, position }) {
+export function updateLane(f, lane, { name, color, position }) {
   Object.assign(lane, { name, color });
-  p.lanes.splice(p.lanes.indexOf(lane), 1);
-  p.lanes.splice(position, 0, lane);
-  p.lanes.forEach((item, index) => { item.position = index; });
+  f.lanes.splice(f.lanes.indexOf(lane), 1);
+  f.lanes.splice(position, 0, lane);
+  f.lanes.forEach((item, index) => { item.position = index; });
   enqueue(() => send('PATCH', url('stages', lane.id), { name, color, position }));
 }
-// Lane playbooks, the project map and skills are files on the server. Saves
-// queue behind earlier writes (a new lane exists before its playbook) and
-// carry the hash they were based on, so newer edits on disk are not lost.
-export function applyStages(p, stages) {
+// Lane playbooks, the flow map and skills are files on the server, one folder
+// per flow. Saves queue behind earlier writes (a new lane exists before its
+// playbook) and carry the hash they were based on, so newer edits on disk are
+// not lost.
+export function applyStages(f, stages) {
   for (const stage of stages) {
-    const lane = p.lanes.find((item) => item.id === stage.id);
+    const lane = f.lanes.find((item) => item.id === stage.id);
     if (lane) lane.playbook = stage.playbook;
   }
 }
-export const loadPlaybooks = (p) => request(`${url('flows', p.flowId)}/playbooks`);
-export async function savePlaybook(p, path, text, baseHash) {
-  const saved = await enqueue(() => send('PUT', `${url('flows', p.flowId)}/playbooks`, { path, text, baseHash }), undefined, { rejectOnError: true });
-  applyStages(p, saved.stages);
+export const loadPlaybooks = (f) => request(`${url('flows', f.id)}/playbooks`);
+export async function savePlaybook(f, path, text, baseHash) {
+  const saved = await enqueue(() => send('PUT', `${url('flows', f.id)}/playbooks`, { path, text, baseHash }), undefined, { rejectOnError: true });
+  applyStages(f, saved.stages);
   return saved.document;
 }
-export async function deletePlaybook(p, path, baseHash) {
-  const saved = await enqueue(() => send('DELETE', `${url('flows', p.flowId)}/playbooks`, { path, baseHash }), undefined, { rejectOnError: true });
-  applyStages(p, saved.stages);
+export async function deletePlaybook(f, path, baseHash) {
+  const saved = await enqueue(() => send('DELETE', `${url('flows', f.id)}/playbooks`, { path, baseHash }), undefined, { rejectOnError: true });
+  applyStages(f, saved.stages);
 }
 export const laneRuns = (cardId) => request(`${url('cards', cardId)}/lane-runs`);
 export const runPlaybook = (cardId) => enqueue(() => send('POST', `${url('cards', cardId)}/lane-runs`, {}), undefined, { rejectOnError: true });
 export const previewLaneRun = (cardId) => request(`${url('cards', cardId)}/lane-runs/preview`);
-// How a playbook draft's Library sources resolve in its project, and the Library to choose from.
-export const checkPlaybookAssets = (p, keys) => request(`${url('flows', p.flowId)}/playbooks/assets?${new URLSearchParams({ sources: keys.join(',') })}`);
+// How a playbook draft's Library sources resolve in its flow's project, and the Library to choose from.
+export const checkPlaybookAssets = (f, keys) => request(`${url('flows', f.id)}/playbooks/assets?${new URLSearchParams({ sources: keys.join(',') })}`);
 export const loadLibraryListing = (p) => request(`${url('projects', p.id)}/library`);
 export const loadNotes = (cardId) => request(`${url('cards', cardId)}/notes`);
 export const saveNotes = (cardId, text, baseHash) => enqueue(() => send('PUT', `${url('cards', cardId)}/notes`, { text, baseHash }), undefined, { rejectOnError: true });
-export function deleteLane(p, laneId) {
-  const lane = p.lanes.find((item) => item.id === laneId);
-  lane.cards.forEach((card) => { dirty.delete(card.id); conflicts.delete(card.id); });
-  p.lanes = p.lanes.filter((item) => item.id !== laneId);
+function forgetCards(lanes) {
+  lanes.forEach((lane) => lane.cards.forEach((card) => { dirty.delete(card.id); conflicts.delete(card.id); }));
+}
+export function deleteLane(f, laneId) {
+  forgetCards(f.lanes.filter((item) => item.id === laneId));
+  f.lanes = f.lanes.filter((item) => item.id !== laneId);
   enqueue(() => send('DELETE', url('stages', laneId)));
 }
 
-// Projects get their default lanes from the server, so creation waits for it.
+// Projects and flows get their default lanes from the server, so creation waits for it.
 export async function createProject(name, templateId = undefined) {
-  const { project: created, flow } = await enqueue(() => send('POST', '/api/projects', { id: id(), name, ...(templateId ? { templateId } : {}) }));
-  const p = { ...created, loaded: true, lanes: flow.stages.map(toLane) };
+  const { project: { flowId, ...created }, flow: first } = await enqueue(() => send('POST', '/api/projects', { id: id(), name, ...(templateId ? { templateId } : {}) }));
+  const p = { ...created, loaded: true, flows: [toFlow(first)] };
   state.projects.push(p);
   return p;
 }
@@ -429,10 +442,35 @@ export function renameProject(p, name) {
   p.name = name;
   enqueue(() => send('PATCH', url('projects', p.id), { name }));
 }
-// The template new cards in this project use. Existing cards keep theirs.
-export function setProjectTemplate(p, templateId) {
-  p.templateId = templateId;
-  enqueue(() => send('PATCH', url('projects', p.id), { templateId }));
+export function selectFlow(p, flowId) {
+  state.flowIds[p.id] = flowId;
+  try { localStorage.setItem('frameboard-flows', JSON.stringify(state.flowIds)); } catch { /* Optional preference. */ }
+}
+export function restoreFlowSelection() {
+  try { Object.assign(state.flowIds, JSON.parse(localStorage.getItem('frameboard-flows') || '{}')); } catch { /* Optional preference. */ }
+}
+export async function createFlow(p, name, templateId = undefined) {
+  const created = await enqueue(() => send('POST', `${url('projects', p.id)}/flows`, { id: id(), name, ...(templateId ? { templateId } : {}) }), undefined, { rejectOnError: true });
+  const f = toFlow(created);
+  p.flows.push(f);
+  return f;
+}
+// A flow's name, its place among the project's flows, and the template its
+// new cards use. Existing cards keep their template.
+export function updateFlow(p, f, { name = f.name, templateId = f.templateId, position = p.flows.indexOf(f) }) {
+  const changes = { ...(name !== f.name ? { name } : {}), ...(templateId !== f.templateId ? { templateId } : {}), ...(position !== p.flows.indexOf(f) ? { position } : {}) };
+  if (!Object.keys(changes).length) return;
+  Object.assign(f, { name, templateId });
+  p.flows.splice(p.flows.indexOf(f), 1);
+  p.flows.splice(position, 0, f);
+  p.flows.forEach((item, index) => { item.position = index; });
+  enqueue(() => send('PATCH', url('flows', f.id), changes));
+}
+// Deleting a flow deletes its cards; the server keeps at least one flow.
+export async function deleteFlow(p, f) {
+  await enqueue(() => send('DELETE', url('flows', f.id)), undefined, { rejectOnError: true });
+  forgetCards(f.lanes);
+  p.flows = p.flows.filter((item) => item !== f);
 }
 // Card templates are workspace settings, independent of card writes, so they
 // are sent directly rather than queued behind a card save that may be failing.
@@ -450,7 +488,7 @@ export async function unarchiveProject(p) {
   p.archivedAt = archivedAt;
 }
 export function deleteProject(p) {
-  p.lanes.forEach((lane) => lane.cards.forEach((card) => { dirty.delete(card.id); conflicts.delete(card.id); }));
+  forgetCards(lanesOf(p));
   state.projects = state.projects.filter((item) => item.id !== p.id);
   enqueue(() => send('DELETE', url('projects', p.id)));
 }
@@ -459,7 +497,7 @@ export const hasPromptField = (card) => templateOf(card).fields.some((field) => 
 export const promptLimit = (card) => templateOf(card).fields.find((field) => field.key === 'prompt')?.max ?? null;
 // Throws before any card changes when the prompt is too long for one of them.
 export function setProjectPrompt(p, prompt) {
-  const cards = p.lanes.flatMap((lane) => lane.cards).filter(hasPromptField);
+  const cards = lanesOf(p).flatMap((lane) => lane.cards).filter(hasPromptField);
   for (const card of cards) if (prompt.length > promptLimit(card)) throw new Error(`Prompts for “${templateOf(card).name}” cards can be up to ${promptLimit(card).toLocaleString()} characters. Nothing was changed.`);
   for (const card of cards) {
     card.fields.prompt = prompt;

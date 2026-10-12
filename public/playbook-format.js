@@ -431,14 +431,14 @@ export function describeSettings(settings, template) {
 }
 
 // --- Starter documents -----------------------------------------------------
-export function mapTemplate(projectName, lanes, template) {
-  return `# ${projectName} — project map
+export function mapTemplate(flowName, lanes, template) {
+  return `# ${flowName} — flow map
 
-Every lane run reads this file first. Describe what this project is for and how the lanes fit together, so an agent always knows where it is.
+Every lane run in this flow reads this file first. Describe what this flow is for and how its lanes fit together, so an agent always knows where it is.
 
 ## What we make
 
-(Describe the project: the audience, the format, the voice.)
+(Describe what this flow produces: the audience, the format, the voice.)
 
 ## Lanes, in order
 
@@ -479,7 +479,7 @@ export function skillTemplate(name) {
 export const resultTag = 'frameboard-result';
 const maxLaneOutputs = 20;
 
-export function composeLanePrompt({ projectName, laneName, lanes, trigger = 'enter', map, playbook, skills = [], notes = '', settings, template }) {
+export function composeLanePrompt({ projectName, flowName, laneName, lanes, trigger = 'enter', map, playbook, skills = [], notes = '', settings, template }) {
   const fields = setFields(template).filter((field) => field.editor !== false);
   const label = (key) => fields.find((field) => field.key === key)?.label ?? key;
   // The example names a long-text field when there is one, never a URL or the title.
@@ -487,8 +487,8 @@ export function composeLanePrompt({ projectName, laneName, lanes, trigger = 'ent
   const roles = imageRoles(template).filter((role) => role.key !== 'cover').map((role) => role.label.toLowerCase());
   const trimmedNotes = notes.length > notesInPrompt ? `…(earlier notes omitted)\n${notes.slice(-notesInPrompt)}` : notes;
   const sections = [
-    `You are working on one card in the Frameboard project “${projectName}”. ${trigger === 'manual' ? `The user asked you to run the “${laneName}” lane playbook for it.` : `The card just entered the “${laneName}” lane.`} Follow that lane's playbook below.`,
-    map?.text.trim() ? `## Project map (${map.path})\n\n${map.text.trim()}` : '',
+    `You are working on one card in the Frameboard project “${projectName}”${flowName ? `, in its “${flowName}” flow` : ''}. ${trigger === 'manual' ? `The user asked you to run the “${laneName}” lane playbook for it.` : `The card just entered the “${laneName}” lane.`} Follow that lane's playbook below.`,
+    map?.text.trim() ? `## Flow map (${map.path})\n\n${map.text.trim()}` : '',
     `## Lane playbook: ${laneName} (${playbook.path})\n\n${settings.instructions}`,
     ...skills.map((skill) => (skill.text === null ? `## Skill ${skill.name}\n\n(skills/${skill.name}.md does not exist yet.)` : `## Skill: ${skill.name} (${skill.path})\n\n${skill.text.trim()}`)),
     `## Hand-off notes (notes.md)\n\n${trimmedNotes.trim() || 'No notes yet. This is the first lane run that leaves notes for this card.'}`,

@@ -1,5 +1,5 @@
 // Card templates live in the database: one row per template with its JSON
-// definition, revision-checked saves, and the project default for new cards.
+// definition, revision-checked saves, and each flow's default for new cards.
 // Cards keep their values by field key in cards.fields, so a template change
 // touches cards only to add the keys it gained (and their field versions).
 // Exposed through openStore() as store.templates.
@@ -36,8 +36,10 @@ export function createTemplateStore({ all, get, run, transaction, recordChange, 
   };
   const live = (workspaceId) => all('SELECT * FROM card_templates WHERE workspace_id = ? AND deleted_at IS NULL ORDER BY position, rowid', workspaceId).map(definitionFrom);
   const stored = ({ title, fields, imageRoles }) => JSON.stringify({ title, fields, imageRoles });
+  const liveFlows = (id) => all(`SELECT f.name, p.name AS project FROM flows f JOIN projects p ON p.id = f.project_id
+    WHERE f.template_id = ? AND f.deleted_at IS NULL AND p.deleted_at IS NULL ORDER BY p.position, f.position`, id);
   const api = {
-    // Every workspace has the built-in template, and every project a default.
+    // Every workspace has the built-in template, and every flow a default.
     // Runs after migrations and on first start, inside the opening transaction.
     seed(workspaceId) {
       const at = now();
@@ -45,13 +47,14 @@ export function createTemplateStore({ all, get, run, transaction, recordChange, 
       run(`INSERT OR IGNORE INTO card_templates (id, workspace_id, name, definition, revision, builtin, position, created_at, updated_at)
         VALUES (?, ?, ?, ?, 1, 1, 0, ?, ?)`, youtubeVideoTemplate.id, workspaceId, youtubeVideoTemplate.name, stored({ title, fields, imageRoles }), at, at);
       run('UPDATE projects SET template_id = ? WHERE workspace_id = ? AND template_id IS NULL', youtubeVideoTemplate.id, workspaceId);
+      run('UPDATE flows SET template_id = ? WHERE workspace_id = ? AND template_id IS NULL', youtubeVideoTemplate.id, workspaceId);
       cache.clear();
     },
-    // Live templates, with how many cards and projects use each.
+    // Live templates, with how many cards use each and how many flows use it for new cards.
     list(ctx) {
       return live(ctx.workspaceId).map((template) => ({ ...template,
         cardCount: get('SELECT COUNT(*) AS count FROM cards c JOIN projects p ON p.id = c.project_id WHERE c.template = ? AND c.deleted_at IS NULL AND p.deleted_at IS NULL', template.id).count,
-        projectCount: get('SELECT COUNT(*) AS count FROM projects WHERE template_id = ? AND deleted_at IS NULL', template.id).count }));
+        flowCount: liveFlows(template.id).length }));
     },
     // The template for new cards: the built-in one while it exists, else the first.
     defaultId(ctx) {
@@ -125,14 +128,14 @@ export function createTemplateStore({ all, get, run, transaction, recordChange, 
         return api.list(ctx).find((entry) => entry.id === id);
       });
     },
-    // A template in use by cards or as a project default stays; the last one too.
+    // A template in use by cards or as a flow's default stays; the last one too.
     remove(ctx, id) {
       api.requireLive(ctx, id);
       return transaction(() => {
         const cards = get('SELECT COUNT(*) AS count FROM cards c JOIN projects p ON p.id = c.project_id WHERE c.template = ? AND c.deleted_at IS NULL AND p.deleted_at IS NULL', id).count;
         if (cards) fail(409, `${cards} ${cards === 1 ? 'card uses' : 'cards use'} this template. Delete those cards, or keep the template.`);
-        const projects = all('SELECT name FROM projects WHERE template_id = ? AND deleted_at IS NULL', id);
-        if (projects.length) fail(409, `${projects.map((project) => `“${project.name}”`).join(', ')} ${projects.length === 1 ? 'uses' : 'use'} this template for new cards. Choose another template in Project settings first.`);
+        const flows = liveFlows(id);
+        if (flows.length) fail(409, `${flows.map((flow) => `“${flow.name}” in “${flow.project}”`).join(', ')} ${flows.length === 1 ? 'uses' : 'use'} this template for new cards. Choose another template in flow settings first.`);
         if (live(ctx.workspaceId).length <= 1) fail(409, 'A workspace needs at least one card template.');
         run('UPDATE card_templates SET deleted_at = ? WHERE id = ?', now(), id);
         cache.delete(id);

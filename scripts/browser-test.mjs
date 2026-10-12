@@ -351,9 +351,9 @@ try {
 
   // A tall lane must leave neighbouring lanes droppable at the same depth.
   const tallCards = await evaluate(`(async () => {
-    const { project, createCard, cardChanged, flushCards } = await import('/state.js');
+    const { flow, createCard, cardChanged, flushCards } = await import('/state.js');
     const { renderBoard } = await import('/board.js');
-    const lane = project().lanes[0], original = lane.cards[0];
+    const lane = flow().lanes[0], original = lane.cards[0];
     const ids = [];
     for (let i = 0; i < 6; i++) {
       const card = createCard(lane);
@@ -831,6 +831,84 @@ These values apply when a card enters this lane.
   assert.equal((await state()).projects.length, 1);
   console.log('PASS project creation, isolation, renaming, deletion');
 
+  // Flows: each is a board of its own, listed under its project in the
+  // sidebar, and cards move between them.
+  {
+    const projectId = (await state()).projects[0].id;
+    // Add a new flow stays faded until the pointer is on it.
+    assert.equal(await evaluate(`getComputedStyle(document.querySelector('.add-flow-link')).opacity`), '0.55');
+    const addPoint = await evaluate(`(() => { const r = document.querySelector('.add-flow-link').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+    await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: addPoint.x, y: addPoint.y });
+    await waitFor(`getComputedStyle(document.querySelector('.add-flow-link')).opacity === '1' && getComputedStyle(document.querySelector('.add-flow-link')).cursor === 'pointer'`);
+    await snapshot('add-flow-hover');
+    await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 900, y: 600 });
+    await click('[data-action="add-flow"]');
+    await waitFor(`document.querySelector('#form-dialog').open && !!document.querySelector('#flow-template')`);
+    await fill('#name-input', 'Shorts');
+    await click('#small-form [type="submit"]');
+    await waitFor(`document.querySelectorAll('[data-action="show-flow"]').length === 2 && document.querySelector('.flow-row.active .flow-link')?.textContent.includes('Shorts') && document.querySelector('[data-action="show-board"]').textContent.includes('Shorts')`);
+    assert.equal(await evaluate(`document.querySelectorAll('#board .card').length`), 0, 'A new flow starts with an empty board');
+    const [mainFlow, shortsFlow] = (await api('GET', '/api/workspace')).flows.filter((entry) => entry.projectId === projectId);
+    assert.deepEqual(shortsFlow.stages.map((stage) => stage.name), ['Ideas', 'In progress', 'Review', 'Done']);
+    await snapshot('flow-sidebar');
+    await click(`[data-action="show-flow"][data-id="${mainFlow.id}"]`);
+    await waitFor(`document.querySelectorAll('#board .card').length > 1`);
+    const [editedId, draggedCardId] = await evaluate(`[...document.querySelectorAll('#board .card')].slice(0, 2).map(node => node.dataset.card)`);
+    // The card editor groups lanes by flow; choosing another flow's lane moves the card there.
+    await click(`[data-action="open-card"][data-id="${editedId}"]`);
+    await waitFor(`document.querySelector('#card-dialog').open`);
+    assert.deepEqual(await evaluate(`[...document.querySelectorAll('#card-lane optgroup')].map(group => group.label)`), ['Main', 'Shorts']);
+    await select('#card-lane', shortsFlow.stages[1].id);
+    await saved();
+    assert.equal((await api('GET', `/api/cards/${editedId}`)).card.stageId, shortsFlow.stages[1].id);
+    await waitFor(`!document.querySelector('#board [data-card="${editedId}"]') && document.querySelector('[data-flow-count="${shortsFlow.id}"]').textContent === '1'`);
+    await click('[data-undo-move="card"]');
+    await saved();
+    await waitFor(`!!document.querySelector('#board [data-card="${editedId}"]')`);
+    await click('[data-action="close-card"]');
+    await waitFor(`!document.querySelector('#card-dialog').open`);
+    // A card dropped on another flow in the sidebar lands in its first lane.
+    const points = await evaluate(`(() => {
+      const a = document.querySelector('[data-card="${draggedCardId}"] .card-open').getBoundingClientRect();
+      const b = document.querySelector('[data-flow-drop="${shortsFlow.id}"]').getBoundingClientRect();
+      return { x1: a.left + a.width / 2, y1: a.top + a.height / 2, x2: b.left + b.width / 2, y2: b.top + b.height / 2 };
+    })()`);
+    interceptedDrag = null;
+    await send('Input.setInterceptDrags', { enabled: true });
+    try {
+      await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: points.x1, y: points.y1 });
+      await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: points.x1, y: points.y1, button: 'left', clickCount: 1 });
+      for (let step = 1; step <= 5; step++) await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: points.x1 + (points.x2 - points.x1) * step / 5, y: points.y1 + (points.y2 - points.y1) * step / 5, button: 'left', buttons: 1 });
+      for (let attempt = 0; attempt < 30 && !interceptedDrag; attempt++) await pause(20);
+      assert.ok(interceptedDrag, 'Dragging a card starts a native drag');
+      for (const type of ['dragEnter', 'dragOver']) await send('Input.dispatchDragEvent', { type, x: points.x2, y: points.y2, data: interceptedDrag });
+      assert.ok(await evaluate(`document.querySelector('[data-flow-drop="${shortsFlow.id}"]').classList.contains('drag-over')`), 'The sidebar flow shows it accepts the card');
+      await send('Input.dispatchDragEvent', { type: 'drop', x: points.x2, y: points.y2, data: interceptedDrag });
+      await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: points.x2, y: points.y2, button: 'left', clickCount: 1 });
+    } finally { await send('Input.setInterceptDrags', { enabled: false }); }
+    await saved();
+    assert.equal((await api('GET', `/api/cards/${draggedCardId}`)).card.stageId, shortsFlow.stages[0].id);
+    assert.equal(await evaluate(`document.querySelectorAll('.drag-over').length`), 0);
+    // Undo last move works across flows, from the board the card left.
+    await click('[data-undo-move="board"]');
+    await saved();
+    await waitFor(`!!document.querySelector('#board [data-card="${draggedCardId}"]')`);
+    // Flow settings rename the flow; deleting it leaves the first flow.
+    await click(`[data-action="edit-flow"][data-id="${shortsFlow.id}"]`);
+    await waitFor(`document.querySelector('#form-dialog').open && document.querySelector('#name-input').value === 'Shorts'`);
+    await fill('#name-input', 'Clips');
+    await click('#small-form [type="submit"]');
+    await saved();
+    await waitFor(`document.querySelector('.flow-row.active .flow-link')?.textContent.includes('Clips')`);
+    await click('.flow-row.active [data-action="edit-flow"]');
+    await click('[data-action="delete-flow"]');
+    await click('#small-form [type="submit"]');
+    await waitFor(`document.querySelectorAll('[data-action="show-flow"]').length === 1 && document.querySelectorAll('#board .card').length > 1`);
+    assert.deepEqual((await api('GET', '/api/workspace')).flows.filter((entry) => entry.projectId === projectId).map((entry) => entry.id), [mainFlow.id]);
+    assert.equal(await evaluate(`document.querySelector('[data-action="edit-flow"]') && !document.querySelector('#form-dialog').open && !document.querySelector('[data-action="delete-flow"]')`), true);
+  }
+  console.log('PASS flows: nested in the sidebar with a quiet Add a new flow, cross-flow moves from the editor and by dropping on a sidebar flow, undo across flows, rename and delete');
+
   await click('[data-action="edit-project"]');
   await click('[data-action="archive-project"]');
   await click('#small-form [type="submit"]');
@@ -1208,12 +1286,12 @@ These values apply when a card enters this lane.
   await waitFor(`${titleOptionsLabel}.then(label => label === 'Title Options')`);
   console.log('PASS editor reads template labels and limits');
 
-  // Card templates: Project settings → Manage templates… edits a new
-  // template, the project adopts it for new cards and the editor follows it.
+  // Card templates: Flow settings → Manage templates… edits a new
+  // template, the flow adopts it for new cards and the editor follows it.
   await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
-  await click('[data-action="edit-project"]');
-  await waitFor(`document.querySelector('#form-dialog').open && !!document.querySelector('#project-template')`);
-  assert.equal(await evaluate(`document.querySelector('#project-template').value`), 'youtube-video');
+  await click('.flow-row.active [data-action="edit-flow"]');
+  await waitFor(`document.querySelector('#form-dialog').open && !!document.querySelector('#flow-template')`);
+  assert.equal(await evaluate(`document.querySelector('#flow-template').value`), 'youtube-video');
   await click('[data-action="manage-templates"]');
   await waitFor(`document.querySelector('#template-dialog').open && !document.querySelector('#form-dialog').open`);
   assert.equal(await evaluate(`document.querySelector('#template-heading').textContent`), 'YouTube video');
@@ -1281,13 +1359,13 @@ These values apply when a card enters this lane.
   await waitFor(`!document.querySelector('#template-dialog').open`);
   const templateProjectId = await evaluate(`import('/state.js').then(m => m.state.projectId)`);
   const chooseProjectTemplate = async (templateId) => {
-    await click('[data-action="edit-project"]');
-    await waitFor(`!!document.querySelector('#project-template option[value="${templateId}"]')`);
-    await select('#project-template', templateId);
+    await click('.flow-row.active [data-action="edit-flow"]');
+    await waitFor(`!!document.querySelector('#flow-template option[value="${templateId}"]')`);
+    await select('#flow-template', templateId);
     await click('#small-form [type="submit"]');
     await waitFor(`!document.querySelector('#form-dialog').open`);
     await saved();
-    assert.equal((await api('GET', '/api/workspace')).projects.find((item) => item.id === templateProjectId).templateId, templateId);
+    assert.equal((await api('GET', '/api/workspace')).flows.find((item) => item.projectId === templateProjectId).templateId, templateId);
   };
   await chooseProjectTemplate('blog-post');
   assert.equal(await evaluate(`document.querySelector('[data-action="set-project-prompt"]')`), null, 'Set prompt needs a Prompt field');

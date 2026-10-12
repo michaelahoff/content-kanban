@@ -85,6 +85,12 @@ export function originalVideoMarkup(card, field) {
 }
 // The template's field flagged for YouTube lookups, if it has one.
 const youtubeField = (template) => template.fields.find((field) => field.youtube);
+// The lanes a card can move to. With several flows they are grouped by flow,
+// and choosing a lane of another flow moves the card there.
+function laneOptions(p, current) {
+  const options = (lanes) => lanes.map((item) => `<option value="${item.id}" ${item.id === current.id ? 'selected' : ''}>${escape(item.name)}</option>`).join('');
+  return p.flows.length > 1 ? p.flows.map((f) => `<optgroup label="${escape(f.name)}">${options(f.lanes)}</optgroup>`).join('') : options(p.flows[0].lanes);
+}
 export function openCard(targetId) {
   const found = locateCard(targetId);
   if (!found) return;
@@ -98,7 +104,7 @@ export function openCard(targetId) {
   const template = templateOf(card);
   // Hidden fields (editor: false) stay out of the editor, header included.
   const fields = editorFields(template);
-  cardDialog.innerHTML = `<div class="editor-header"><div class="editor-breadcrumb">${icon('board')}<label class="sr-only" for="card-lane">Move card to lane</label><select id="card-lane">${p.lanes.map((item) => `<option value="${item.id}" ${item.id === lane.id ? 'selected' : ''}>${escape(item.name)}</option>`).join('')}</select></div><div class="editor-header-right">${iconButton('undo-move', 'Undo last move', 'undo', 'data-undo-move="card" disabled')}<span class="save-status" data-save-status></span>${iconButton('close-card', 'Close card editor', 'close')}</div></div>
+  cardDialog.innerHTML = `<div class="editor-header"><div class="editor-breadcrumb">${icon('board')}<label class="sr-only" for="card-lane">Move card to lane</label><select id="card-lane">${laneOptions(p, lane)}</select></div><div class="editor-header-right">${iconButton('undo-move', 'Undo last move', 'undo', 'data-undo-move="card" disabled')}<span class="save-status" data-save-status></span>${iconButton('close-card', 'Close card editor', 'close')}</div></div>
     <div id="editor-save-error" class="error-banner" role="alert" hidden></div>
     ${fields.filter((field) => field.placement === 'header').map((field) => editorField(field, card)).join('')}
     <div class="editor-title"><label class="sr-only" for="card-title">${escape(template.title.label)}</label><input id="card-title" placeholder="Untitled card" maxlength="${template.title.max}" value="${escape(card.title)}" autocomplete="off"></div>

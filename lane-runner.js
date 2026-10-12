@@ -1,4 +1,4 @@
-// Turns pending lane runs into card chat submissions. A run reads the project
+// Turns pending lane runs into card chat submissions. A run reads its flow's
 // map, its lane playbook, the skills it names and the card's hand-off notes,
 // and freezes all of it into one prompt. The chat worker delivers it.
 import { composeLanePrompt, parseLaneResult, setFields } from './public/playbook-format.js';
@@ -27,7 +27,7 @@ export function createLaneRunner({ store, service, providers, ctx, paused = () =
     const map = store.playbooks.read(project.flowId, 'MAP.md');
     const skills = settings.skills.map((name) => store.playbooks.skill(project.flowId, name));
     const notes = store.playbooks.notes(card.id);
-    const prompt = composeLanePrompt({ projectName: project.name, laneName: stage.name, lanes: stages, trigger, map, playbook: document,
+    const prompt = composeLanePrompt({ projectName: project.name, flowName: project.flowName, laneName: stage.name, lanes: stages, trigger, map, playbook: document,
       skills, notes: notes.text, settings, template });
     return { document, settings, chat, provider, model, map, skills, notes, prompt,
       warning: model ? '' : `No ${providerName(provider)} model is available. Refresh models in Settings or name one with model: in the playbook.` };
@@ -50,7 +50,7 @@ export function createLaneRunner({ store, service, providers, ctx, paused = () =
   const preparedParts = (prepared) => ({ playbook: prepared.document?.hash, map: prepared.map?.hash ?? null,
     skills: prepared.skills.map((skill) => [skill.name, skill.hash ?? null]), notes: prepared.notes.hash,
     target: [prepared.provider, prepared.model], prompt: prepared.prompt });
-  const partNames = { playbook: 'lane playbook', map: 'project map', skills: 'named skills', notes: 'hand-off notes', target: 'provider and model', prompt: 'project and lane names' };
+  const partNames = { playbook: 'lane playbook', map: 'flow map', skills: 'named skills', notes: 'hand-off notes', target: 'provider and model', prompt: 'project, flow and lane names' };
   const listed = new Intl.ListFormat('en', { type: 'conjunction' });
   const conflict = (message) => Object.assign(new Error(message), { status: 409 });
   const closedRun = () => Object.assign(new Error('This lane run was cancelled while it was being prepared.'), { status: 409, code: 'lane-run-closed' });
@@ -129,7 +129,7 @@ export function createLaneRunner({ store, service, providers, ctx, paused = () =
       if (needsFresh(latest)) throw conflict('The card chat changed while preparing the lane run.');
       const [before, after] = [preparedParts(prepared), preparedParts(latest)];
       const differs = Object.keys(before).filter((key) => JSON.stringify(before[key]) !== JSON.stringify(after[key]));
-      // The prompt holds the documents; name it only for a lane or project rename.
+      // The prompt holds the documents; name it only for a lane, flow or project rename.
       const changed = differs.length > 1 ? differs.filter((key) => key !== 'prompt') : differs;
       if (changed.length) throw conflict(`The ${listed.format(changed.map((key) => partNames[key]))} changed while preparing the lane run.`);
     };

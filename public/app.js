@@ -1,9 +1,9 @@
 // Starts the app and routes clicks, typing, pasting, and dragging to the board and editor.
 import { $, escape, iconButton, imageURL, toast, wordCount, confirmDelete, smallForm, setTheme, setAccent } from './ui.js';
-import { retry } from './api.js';
+import { retry, request } from './api.js';
 import { fieldInputId } from './card-template.js';
-import { state, project, locateCard, cardCount, loadWorkspace, loadCards, loadTemplates, templateOf, projectTemplate, cardChanged, flushCards, createCard, moveCard, deleteCard, deleteLane, deleteProject, archiveProject, unarchiveProject, saveStatus, hasUnsavedWork, onStatusChange, useSavedCard, undoLastMove, loadPlaybooks, applyStages } from './state.js';
-import { view, selectProject, renderApp, renderBoard, renderStatus, editProject, editLane, editProjectPrompt, toggleCards, showTab } from './board.js';
+import { state, project, flow, locateCard, cardCount, loadWorkspace, loadCards, loadTemplates, templateOf, flowTemplate, cardChanged, flushCards, createCard, moveCard, deleteCard, deleteLane, deleteFlow, deleteProject, archiveProject, unarchiveProject, saveStatus, hasUnsavedWork, onStatusChange, useSavedCard, undoLastMove, loadPlaybooks, applyStages, restoreFlowSelection } from './state.js';
+import { view, selectProject, renderApp, renderBoard, renderStatus, editProject, editFlow, editLane, editProjectPrompt, toggleCards, showTab, showFlow } from './board.js';
 import { dropLibraryItems, libraryActivity, hasLibraryUploads } from './library.js';
 import { openCard, closeCard, cardPanelOpen, renderImages, copyText, copyTrifecta, fetchYoutube, addImages, originalVideoMarkup, videoLinkMarkup } from './editor.js';
 import { openPlaybooks, playbooksChanged } from './playbook-editor.js';
@@ -24,12 +24,48 @@ dropIndicator.innerHTML = '<span></span>';
 function makeCard(laneId) {
   const p = project();
   if (p?.archivedAt) return toast('Unarchive this project to add cards.');
-  const lane = p?.lanes.find((item) => item.id === laneId) || p?.lanes[0];
+  const f = flow(p);
+  const lane = f?.lanes.find((item) => item.id === laneId) || f?.lanes[0];
   if (!lane) return toast('Add a lane first.');
   const card = createCard(lane);
   renderBoard();
   openCard(card.id);
   return card;
+}
+// Another tab, or this one, added, changed or deleted a flow. Applying an
+// entry twice changes nothing, so this tab's own changes pass through too.
+async function flowActivity(entry) {
+  const p = state.projects.find((item) => item.id === entry.projectId);
+  if (!p) return;
+  const existing = p.flows.find((item) => item.id === entry.entityId);
+  if (entry.type === 'created' && !existing) {
+    const created = (await request('/api/workspace')).flows.find((item) => item.id === entry.entityId);
+    if (!created || p.flows.some((item) => item.id === created.id)) return;
+    const { stages, ...rest } = created;
+    p.flows.push({ ...rest, lanes: stages.map((stage) => ({ ...stage, cards: [] })) });
+  } else if (entry.type === 'updated' && existing) {
+    if (entry.data.name) existing.name = entry.data.name;
+    if (entry.data.templateId) existing.templateId = entry.data.templateId;
+    if (Number.isInteger(entry.data.position) && p.flows.indexOf(existing) !== entry.data.position) {
+      p.flows.splice(p.flows.indexOf(existing), 1);
+      p.flows.splice(Math.min(entry.data.position, p.flows.length), 0, existing);
+    }
+  } else if (entry.type === 'deleted' && existing) {
+    p.flows = p.flows.filter((item) => item !== existing);
+    if (state.cardId && !locateCard()) closeCard();
+  } else return;
+  if (p === project()) renderApp();
+}
+// Shows a flow from the sidebar, switching project first when needed. Without
+// a flow it only switches project. Resolves false if the cards fail to load.
+async function openFlow(projectId, flowId = null) {
+  if (projectId && projectId !== state.projectId) {
+    selectProject(projectId);
+    try { await loadCards(projectId); } catch (error) { toast(error.message); return false; }
+    if (state.projectId !== projectId) return false;
+  }
+  if (flowId) showFlow(flowId); else renderApp();
+  return true;
 }
 async function switchProject(projectId) {
   selectProject(projectId);
@@ -51,6 +87,9 @@ document.addEventListener('click', (event) => {
   if (action === 'set-project-prompt') editProjectPrompt();
   if (action === 'toggle-cards') toggleCards();
   if (action === 'show-board') showTab('board');
+  if (action === 'show-flow') void openFlow(target.dataset.projectId, targetId);
+  if (action === 'add-flow') void openFlow(target.dataset.projectId).then((opened) => opened && editFlow(true));
+  if (action === 'edit-flow') void openFlow(target.dataset.projectId, targetId).then((opened) => opened && editFlow());
   if (action === 'show-library') showTab('library');
   if (action === 'add-lane') editLane();
   if (action === 'edit-lane') editLane(targetId);
@@ -97,7 +136,7 @@ document.addEventListener('click', (event) => {
   if (action === 'fetch-youtube') return fetchYoutube(target);
   if (action === 'delete-project') {
     const p = project();
-    confirmDelete(`Delete “${p.name}”?`, `This will delete the project, its lanes, and ${cardCount(p)} cards. This cannot be undone.`, () => {
+    confirmDelete(`Delete “${p.name}”?`, `This will delete the project, its ${p.flows.length === 1 ? 'flow' : `${p.flows.length} flows`} and their lanes, and ${cardCount(p)} cards. This cannot be undone.`, () => {
       deleteProject(p);
       selectProject(state.projects[0]?.id);
       renderApp();
@@ -124,10 +163,21 @@ document.addEventListener('click', (event) => {
     unarchiveProject(p).then(() => { renderApp(); toast('Project unarchived. Cancelled work was not restarted.'); })
       .catch((error) => { target.disabled = false; toast(error.message); });
   }
+  if (action === 'delete-flow') {
+    const p = project();
+    const f = p.flows.find((item) => item.id === targetId);
+    const count = f.lanes.reduce((sum, lane) => sum + lane.cards.length, 0);
+    confirmDelete(`Delete the “${f.name}” flow?`, `This will delete its ${f.lanes.length} lanes and ${count} ${count === 1 ? 'card' : 'cards'}. Move any cards you want to keep to another flow first. Its playbook files stay on disk.`, async () => {
+      try { await deleteFlow(p, f); } catch (error) { return toast(error.message); }
+      if (locateCard() === null && state.cardId) closeCard();
+      renderApp();
+      toast('Flow deleted.');
+    });
+  }
   if (action === 'delete-lane') {
-    const lane = project().lanes.find((item) => item.id === targetId);
+    const lane = flow().lanes.find((item) => item.id === targetId);
     confirmDelete(`Delete “${lane.name}”?`, `This will also delete ${lane.cards.length} ${lane.cards.length === 1 ? 'card' : 'cards'} in this lane. Move any cards you want to keep to another lane first.`, () => {
-      deleteLane(project(), targetId);
+      deleteLane(flow(), targetId);
       renderApp();
       toast('Lane deleted.');
     });
@@ -197,8 +247,12 @@ document.addEventListener('input', (event) => {
 });
 document.addEventListener('change', (event) => {
   if (event.target.id === 'card-lane') {
-    if (moveCard(state.cardId, event.target.value)) { renderBoard(); renderBar(); }
-    else event.target.value = locateCard()?.card.stageId;
+    const before = locateCard()?.flow;
+    if (moveCard(state.cardId, event.target.value)) {
+      renderBoard(); renderBar();
+      const after = locateCard();
+      if (after && after.flow !== before) toast(`Moved to ${after.flow.name} › ${after.lane.name}.`);
+    } else event.target.value = locateCard()?.card.stageId;
   }
   if (event.target.id === 'image-files') {
     addImages(event.target.files, state.cardId);
@@ -294,7 +348,15 @@ function slideCards(previous) {
   }
 }
 document.addEventListener('dragend', () => { draggedId = null; clearDrag(); });
+// A card dropped on another flow of its project in the sidebar moves to that
+// flow's first lane.
+const flowTabTarget = (event) => {
+  const tab = draggedId && !cardPanelOpen() && event.target.closest?.('[data-flow-drop]');
+  const f = tab && project()?.flows.find((item) => item.id === tab.dataset.flowDrop);
+  return f && f !== flow() && f.lanes.length && !project().archivedAt ? { tab, flow: f } : null;
+};
 document.addEventListener('dragenter', (event) => {
+  if (flowTabTarget(event)) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; return; }
   if (!draggedId || cardPanelOpen() || formDialog.open || imageDialog.open || !event.target.closest('[data-lane]')) return;
   // Opening the insertion gap can put a different child under the pointer.
   // Accept that child immediately, including a drop before the next dragover.
@@ -306,6 +368,14 @@ document.addEventListener('dragover', (event) => {
   if (files) event.preventDefault();
   if (formDialog.open || imageDialog.open) return;
   if (cardPanelOpen() && files) { $('#image-drop').classList.add('drag-over'); return; }
+  const tabTarget = !files && flowTabTarget(event);
+  if (tabTarget) {
+    event.preventDefault();
+    clearDropTarget();
+    tabTarget.tab.classList.add('drag-over');
+    event.dataTransfer.dropEffect = 'move';
+    return;
+  }
   if (files && event.target.closest('#library')) { $('[data-library-drop]')?.classList.add('drag-over'); event.dataTransfer.dropEffect = project()?.archivedAt ? 'none' : 'copy'; return; }
   const lane = event.target.closest('[data-lane]');
   if (!lane || (!files && !draggedId)) { clearDropTarget(); return; }
@@ -337,6 +407,13 @@ document.addEventListener('drop', (event) => {
   if (formDialog.open || imageDialog.open) return;
   if (cardPanelOpen() && files.length) { addImages(files, state.cardId); return; }
   if (files.length && event.target.closest('#library')) { dropLibraryItems(event.dataTransfer, files); return; }
+  const tabTarget = !files.length && flowTabTarget(event);
+  if (tabTarget) {
+    event.preventDefault();
+    if (moveCard(draggedId, tabTarget.flow.lanes[0].id)) { renderBoard(); toast(`Moved to ${tabTarget.flow.name} › ${tabTarget.flow.lanes[0].name}.`); }
+    draggedId = null;
+    return;
+  }
   if (!lane) return;
   event.preventDefault();
   if (files.length) {
@@ -363,6 +440,7 @@ onStatusChange(renderStatus);
 
 try {
   await loadWorkspace();
+  restoreFlowSelection();
   try { state.projectId = localStorage.getItem('frameboard-project'); } catch { /* Optional preference. */ }
   if (!project()) state.projectId = (state.projects.find((item) => !item.archivedAt) ?? state.projects[0])?.id;
   await loadCards(state.projectId);
@@ -374,10 +452,7 @@ try {
     libraryActivity(entry);
     // Another tab changed the card templates: reload them and redraw the board,
     // or the whole app when the header's Set prompt button may have changed.
-    if (entry.entity === 'template') void loadTemplates().then(() => { if (projectTemplate()?.id === entry.entityId) renderApp(); else renderBoard(); templatesChanged(); }).catch(() => {});
-    // Another tab chose this project's template for new cards.
-    const retemplated = entry.entity === 'project' && entry.type === 'updated' && entry.data?.templateId && state.projects.find((item) => item.id === entry.entityId);
-    if (retemplated) { retemplated.templateId = entry.data.templateId; if (retemplated === project()) renderApp(); else renderBoard(); }
+    if (entry.entity === 'template') void loadTemplates().then(() => { if (flowTemplate()?.id === entry.entityId) renderApp(); else renderBoard(); templatesChanged(); }).catch(() => {});
     // Another tab archived or unarchived a project.
     const changed = entry.entity === 'project' && ['archived', 'unarchived'].includes(entry.type) && state.projects.find((item) => item.id === entry.entityId);
     if (changed && Boolean(changed.archivedAt) !== (entry.type === 'archived')) {
@@ -386,9 +461,10 @@ try {
       renderApp();
     }
     if (entry.entity !== 'flow') return;
+    if (['created', 'updated', 'deleted'].includes(entry.type)) return void flowActivity(entry).catch(() => {});
     playbooksChanged();
-    const p = state.projects.find((item) => item.flowId === entry.entityId);
-    if (p) void loadPlaybooks(p).then((listing) => { applyStages(p, listing.stages); renderBoard(); renderBar(); }).catch(() => {});
+    const f = state.projects.flatMap((item) => item.flows).find((item) => item.id === entry.entityId);
+    if (f) void loadPlaybooks(f).then((listing) => { applyStages(f, listing.stages); renderBoard(); renderBar(); }).catch(() => {});
   });
 } catch (error) {
   app.innerHTML = `<div class="loading-screen"><h1>Couldn’t open your workspace</h1><p>${escape(error.message)}</p><p>Make sure the local server is running, then reload this page.</p><a class="button primary" href="/">Try again</a></div>`;

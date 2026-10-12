@@ -1,5 +1,7 @@
 # Card templates are database rows; playbook settings are edited through controls over the Markdown
 
+> Since [ADR 0006](0006-projects-hold-several-flows.md), each flow, not each project, names the template its new cards use.
+
 Cards used to follow one template hard-coded in `public/card-template.js`. Lane playbook settings were validated against it, and the only way to change a setting was to type YAML into the playbook's frontmatter. Both are replaced:
 
 - **Card templates** are rows in `card_templates`, one per template, with a JSON definition (`title`, `fields`, `imageRoles`). The built-in `youtube-video` template is seeded into every workspace, and the user can create, edit and delete templates. A project names the template its new cards use; a card keeps the template it was created with.
