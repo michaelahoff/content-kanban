@@ -117,7 +117,7 @@ const criterionRules = { field: 'filled', imageRole: 'set' };
 const emptyGraphJson = '{"version":1,"nodes":[{"id":"entry","type":"entry","position":{"x":48,"y":100}}],"edges":[]}';
 
 // Each entry upgrades the schema by one version. Never edit a released entry;
-// append a new one instead.
+// append a new one instead. Functions handle known earlier schema variants.
 const migrations = [`
   CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
   CREATE TABLE workspaces (id TEXT PRIMARY KEY, name TEXT NOT NULL, created_at TEXT NOT NULL);
@@ -253,7 +253,39 @@ const migrations = [`
 `, libraryDraftsMigration, `
   -- What each delivery attempt actually did with a submission's inputs.
   ALTER TABLE chat_attempts ADD COLUMN delivery TEXT;
-`, foldersMigration, savedOutputsMigration, templatesMigration];
+`, foldersMigration, savedOutputsMigration, templatesMigration, (db) => {
+  // Before the feature branches merged, v16 could mean delivery rather than
+  // drafts. Older retained/archive definitions also lacked these columns, and
+  // a v20 written by this repair predates templates. Repair those layouts
+  // additively; the entire upgrade remains atomic.
+  if (!hasColumn(db, 'projects', 'archive_generation')) {
+    db.exec('ALTER TABLE projects ADD COLUMN archive_generation INTEGER NOT NULL DEFAULT 0;');
+  }
+  if (!hasColumn(db, 'retained_versions', 'filename')) {
+    // These versions never stored a separate filename. Keep the only known
+    // label, from their retained object, without changing bytes or provenance.
+    db.exec(`ALTER TABLE retained_versions ADD COLUMN filename TEXT;
+      UPDATE retained_versions SET filename = (SELECT filename FROM retained_objects WHERE id = retained_versions.object_id);`);
+  }
+  if (!db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'library_drafts'").get()) {
+    db.exec(libraryDraftsMigration);
+  }
+  if (!db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'card_templates'").get()) {
+    db.exec(templatesMigration);
+  }
+}];
+
+function hasColumn(db, table, column) {
+  return Boolean(db.prepare('SELECT name FROM pragma_table_info(?) WHERE name = ?').get(table, column));
+}
+
+function applyMigration(db, migration, index) {
+  // Delivery was already v16 on an earlier feature branch. Current v17 must
+  // retain its existing values rather than adding the same column twice.
+  if (index === 16 && hasColumn(db, 'chat_attempts', 'delivery')) return;
+  if (typeof migration === 'function') migration(db);
+  else db.exec(migration);
+}
 
 // The newest schema this version can open; restore refuses newer backups.
 export const supportedSchemaVersion = migrations.length;
@@ -524,7 +556,7 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
   async function initialize() {
     const legacy = await readLegacyBoard(legacyFile);
     transaction(() => {
-      for (const sql of migrations) db.exec(sql);
+      migrations.forEach((migration, index) => applyMigration(db, migration, index));
       run("INSERT INTO meta (key, value) VALUES ('schema_version', ?)", String(supportedSchemaVersion));
       const workspaceId = randomUUID();
       const userId = randomUUID();
@@ -558,7 +590,7 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
     const version = schemaVersion();
     if (version > supportedSchemaVersion) throw new Error('This data was saved by a newer version of Frameboard.');
     if (version < supportedSchemaVersion) transaction(() => {
-      for (const sql of migrations.slice(version)) db.exec(sql);
+      migrations.slice(version).forEach((migration, index) => applyMigration(db, migration, version + index));
       recordMissingBaselines();
       run("UPDATE meta SET value = ? WHERE key = 'schema_version'", String(supportedSchemaVersion));
     });
