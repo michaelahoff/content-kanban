@@ -451,8 +451,9 @@ export function restoreFlowSelection() {
 }
 export async function createFlow(p, name, templateId = undefined) {
   const created = await enqueue(() => send('POST', `${url('projects', p.id)}/flows`, { id: id(), name, ...(templateId ? { templateId } : {}) }), undefined, { rejectOnError: true });
-  const f = toFlow(created);
-  p.flows.push(f);
+  // The change feed may have added it already.
+  const f = p.flows.find((item) => item.id === created.id) ?? toFlow(created);
+  if (!p.flows.includes(f)) p.flows.push(f);
   return f;
 }
 // A flow's name, its place among the project's flows, and the template its
@@ -469,6 +470,10 @@ export function updateFlow(p, f, { name = f.name, templateId = f.templateId, pos
 // Deleting a flow deletes its cards; the server keeps at least one flow.
 export async function deleteFlow(p, f) {
   await enqueue(() => send('DELETE', url('flows', f.id)), undefined, { rejectOnError: true });
+  forgetFlow(p, f);
+}
+// Drops a deleted flow and any unsaved state of its cards, here or after another tab deleted it.
+export function forgetFlow(p, f) {
   forgetCards(f.lanes);
   p.flows = p.flows.filter((item) => item !== f);
 }

@@ -219,7 +219,7 @@
   .add-flow-link { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 30px; margin-top: 2px; padding: 0 10px; border: 1px solid transparent; border-radius: 8px; font-size: 12px; color: var(--muted); opacity: .55;
     transition: opacity .12s ease, color .12s ease, background-color .12s ease, border-color .12s ease; }
   .add-flow-link .icon { width: 14px; height: 14px; }
-  .add-flow-link:hover, .add-flow-link:focus-visible { opacity: 1; color: var(--text); background: var(--raised); border-color: var(--field-border); cursor: pointer; }
+  .add-flow-link:hover, .add-flow-link:focus-visible { opacity: 1; color: var(--text); background: var(--raised); border-color: color-mix(in srgb, var(--muted) 55%, transparent); cursor: pointer; }
   .add-flow-link:hover .icon, .add-flow-link:focus-visible .icon { color: var(--accent); }
   .add-flow-link:active { background: var(--raised-hover); }
   @media (prefers-reduced-motion: reduce) { .add-flow-link { transition: none; } }
@@ -244,10 +244,9 @@
   .archived-projects .project-link, .archived-projects .flow-list { opacity: .7; }
   .header-actions { display: flex; flex-wrap: wrap; gap: 8px; flex-shrink: 0; }
   .board-toolbar { display: flex; justify-content: space-between; align-items: center; gap: 20px; margin: 0 32px; border-bottom: 1px solid var(--border); min-height: 48px; }
-  .board-tab { display: flex; gap: 8px; align-items: center; align-self: stretch; padding: 0 4px; font-size: 16px; font-weight: 500; color: var(--text); border-bottom: 2px solid var(--accent); margin-bottom: -1px; }
+  .board-tab { display: flex; gap: 8px; align-items: center; align-self: stretch; padding: 0 4px; white-space: nowrap; font-size: 16px; font-weight: 500; color: var(--text); border-bottom: 2px solid var(--accent); margin-bottom: -1px; }
   .board-tab > .icon { width: 18px; height: 18px; }
   .board-tab > span { min-width: 22px; padding: 1px 7px; border-radius: 10px; background: var(--raised); color: var(--muted); font-size: 12px; font-weight: 500; text-align: center; font-variant-numeric: tabular-nums; }
-  .board-tab { white-space: nowrap; }
   .board-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
   .paste-hint { display: flex; gap: 6px; align-items: center; margin-inline: 6px; color: var(--muted); font-size: 12px; }
   .paste-hint .icon { width: 16px; height: 16px; }

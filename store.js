@@ -834,9 +834,10 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
       const rows = all(`SELECT p.*, (SELECT COUNT(*) FROM cards c WHERE c.project_id = p.id AND c.deleted_at IS NULL) AS card_count
         FROM projects p WHERE p.workspace_id = ? AND p.deleted_at IS NULL ORDER BY p.position`, ctx.workspaceId);
       // A project's flowId is its first flow, for callers that need just one.
-      const projects = rows.map((row) => ({ id: row.id, name: row.name, flowId: activeFlows(row.id)[0]?.id ?? null, position: row.position, cardCount: row.card_count, archivedAt: row.archived_at }));
+      const flowRows = new Map(rows.map((row) => [row.id, activeFlows(row.id)]));
+      const projects = rows.map((row) => ({ id: row.id, name: row.name, flowId: flowRows.get(row.id)[0]?.id ?? null, position: row.position, cardCount: row.card_count, archivedAt: row.archived_at }));
       // Each live project's flows, in their order within the project.
-      const flows = rows.flatMap((row) => activeFlows(row.id).map(flowView));
+      const flows = rows.flatMap((row) => flowRows.get(row.id).map(flowView));
       const eventCursor = get('SELECT MAX(id) AS cursor FROM activity_log WHERE workspace_id = ?', ctx.workspaceId).cursor ?? 0;
       return { workspace, user, projects, flows, templates: templates.list(ctx), eventCursor };
     },
@@ -884,12 +885,13 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
       checkId(input.id);
       checkName(input.name, 100, 'Flows need a name (up to 100 characters).');
       check(input.templateId === undefined || typeof input.templateId === 'string', 'Choose a card template.');
+      const name = input.name.trim();
       return transaction(() => {
         check(activeFlows(projectId).length < 50, 'A project can hold up to 50 flows.');
         const template = templates.requireLive(ctx, input.templateId ?? templates.defaultId(ctx));
-        const id = insertFlow(ctx.workspaceId, projectId, { id: input.id, name: input.name.trim(), templateId: template.id, stages: newStages() });
+        const id = insertFlow(ctx.workspaceId, projectId, { id: input.id, name, templateId: template.id, stages: newStages() });
         recordChange(ctx, 'flow', id, 'created', { projectId, data: { templateId: template.id } });
-        playbooks.ensure(id, { flowName: input.name.trim(), lanes: activeStages(id), template });
+        playbooks.ensure(id, { flowName: name, lanes: activeStages(id), template });
         return flowView(get('SELECT * FROM flows WHERE id = ?', id));
       });
     },

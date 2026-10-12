@@ -2,7 +2,7 @@
 import { $, escape, iconButton, imageURL, toast, wordCount, confirmDelete, smallForm, setTheme, setAccent } from './ui.js';
 import { retry, request } from './api.js';
 import { fieldInputId } from './card-template.js';
-import { state, project, flow, locateCard, cardCount, loadWorkspace, loadCards, loadTemplates, templateOf, flowTemplate, cardChanged, flushCards, createCard, moveCard, deleteCard, deleteLane, deleteFlow, deleteProject, archiveProject, unarchiveProject, saveStatus, hasUnsavedWork, onStatusChange, useSavedCard, undoLastMove, loadPlaybooks, applyStages, restoreFlowSelection } from './state.js';
+import { state, project, flow, flowCardCount, forgetFlow, locateCard, cardCount, loadWorkspace, loadCards, loadTemplates, templateOf, flowTemplate, cardChanged, flushCards, createCard, moveCard, deleteCard, deleteLane, deleteFlow, deleteProject, archiveProject, unarchiveProject, saveStatus, hasUnsavedWork, onStatusChange, useSavedCard, undoLastMove, loadPlaybooks, applyStages, restoreFlowSelection } from './state.js';
 import { view, selectProject, renderApp, renderBoard, renderStatus, editProject, editFlow, editLane, editProjectPrompt, toggleCards, showTab, showFlow } from './board.js';
 import { dropLibraryItems, libraryActivity, hasLibraryUploads } from './library.js';
 import { openCard, closeCard, cardPanelOpen, renderImages, copyText, copyTrifecta, fetchYoutube, addImages, originalVideoMarkup, videoLinkMarkup } from './editor.js';
@@ -51,7 +51,7 @@ async function flowActivity(entry) {
       p.flows.splice(Math.min(entry.data.position, p.flows.length), 0, existing);
     }
   } else if (entry.type === 'deleted' && existing) {
-    p.flows = p.flows.filter((item) => item !== existing);
+    forgetFlow(p, existing);
     if (state.cardId && !locateCard()) closeCard();
   } else return;
   if (p === project()) renderApp();
@@ -166,7 +166,7 @@ document.addEventListener('click', (event) => {
   if (action === 'delete-flow') {
     const p = project();
     const f = p.flows.find((item) => item.id === targetId);
-    const count = f.lanes.reduce((sum, lane) => sum + lane.cards.length, 0);
+    const count = flowCardCount(f);
     confirmDelete(`Delete the “${f.name}” flow?`, `This will delete its ${f.lanes.length} lanes and ${count} ${count === 1 ? 'card' : 'cards'}. Move any cards you want to keep to another flow first. Its playbook files stay on disk.`, async () => {
       try { await deleteFlow(p, f); } catch (error) { return toast(error.message); }
       if (locateCard() === null && state.cardId) closeCard();
@@ -350,13 +350,13 @@ function slideCards(previous) {
 document.addEventListener('dragend', () => { draggedId = null; clearDrag(); });
 // A card dropped on another flow of its project in the sidebar moves to that
 // flow's first lane.
-const flowTabTarget = (event) => {
-  const tab = draggedId && !cardPanelOpen() && event.target.closest?.('[data-flow-drop]');
-  const f = tab && project()?.flows.find((item) => item.id === tab.dataset.flowDrop);
-  return f && f !== flow() && f.lanes.length && !project().archivedAt ? { tab, flow: f } : null;
+const flowDropTarget = (event) => {
+  const row = draggedId && !cardPanelOpen() && event.target.closest?.('[data-flow-drop]');
+  const f = row && project()?.flows.find((item) => item.id === row.dataset.flowDrop);
+  return f && f !== flow() && f.lanes.length && !project().archivedAt ? { row, flow: f } : null;
 };
 document.addEventListener('dragenter', (event) => {
-  if (flowTabTarget(event)) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; return; }
+  if (flowDropTarget(event)) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; return; }
   if (!draggedId || cardPanelOpen() || formDialog.open || imageDialog.open || !event.target.closest('[data-lane]')) return;
   // Opening the insertion gap can put a different child under the pointer.
   // Accept that child immediately, including a drop before the next dragover.
@@ -368,11 +368,11 @@ document.addEventListener('dragover', (event) => {
   if (files) event.preventDefault();
   if (formDialog.open || imageDialog.open) return;
   if (cardPanelOpen() && files) { $('#image-drop').classList.add('drag-over'); return; }
-  const tabTarget = !files && flowTabTarget(event);
-  if (tabTarget) {
+  const flowDrop = !files && flowDropTarget(event);
+  if (flowDrop) {
     event.preventDefault();
     clearDropTarget();
-    tabTarget.tab.classList.add('drag-over');
+    flowDrop.row.classList.add('drag-over');
     event.dataTransfer.dropEffect = 'move';
     return;
   }
@@ -407,10 +407,10 @@ document.addEventListener('drop', (event) => {
   if (formDialog.open || imageDialog.open) return;
   if (cardPanelOpen() && files.length) { addImages(files, state.cardId); return; }
   if (files.length && event.target.closest('#library')) { dropLibraryItems(event.dataTransfer, files); return; }
-  const tabTarget = !files.length && flowTabTarget(event);
-  if (tabTarget) {
+  const flowDrop = !files.length && flowDropTarget(event);
+  if (flowDrop) {
     event.preventDefault();
-    if (moveCard(draggedId, tabTarget.flow.lanes[0].id)) { renderBoard(); toast(`Moved to ${tabTarget.flow.name} › ${tabTarget.flow.lanes[0].name}.`); }
+    if (moveCard(draggedId, flowDrop.flow.lanes[0].id)) { renderBoard(); toast(`Moved to ${flowDrop.flow.name} › ${flowDrop.flow.lanes[0].name}.`); }
     draggedId = null;
     return;
   }

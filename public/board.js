@@ -1,5 +1,5 @@
-// The project sidebar, the flow tabs, the board of lanes and cards, and the
-// project, flow and lane forms.
+// The project sidebar with each project's flows, the board of lanes and
+// cards, and the project, flow and lane forms.
 import { $, escape, icon, button, iconButton, imageURL, palette, smallForm, nameField, toast, themeSwitchMarkup, accentSwitchMarkup } from './ui.js';
 import { state, project, flow, lanesOf, locateCard, cardCount, flowCardCount, searchText, saveStatus, createProject, renameProject, createFlow, updateFlow, selectFlow, flowTemplate, addLane, updateLane, setProjectPrompt, latestMoveCard, hasPromptField, promptLimit } from './state.js';
 import { activityMarkup } from './chat.js';
@@ -66,7 +66,7 @@ const flowCount = (p, f) => (p.loaded ? flowCardCount(f) : f.cardCount ?? '');
 // shared by every flow in the project.
 const tabs = (p) => {
   const f = flow(p);
-  return `<div class="project-tabs" role="tablist" aria-label="Project views"><button type="button" role="tab" class="board-tab ${view.tab === 'board' ? 'active' : ''}" data-action="show-board" aria-selected="${view.tab === 'board'}">${icon('board')} ${escape(f?.name ?? 'Board')} <span data-flow-count="${f?.id}">${f ? flowCount(p, f) : ''}</span></button><button type="button" role="tab" class="board-tab ${view.tab === 'library' ? 'active' : ''}" data-action="show-library" aria-selected="${view.tab === 'library'}">${icon('upload')} Library</button></div>`;
+  return `<div class="project-tabs" role="tablist" aria-label="Project views"><button type="button" role="tab" class="board-tab ${view.tab === 'board' ? 'active' : ''}" data-action="show-board" aria-selected="${view.tab === 'board'}">${icon('board')} ${escape(f?.name ?? 'Board')} ${f ? `<span data-flow-count="${f.id}">${flowCount(p, f)}</span>` : ''}</button><button type="button" role="tab" class="board-tab ${view.tab === 'library' ? 'active' : ''}" data-action="show-library" aria-selected="${view.tab === 'library'}">${icon('upload')} Library</button></div>`;
 };
 const searchBox = () => `<label class="search">${icon('search')}<input id="search" type="search" placeholder="Find a card…" aria-label="Find a card" value="${escape(view.query)}"></label>`;
 const projectView = (p, tools) => view.tab === 'library'
@@ -121,7 +121,7 @@ function cardMarkup(card, draggable = true) {
       <div class="card-body"><h3>${title}</h3>${activityMarkup(card.id)}</div>
     </button></article>`;
 }
-// Card counts on the project link and the flow tabs.
+// Card counts in the sidebar and on the Board tab.
 function renderCounts() {
   document.querySelectorAll('.project-link').forEach((node) => {
     const item = state.projects.find((item) => item.id === node.dataset.id);
@@ -167,7 +167,7 @@ const templateField = (selectedId, label, help) => `<label class="form-label" fo
 // Each flow's template is changed in that flow's settings.
 export function editProject(isNew = false) {
   const p = project();
-  smallForm({ title: isNew ? 'New project' : 'Project settings', fields: nameField(isNew ? '' : p.name) + (isNew ? templateField(null, 'Card template for new cards', 'The project starts with one flow that uses this template. Add more flows, each with its own template, from the flow tabs.') : ''), submit: isNew ? 'Create project' : 'Save changes', extra: isNew ? '' : `${button('archive-project', 'Archive project', null, 'text-button')}${button('delete-project', 'Delete project', 'trash', 'text-button danger')}`, onSubmit: async (data) => {
+  smallForm({ title: isNew ? 'New project' : 'Project settings', fields: nameField(isNew ? '' : p.name) + (isNew ? templateField(null, 'Card template for new cards', 'The project starts with one flow that uses this template. Add more flows, each with its own template, with Add a new flow in the sidebar.') : ''), submit: isNew ? 'Create project' : 'Save changes', extra: isNew ? '' : `${button('archive-project', 'Archive project', null, 'text-button')}${button('delete-project', 'Delete project', 'trash', 'text-button danger')}`, onSubmit: async (data) => {
     if (isNew) {
       const next = await createProject(data.get('name').trim(), data.get('templateId') || undefined);
       selectProject(next.id);

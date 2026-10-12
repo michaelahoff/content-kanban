@@ -1,6 +1,6 @@
 # A project holds several flows, each self-contained
 
-Each project had exactly one flow: `projects.flow_id` pointed at it, and the project chose the card template for new cards. Now that every lane can run its own playbook and agent, one project naturally wants several kinds of flow, such as a long-form pipeline beside a Shorts pipeline. So a project now holds one or more flows:
+Each project had exactly one flow: `projects.flow_id` pointed at it, and the project chose the card template for new cards. Now that every lane can run its own playbook and agent, one project naturally wants several kinds of flow, such as a long-form flow beside a Shorts flow. So a project now holds one or more flows:
 
 - `flows` gains `project_id`, `position`, `template_id` and `deleted_at`. A flow is a board of lanes (`stages`) with the card template for its new cards. Cards still store only `project_id` and `stage_id`; a card's flow is its lane's flow.
 - A card can move to a lane of any live flow in its project. It is an ordinary move: `set:` values apply in the move transaction, an `on-enter` playbook requests a lane run, undo reverses it, and the event records `fromFlowId` and `toFlowId`. Approve and send back stay within the card's current flow. A move to another flow records unmet exit criteria the way a forward move does.
