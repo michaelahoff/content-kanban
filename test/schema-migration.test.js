@@ -49,7 +49,6 @@ for (const layout of layouts) {
       db.prepare("UPDATE meta SET value = ? WHERE key = 'schema_version'").run(String(layout.version));
     } finally { db.close(); }
 
-
     store = await openStore({ dataDir });
     assert.deepEqual(store.events(ctx), events);
     assert.deepEqual(store.getCard(ctx, card.id).card, moved.card);
