@@ -48,7 +48,7 @@ async function fixture(t) {
   client.state.projectId = client.state.projects[0].id;
   await client.loadCards(client.state.projectId);
   const idle = () => waitFor(() => !api.syncState().pending && !client.saveStatus().saving);
-  const card = async (lane = client.project().lanes[0]) => {
+  const card = async (lane = client.flow().lanes[0]) => {
     const created = client.createCard(lane);
     await idle();
     return created;
@@ -66,7 +66,7 @@ test('moving a stale card does not authorize overwriting another tab’s content
   const f = await fixture(t);
   const card = await f.card();
   await f.call('PATCH', `/api/cards/${card.id}`, { revision: 1, fields: { intro: 'Other tab’s intro' } });
-  f.client.moveCard(card.id, f.client.project().lanes[1].id);
+  f.client.moveCard(card.id, f.client.flow().lanes[1].id);
   await f.idle();
   assert.equal(card.revision, 1);
   card.title = 'My title';
@@ -197,7 +197,7 @@ test('typing an unsubmitted field during a save cannot acknowledge an unseen ext
 
 test('entry prompts flush earlier drafts and acknowledge only their own content changes', async (t) => {
   const f = await fixture(t);
-  const lane = f.client.project().lanes[1];
+  const lane = f.client.flow().lanes[1];
   // Simulates a rule configured elsewhere, so the local lane is out of date.
   await f.playbook(lane, { prompt: 'Lane instructions' });
   const card = await f.card();
@@ -227,7 +227,7 @@ test('entry prompts flush earlier drafts and acknowledge only their own content 
 
 test('an entry prompt acknowledges only its own fields while unrelated edits can save', async (t) => {
   const f = await fixture(t);
-  const lane = f.client.project().lanes[1];
+  const lane = f.client.flow().lanes[1];
   await f.playbook(lane, { prompt: 'Lane prompt' });
   const card = await f.card();
   await f.call('PATCH', `/api/cards/${card.id}`, { revision: 1, fields: { intro: 'Other tab intro' } });
@@ -250,7 +250,7 @@ test('an entry prompt acknowledges only its own fields while unrelated edits can
 
 test('typing during a lane transition preserves the newer draft and saves against the action revision', async (t) => {
   const f = await fixture(t);
-  const lane = f.client.project().lanes[1];
+  const lane = f.client.flow().lanes[1];
   await f.playbook(lane, { prompt: 'Automatic prompt' });
   const card = await f.card();
   let release;
@@ -278,7 +278,7 @@ test('typing during a lane transition preserves the newer draft and saves agains
 
 test('a multi-field playbook set refreshes title and text without overwriting typing during the move', async (t) => {
   const f = await fixture(t);
-  const lane = f.client.project().lanes[1];
+  const lane = f.client.flow().lanes[1];
   await f.playbook(lane, { prompt: 'Flow prompt', title: 'Flow title', intro: 'Flow intro' });
   const created = await f.card(lane);
   assert.equal(created.title, 'Flow title');
@@ -311,7 +311,7 @@ test('a multi-field playbook set refreshes title and text without overwriting ty
 
 test('failed playbook saves keep the saved summary and can retry without blocking other writes', async (t) => {
   const f = await fixture(t);
-  const p = f.client.project(); const lane = p.lanes[0];
+  const p = f.client.flow(); const lane = p.lanes[0];
   let failed = false;
   globalThis.fetch = (url, options) => {
     if (options?.method === 'PUT' && url.includes('/playbooks') && !failed) {
@@ -334,7 +334,7 @@ test('failed playbook saves keep the saved summary and can retry without blockin
 
 test('undo saves earlier drafts, restores placement and fields, and keeps typing during the request', async (t) => {
   const f = await fixture(t);
-  const [source, destination] = f.client.project().lanes;
+  const [source, destination] = f.client.flow().lanes;
   await f.playbook(destination, { prompt: 'Lane prompt' });
   const card = await f.card();
   const neighbour = await f.card();
@@ -378,7 +378,7 @@ test('undo saves earlier drafts, restores placement and fields, and keeps typing
 
 test('undo refreshes changed fields and a failed undo does not block other card saves', async (t) => {
   const f = await fixture(t);
-  const [source, destination] = f.client.project().lanes;
+  const [source, destination] = f.client.flow().lanes;
   await f.playbook(destination, { prompt: 'Lane prompt' });
   const card = await f.card();
   const other = await f.card();
@@ -503,13 +503,13 @@ test('the shared prompt reaches only cards whose template has a Prompt field', a
   const youtube = [await f.card(), await f.card()];
   const plainTemplate = await f.call('POST', '/api/templates', { name: 'Plain', title: { label: 'Card title', max: 500 }, fields: [{ key: 'body', label: 'Body', control: 'textarea' }], imageRoles: [] });
   assert.equal(plainTemplate.id, 'plain');
-  await f.call('PATCH', `/api/projects/${projectId}`, { templateId: 'plain' });
-  // Reload as the fixture does: the project's template changed in another tab.
+  await f.call('PATCH', `/api/flows/${f.client.flow().id}`, { templateId: 'plain' });
+  // Reload as the fixture does: the flow's template changed in another tab.
   await f.client.loadWorkspace();
   await f.client.loadCards(projectId);
   const p = f.client.project();
-  assert.equal(p.templateId, 'plain');
-  const plain = f.client.createCard(p.lanes[0]);
+  assert.equal(f.client.flow(p).templateId, 'plain');
+  const plain = f.client.createCard(f.client.flow(p).lanes[0]);
   await f.idle();
   assert.equal(plain.template, 'plain');
   assert.deepEqual(Object.keys(plain.fields), ['body']);
@@ -526,7 +526,7 @@ test('the shared prompt reaches only cards whose template has a Prompt field', a
   }
   // A project whose cards all lack the field has nothing to set.
   const plainOnly = await f.client.createProject('Plain only', 'plain');
-  f.client.createCard(plainOnly.lanes[0], plainOnly);
+  f.client.createCard(plainOnly.flows[0].lanes[0], plainOnly);
   await f.idle();
   assert.equal(f.client.setProjectPrompt(plainOnly, 'Shared'), 0);
   await f.idle();
@@ -540,12 +540,12 @@ test('a shared prompt over a card’s template limit is refused before any card 
   const short = await f.call('POST', '/api/templates', { name: 'Short prompts', title: youtube.title, imageRoles: youtube.imageRoles,
     fields: youtube.fields.map((field) => (field.key === 'prompt' ? { ...field, max: 5 } : field)) });
   assert.equal(short.id, 'short-prompts');
-  await f.call('PATCH', `/api/projects/${projectId}`, { templateId: short.id });
-  // Reload as the fixture does: the project's template changed in another tab.
+  await f.call('PATCH', `/api/flows/${f.client.flow().id}`, { templateId: short.id });
+  // Reload as the fixture does: the flow's template changed in another tab.
   await f.client.loadWorkspace();
   await f.client.loadCards(projectId);
   const p = f.client.project();
-  const card = f.client.createCard(p.lanes[0]);
+  const card = f.client.createCard(f.client.flow(p).lanes[0]);
   await f.idle();
   assert.equal(f.client.promptLimit(card), 5);
   assert.throws(() => f.client.setProjectPrompt(p, 'Too long prompt'), { name: 'Error', message: /“Short prompts”.*\b5 characters/ });
@@ -583,7 +583,7 @@ test('a draft in a field the template dropped is let go and no longer holds the 
   f.client.flushCards();
   await waitFor(() => f.api.syncState().error);
   assert.match(f.api.syncState().error, /Unknown card field/);
-  const later = f.client.createCard(f.client.project().lanes[0]);
+  const later = f.client.createCard(f.client.flow().lanes[0]);
   assert.equal(f.api.syncState().pending, 2, 'The later write waits behind the refused save');
   // Learning of the template change lets the field go, draft included, and the queue through.
   await f.client.loadTemplates();

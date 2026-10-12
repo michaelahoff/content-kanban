@@ -2,7 +2,7 @@
 // card's latest lane runs, Run playbook, and the card's hand-off notes
 // (notes.md in its workspace), which every lane run reads.
 import { $, escape, icon, button, toast } from './ui.js';
-import { locateCard, laneRuns, runPlaybook, loadNotes, saveNotes } from './state.js';
+import { locateCard, lanesOf, laneRuns, runPlaybook, loadNotes, saveNotes } from './state.js';
 import { openPlaybooks } from './playbook-editor.js';
 
 let refreshTimer = null;
@@ -85,7 +85,7 @@ export function renderBar() {
   const guidance = latest && runGuidance(latest, { here: latest.stageId === lane.id });
   panel.innerHTML = `<div class="card-playbook-info">${icon('playbook')}<div><strong>${escape(lane.name)} playbook</strong><span>${escape(playbook ? playbook.summary : 'No playbook yet. Open playbooks to write one.')}</span></div></div>
     <div class="card-playbook-actions">${button('run-playbook', 'Run playbook', 'arrow', 'button small secondary', runnable ? '' : 'disabled title="This lane has no runnable playbook"')}${button('open-lane-playbook', 'Open playbook', null, 'button small secondary', `data-id="${lane.id}"`)}</div>
-    ${latest ? `<p class="card-playbook-run ${latest.status === 'failed' ? 'failed' : ''}"><span>Last run${latest.stageId !== lane.id ? ` in ${escape(found.project.lanes.find((item) => item.id === latest.stageId)?.name ?? 'another lane')}` : ''}:</span> ${escape(runLabel(latest))}</p>` : ''}
+    ${latest ? `<p class="card-playbook-run ${latest.status === 'failed' ? 'failed' : ''}"><span>Last run${latest.stageId !== lane.id ? ` in ${escape(lanesOf(found.project).find((item) => item.id === latest.stageId)?.name ?? 'another lane')}` : ''}:</span> ${escape(runLabel(latest))}</p>` : ''}
     ${guidance ? `<p class="card-playbook-guidance">${escape(guidance)}</p>` : ''}`;
 }
 

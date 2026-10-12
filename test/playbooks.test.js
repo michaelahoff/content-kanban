@@ -267,7 +267,7 @@ test('playbook files are created per flow, saved with hash checks and summarized
   const f = await fixture(t);
   const { flowId, stages } = await lanes(f);
   const listed = await f.ok('GET', `/api/flows/${flowId}/playbooks`);
-  assert.match(listed.map.text, /My project — project map/);
+  assert.match(listed.map.text, /Main — flow map/);
   assert.match(listed.map.text, /\*\*In progress\*\*/);
   assert.equal(listed.folder, path.join(f.dataDir, 'flows', flowId));
   assert.deepEqual(listed.lanes, []);

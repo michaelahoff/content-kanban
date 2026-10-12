@@ -71,7 +71,7 @@ function contextRow({ template, settings, document }) {
   const fields = contextFields(template).map((field, index) => check(`playbook-context-field-${index}`, 'form-context', escape(field.label), { checked: settings.selections.fields.includes(field.key), attrs: `data-key="${escape(field.key)}" data-group="field"` }));
   const roles = imageRoles(template).map((role, index) => check(`playbook-context-role-${index}`, 'form-context', `${escape(role.label)} image`, { checked: settings.selections.roles.includes(role.key), attrs: `data-key="${escape(role.key)}" data-group="role"` }));
   const choices = all ? '' : `<div class="playbook-choices">${[...fields, ...roles].join('')}</div>`;
-  return row('context', 'What to send', toggle + choices, { help: 'Card fields and image roles included in every run, besides the project map, this playbook and its skills.' });
+  return row('context', 'What to send', toggle + choices, { help: 'Card fields and image roles included in every run, besides the flow map, this playbook and its skills.' });
 }
 
 function mayEditRow({ template, settings }) {

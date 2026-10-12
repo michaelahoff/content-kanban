@@ -33,14 +33,14 @@ const saveTemplate = async (f, template, changes) => {
 // Projects beyond the fixture's first one get their own flow and lanes.
 const createProject = async (f, name, templateId) => {
   const { project, flow } = await f.ok('POST', '/api/projects', { name, ...(templateId === undefined ? {} : { templateId }) });
-  return { project, stages: flow.stages };
+  return { project, flow, stages: flow.stages };
 };
 const createCard = (f, project, stageId, input = {}) => f.ok('POST', `/api/projects/${project.id}/cards`, { stageId, ...input });
 const getCard = async (f, id) => (await f.ok('GET', `/api/cards/${id}`)).card;
 const runs = async (f, cardId) => (await f.ok('GET', `/api/cards/${cardId}/lane-runs`)).runs;
 const result = (value) => `Done.\n\n\`\`\`frameboard-result\n${JSON.stringify(value, null, 2)}\n\`\`\``;
 
-test('the workspace lists the built-in template with its usage counts and each project’s template', async (t) => {
+test('the workspace lists the built-in template with its usage counts and each flow’s template', async (t) => {
   const f = await fixture(t);
   await f.card({ title: 'Counted' });
   const workspace = await f.ok('GET', '/api/workspace');
@@ -54,9 +54,9 @@ test('the workspace lists the built-in template with its usage counts and each p
   assert.equal(builtin.builtin, true);
   assert.equal(builtin.revision, 1);
   assert.equal(builtin.cardCount, 1);
-  assert.equal(builtin.projectCount, 1);
+  assert.equal(builtin.flowCount, 1);
   assert.equal(workspace.projects.length, 1);
-  for (const project of workspace.projects) assert.equal(project.templateId, 'youtube-video');
+  for (const flow of workspace.flows) assert.equal(flow.templateId, 'youtube-video');
   assert.deepEqual(await templates(f), workspace.templates);
 });
 
@@ -76,7 +76,7 @@ test('creating a template normalizes its fields, numbers a repeated name and ref
   ]);
   assert.deepEqual(created.body.imageRoles, blogPost.imageRoles);
   assert.equal(created.body.cardCount, 0);
-  assert.equal(created.body.projectCount, 0);
+  assert.equal(created.body.flowCount, 0);
   assert.equal((await f.ok('POST', '/api/templates', blogPost)).id, 'blog-post-2');
   assert.deepEqual((await templates(f)).map((template) => template.id), ['youtube-video', 'blog-post', 'blog-post-2']);
   const field = (key, extra = {}) => ({ key, label: key, ...extra });
@@ -176,7 +176,7 @@ test('a field cannot be removed while a live card holds a value; removed values 
   assert.equal((await f.ok('PATCH', `/api/cards/${card.id}`, { revision: shown.revision, fields: { headline: 'Back' } })).fields.headline, 'Back');
 });
 
-test('a template is deleted only when no live card, project default or last-template rule needs it', async (t) => {
+test('a template is deleted only when no live card, flow default or last-template rule needs it', async (t) => {
   const f = await fixture(t);
   const { projects } = await f.ok('GET', '/api/workspace');
   await f.ok('DELETE', `/api/projects/${projects[0].id}`);
@@ -193,8 +193,8 @@ test('a template is deleted only when no live card, project default or last-temp
   await f.ok('DELETE', `/api/projects/${blog.project.id}`);
   const isDefault = await f.call('DELETE', '/api/templates/blog-post');
   assert.equal(isDefault.status, 409);
-  assert.match(isDefault.body.error, /“Third project” uses this template for new cards/);
-  await f.ok('PATCH', `/api/projects/${third.project.id}`, { templateId: 'youtube-video' });
+  assert.match(isDefault.body.error, /“Main” in “Third project” uses this template for new cards/);
+  await f.ok('PATCH', `/api/flows/${third.flow.id}`, { templateId: 'youtube-video' });
   assert.deepEqual(await f.ok('DELETE', '/api/templates/blog-post'), { ok: true });
   assert.deepEqual((await templates(f)).map((entry) => entry.id), ['youtube-video']);
   assert.deepEqual((await f.ok('GET', '/api/workspace')).templates.map((entry) => entry.id), ['youtube-video']);
@@ -212,17 +212,19 @@ test('a template is deleted only when no live card, project default or last-temp
   assert.equal(states.at(-1).snapshot.fields.headline, 'Kept');
 });
 
-test('a project’s template is the default for its new cards, which can name another live template', async (t) => {
+test('a flow’s template is the default for its new cards, which can name another live template', async (t) => {
   const f = await fixture(t);
   const template = await f.ok('POST', '/api/templates', blogPost);
-  const { project, stages } = await createProject(f, 'Second');
-  assert.equal(project.templateId, 'youtube-video');
-  const changed = await f.ok('PATCH', `/api/projects/${project.id}`, { templateId: template.id });
+  const { project, flow, stages } = await createProject(f, 'Second');
+  assert.equal(flow.templateId, 'youtube-video');
+  const changed = await f.ok('PATCH', `/api/flows/${flow.id}`, { templateId: template.id });
   assert.equal(changed.templateId, 'blog-post');
-  assert.equal(changed.name, 'Second');
+  assert.equal(changed.name, 'Main');
   const workspace = await f.ok('GET', '/api/workspace');
-  assert.equal(workspace.projects.find((entry) => entry.id === project.id).templateId, 'blog-post');
-  assert.equal(workspace.templates.find((entry) => entry.id === 'blog-post').projectCount, 1);
+  assert.equal(workspace.flows.find((entry) => entry.id === flow.id).templateId, 'blog-post');
+  assert.equal(workspace.templates.find((entry) => entry.id === 'blog-post').flowCount, 1);
+  // A project no longer has a template of its own.
+  assert.match((await f.call('PATCH', `/api/projects/${project.id}`, { templateId: template.id })).body.error, /Each flow chooses the card template/);
   const own = await createCard(f, project, stages[0].id);
   assert.equal(own.template, 'blog-post');
   assert.deepEqual(Object.keys(own.fields), ['headline', 'body', 'canonicalUrl', 'authorNotes']);
@@ -235,9 +237,9 @@ test('a project’s template is the default for its new cards, which can name an
   assert.match(unknown.body.error, /Unknown card template/);
   const missing = await f.call('POST', '/api/projects', { name: 'Bad', templateId: 'nope' });
   assert.equal(missing.status, 404);
-  assert.equal((await f.call('PATCH', `/api/projects/${project.id}`, { templateId: 'nope' })).status, 404);
+  assert.equal((await f.call('PATCH', `/api/flows/${flow.id}`, { templateId: 'nope' })).status, 404);
   // Changing the default never changes existing cards.
-  await f.ok('PATCH', `/api/projects/${project.id}`, { templateId: 'youtube-video' });
+  await f.ok('PATCH', `/api/flows/${flow.id}`, { templateId: 'youtube-video' });
   assert.equal((await getCard(f, own.id)).template, 'blog-post');
   assert.equal((await createCard(f, project, stages[0].id)).template, 'youtube-video');
 });
@@ -324,7 +326,7 @@ test('playbook summaries and errors are checked against each project’s own tem
   assert.equal(board.flows.find((flow) => flow.id === video.project.flowId).stages[1].playbook.summary, 'Has errors');
 });
 
-test('a database from before templates gains the built-in template and project defaults on upgrade', async (t) => {
+test('a database from before templates gains the built-in template and flow defaults on upgrade', async (t) => {
   const f = await fixture(t);
   const card = await f.card({ title: 'Before templates', fields: { intro: 'Old' } });
   const { project: second, stages } = await createProject(f, 'Second');
@@ -341,8 +343,8 @@ test('a database from before templates gains the built-in template and project d
   assert.equal(workspace.templates[0].builtin, true);
   assert.deepEqual(keys(workspace.templates[0].fields), keys(youtubeVideoTemplate.fields));
   assert.equal(workspace.projects.length, 2);
-  for (const project of workspace.projects) assert.equal(project.templateId, 'youtube-video');
-  assert.equal(workspace.templates[0].projectCount, 2);
+  for (const flow of workspace.flows) assert.equal(flow.templateId, 'youtube-video');
+  assert.equal(workspace.templates[0].flowCount, 2);
   assert.equal(workspace.templates[0].cardCount, 2);
   const loaded = await getCard(f, card.id);
   assert.equal(loaded.template, 'youtube-video');
@@ -358,12 +360,12 @@ test('a database from before templates gains the built-in template and project d
   assert.equal((await createCard(f, second, stages[0].id)).template, 'youtube-video');
 });
 
-test('a new project’s map lists the card fields of its template', async (t) => {
+test('a new project’s first flow map lists the card fields of its template', async (t) => {
   const f = await fixture(t);
   const template = await f.ok('POST', '/api/templates', blogPost);
   const { project } = await createProject(f, 'Blog', template.id);
   const { map } = await f.ok('GET', `/api/flows/${project.flowId}/playbooks`);
-  assert.match(map.text, /^# Blog — project map/);
+  assert.match(map.text, /^# Main — flow map/);
   const section = map.text.split('## Card fields')[1].split('## Rules')[0];
   assert.deepEqual(section.trim().split('\n'), ['- **Card title**: (what goes here)', '- **Headline**: (what goes here)', '- **Body**: (what goes here)', '- **Canonical URL**: (what goes here)']);
   assert.ok(!map.text.includes('Author notes'), 'Hidden fields are left out');

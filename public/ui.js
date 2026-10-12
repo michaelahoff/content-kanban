@@ -105,7 +105,7 @@ export function smallForm({ title, description = '', fields = '', submit = 'Save
     if (input.id === 'name-input') input.select();
   }
 }
-export const nameField = (value = '', placeholder = 'Project name', max = 150) => `<label class="form-label" for="name-input">${placeholder}</label><input class="form-input" id="name-input" name="name" value="${escape(value)}" placeholder="${placeholder === 'Project name' ? 'e.g. YouTube ideas' : 'e.g. Ready to film'}" maxlength="${max}" required autocomplete="off">`;
+export const nameField = (value = '', placeholder = 'Project name', max = 150) => `<label class="form-label" for="name-input">${placeholder}</label><input class="form-input" id="name-input" name="name" value="${escape(value)}" placeholder="${{ 'Project name': 'e.g. YouTube ideas', 'Flow name': 'e.g. Shorts' }[placeholder] ?? 'e.g. Ready to film'}" maxlength="${max}" required autocomplete="off">`;
 export function confirmDelete(title, description, onSubmit) {
   smallForm({ title, description, submit: 'Delete', danger: true, onSubmit });
 }

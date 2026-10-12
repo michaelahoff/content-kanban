@@ -1,6 +1,6 @@
 import { $, escape, toast, smallForm } from './ui.js';
 import { request, send, enqueue } from './api.js';
-import { state, locateCard, templateOf, flushCards, saveStatus, refreshSavedCard } from './state.js';
+import { state, locateCard, lanesOf, templateOf, flushCards, saveStatus, refreshSavedCard } from './state.js';
 import { contextFields, imageRoles } from './card-template.js';
 import { attemptMarkup, progressState, runningStatuses } from './chat-transcript.js';
 import { chooseCollision, folderOptions, formatSize, libraryChoices } from './library.js';
@@ -468,7 +468,7 @@ async function answerInput(item, id) {
 async function reviewProposal(item, id) {
   const preview = await send('POST', url(item.id, `proposals/${id}/preview`), {});
   const p = item.snapshot.proposals.find((p) => p.id === id);
-  const lanes = locateCard(item.id)?.project.lanes ?? [];
+  const found = locateCard(item.id); const lanes = found ? lanesOf(found.project) : [];
   const label = (key) => contextFields(templateOf(locateCard(item.id).card)).find((f) => f.key === key)?.label ?? key;
   smallForm({ title: 'Review card proposal', fields: p.kind === 'move'
     ? `<p>${escape(lanes.find((l) => l.id === preview.fromStageId)?.name ?? 'Current lane')} → ${escape(lanes.find((l) => l.id === preview.payload.toStageId)?.name ?? 'Missing lane')}</p>`

@@ -22,7 +22,7 @@ const legacyBoard = 'board.json.migrated';
 const coverage = {
   included: ['SQLite database: projects (active and archived), lanes, cards, saved states, activity, chats, submissions, attempts, cancellations, proposals, lane runs, selections and settings',
     'Image versions (data/images)', 'Every committed retained version, including superseded and removed ones, and every saved output (data/retained/versions)',
-    'Card workspaces and hand-off notes (data/workspaces)', 'Project maps, lane playbooks and skills (data/flows)',
+    'Card workspaces and hand-off notes (data/workspaces)', 'Flow maps, lane playbooks and skills (data/flows)',
     'Already collected native Codex rollouts and generated images bound to card chats'],
   excluded: ['Global native credentials and configuration', 'Native conversations not bound to a card chat', 'The native Codex index',
     'Native Claude session files, including bound ones (their card chat history is in the database)',
@@ -207,12 +207,12 @@ async function exportWorkspace({ dataDir, output, codexHome, signal, checkpoint 
     await checkpoint('scanned');
     snapshotDatabase(path.join(dataDir, 'frameboard.db'), path.join(staging, 'frameboard.db'));
     await chmod(path.join(staging, 'frameboard.db'), 0o600);
-    const { schemaVersion, images, nativeThreads: threads, retained, folders, projects, tables, outputs, savedOutputs } = inspectBackupDatabase(path.join(staging, 'frameboard.db'));
+    const { schemaVersion, images, nativeThreads: threads, retained, folders, projects, flows, tables, outputs, savedOutputs } = inspectBackupDatabase(path.join(staging, 'frameboard.db'));
     // Database references are required coverage, not just files that were found.
     for (const image of images) if (!before.files.has(`images/${image.id}`)) fail(`Missing image: ${image.id}`);
     for (const version of retained) if (!before.files.has(version.path)) fail(`Missing retained version: ${version.versionId}. Repair it with its exact original bytes before exporting.`);
-    // Every retained project's map exists from its creation (startup recreates a starter otherwise).
-    for (const project of projects) if (!project.deletedAt && !before.files.has(`flows/${project.flowId}/MAP.md`)) fail(`Missing project map for "${project.name}": flows/${project.flowId}/MAP.md. Restore the file, or start Frameboard once to recreate a starter map, then export again.`);
+    // Every flow's map exists from its creation (startup recreates a starter otherwise).
+    for (const flow of flows) if (!before.files.has(`flows/${flow.id}/MAP.md`)) fail(`Missing flow map for "${flow.name}" in "${flow.project}": flows/${flow.id}/MAP.md. Restore the file, or start Frameboard once to recreate a starter map, then export again.`);
     const recordedImageHash = new Map(images.map((image) => [`images/${image.id}`, image.hash]));
     const retainedByPath = new Map(retained.map((version) => [version.path, version]));
     const entries = [];

@@ -159,11 +159,11 @@ test('reclaim removes only staging Frameboard can prove it owns, never similarly
   assert.ok((await readdir(f.output)).includes('.incomplete-Ab12Cd'));
 });
 
-test('a project map recorded by the database is required coverage', async (t) => {
+test('a flow map recorded by the database is required coverage', async (t) => {
   const f = await fixture(t);
   const flow = f.store.workspace(f.ctx).flows[0].id;
   f.stop();
   await rm(path.join(f.dataDir, 'flows', flow, 'MAP.md'));
-  await assert.rejects(f.export(), new RegExp(`Missing project map .*flows/${flow}/MAP\\.md`));
+  await assert.rejects(f.export(), new RegExp(`Missing flow map .*flows/${flow}/MAP\\.md`));
   assert.deepEqual(await readdir(f.output), []);
 });

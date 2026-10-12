@@ -156,7 +156,7 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
     lanes.wake();
     const flowFor = (ctx, flowId) => {
       const flow = store.workspace(ctx).flows.find((entry) => entry.id === flowId);
-      if (!flow) throw Object.assign(new Error('This project no longer exists. Reload the page.'), { status: 404 });
+      if (!flow) throw Object.assign(new Error('This flow no longer exists. Reload the page.'), { status: 404 });
       return flow;
     };
     const bodyOf = (input) => { assert(input && typeof input === 'object', 'Invalid playbook document.'); return input; };
@@ -253,6 +253,9 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
       }],
       ['GET', /^\/api\/projects\/([^/]+)\/cards$/, (ctx, req, id) => ({ cards: store.listCards(ctx, id) })],
       ['POST', /^\/api\/projects\/([^/]+)\/cards$/, async (ctx, req, id) => store.createCard(ctx, id, await read(req)), 201],
+      ['POST', /^\/api\/projects\/([^/]+)\/flows$/, async (ctx, req, id) => store.createFlow(ctx, id, await read(req)), 201],
+      ['PATCH', /^\/api\/flows\/([^/]+)$/, async (ctx, req, id) => store.updateFlow(ctx, id, await read(req))],
+      ['DELETE', /^\/api\/flows\/([^/]+)$/, (ctx, req, id) => (store.deleteFlow(ctx, id), { ok: true })],
       ['POST', /^\/api\/flows\/([^/]+)\/stages$/, async (ctx, req, id) => store.createStage(ctx, id, await read(req)), 201],
       ['PATCH', /^\/api\/stages\/([^/]+)$/, async (ctx, req, id) => store.updateStage(ctx, id, await read(req))],
       ['DELETE', /^\/api\/stages\/([^/]+)$/, (ctx, req, id) => (store.deleteStage(ctx, id), { ok: true })],
@@ -268,9 +271,7 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
       // before or after saving. A source from another project is reported,
       // never rebound by name.
       ['GET', /^\/api\/flows\/([^/]+)\/playbooks\/assets$/, (ctx, req, id, url) => {
-        const project = store.workspace(ctx).projects.find((entry) => entry.flowId === flowFor(ctx, id).id);
-        if (!project) throw Object.assign(new Error('This project no longer exists. Reload the page.'), { status: 404 });
-        const { files, selections, problems } = store.library.resolve(ctx, project.id, assetSources(url.searchParams.get('sources') ?? '').sources);
+        const { files, selections, problems } = store.library.resolve(ctx, flowFor(ctx, id).projectId, assetSources(url.searchParams.get('sources') ?? '').sources);
         return { selections, problems, files: files.map(({ assetId, libraryPath, sources }) => ({ assetId, libraryPath, sources })) };
       }],
       ['PUT', /^\/api\/flows\/([^/]+)\/playbooks$/, async (ctx, req, id) => {

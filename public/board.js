@@ -1,6 +1,7 @@
-// The project sidebar, the board of lanes and cards, and the project and lane forms.
+// The project sidebar with each project's flows, the board of lanes and
+// cards, and the project, flow and lane forms.
 import { $, escape, icon, button, iconButton, imageURL, palette, smallForm, nameField, toast, themeSwitchMarkup, accentSwitchMarkup } from './ui.js';
-import { state, project, locateCard, cardCount, searchText, saveStatus, createProject, renameProject, setProjectTemplate, projectTemplate, addLane, updateLane, setProjectPrompt, latestMoveCard, hasPromptField, promptLimit } from './state.js';
+import { state, project, flow, lanesOf, locateCard, cardCount, flowCardCount, searchText, saveStatus, createProject, renameProject, createFlow, updateFlow, selectFlow, flowTemplate, addLane, updateLane, setProjectPrompt, latestMoveCard, hasPromptField, promptLimit } from './state.js';
 import { activityMarkup } from './chat.js';
 import { renderLibrary } from './library.js';
 
@@ -54,13 +55,34 @@ export function showTab(tab) {
   view.tab = tab;
   renderApp();
 }
-// Board and Library are views of the same project.
-const tabs = (p) => `<div class="project-tabs" role="tablist" aria-label="Project views"><button type="button" role="tab" class="board-tab ${view.tab === 'board' ? 'active' : ''}" data-action="show-board" aria-selected="${view.tab === 'board'}">${icon('board')} Board <span id="total-count">${cardCount(p)}</span></button><button type="button" role="tab" class="board-tab ${view.tab === 'library' ? 'active' : ''}" data-action="show-library" aria-selected="${view.tab === 'library'}">${icon('upload')} Library</button></div>`;
+export function showFlow(flowId) {
+  selectFlow(project(), flowId);
+  view.tab = 'board';
+  view.pasteLaneId = null;
+  renderApp();
+}
+const flowCount = (p, f) => (p.loaded ? flowCardCount(f) : f.cardCount ?? '');
+// The board shows the current flow, chosen in the sidebar; the Library is
+// shared by every flow in the project.
+const tabs = (p) => {
+  const f = flow(p);
+  return `<div class="project-tabs" role="tablist" aria-label="Project views"><button type="button" role="tab" class="board-tab ${view.tab === 'board' ? 'active' : ''}" data-action="show-board" aria-selected="${view.tab === 'board'}">${icon('board')} ${escape(f?.name ?? 'Board')} ${f ? `<span data-flow-count="${f.id}">${flowCount(p, f)}</span>` : ''}</button><button type="button" role="tab" class="board-tab ${view.tab === 'library' ? 'active' : ''}" data-action="show-library" aria-selected="${view.tab === 'library'}">${icon('upload')} Library</button></div>`;
+};
 const searchBox = () => `<label class="search">${icon('search')}<input id="search" type="search" placeholder="Find a card…" aria-label="Find a card" value="${escape(view.query)}"></label>`;
 const projectView = (p, tools) => view.tab === 'library'
   ? `<div class="board-toolbar">${tabs(p)}</div><section id="library" class="library" aria-label="${escape(p.name)} library"></section>`
-  : `<div class="board-toolbar">${tabs(p)}<div class="board-tools">${tools}</div></div><div id="board" class="board" aria-label="${escape(p.name)} kanban board"></div>`;
-const projectLink = (item) => `<button class="project-link ${item.id === state.projectId ? 'active' : ''}" data-action="switch-project" data-id="${item.id}" ${item.id === state.projectId ? 'aria-current="page"' : ''}>${icon('board')}<span>${escape(item.name)}</span><span class="project-count">${cardCount(item)}</span></button>`;
+  : `<div class="board-toolbar">${tabs(p)}<div class="board-tools">${tools}</div></div><div id="board" class="board" aria-label="${escape(p.name)}: ${escape(flow(p)?.name ?? '')} flow"></div>`;
+// Each project in the sidebar lists its flows beneath it, ending with Add a
+// new flow. A card dragged onto another flow of its project moves to that
+// flow's first lane.
+function projectLink(item) {
+  const current = item.id === state.projectId;
+  const shown = current ? flow(item) : null;
+  const flowRow = (f) => `<li class="flow-row ${f === shown ? 'active' : ''}"><button type="button" class="flow-link" data-action="show-flow" data-project-id="${item.id}" data-id="${f.id}" data-flow-drop="${f.id}" ${f === shown ? 'aria-current="page"' : ''}><span>${escape(f.name)}</span><span class="flow-count" data-flow-count="${f.id}">${flowCount(item, f)}</span></button>${item.archivedAt ? '' : iconButton('edit-flow', `${f.name} flow settings`, 'more', `data-project-id="${item.id}" data-id="${f.id}"`)}</li>`;
+  const add = item.archivedAt ? '' : `<li><button type="button" class="add-flow-link" data-action="add-flow" data-project-id="${item.id}">${icon('plus')}<span>Add a new flow</span></button></li>`;
+  return `<div class="project-group"><button class="project-link ${current ? 'active' : ''}" data-action="switch-project" data-id="${item.id}">${icon('board')}<span>${escape(item.name)}</span><span class="project-count">${cardCount(item)}</span></button>
+    <ul class="flow-list" aria-label="${escape(item.name)} flows">${item.flows.map(flowRow).join('')}${add}</ul></div>`;
+}
 // An archived project is read-only: no lane, card or playbook actions.
 const archivedHeader = (p) => `<header class="board-header"><div><div class="heading-row"><h1>${escape(p.name)}</h1><span class="archived-badge">Archived</span></div></div><div class="header-actions">${button('unarchive-project', 'Unarchive', 'undo', 'button primary')}</div></header>
       <p class="archived-banner" role="note">${escape(archivedNotice)}</p>
@@ -81,7 +103,7 @@ export function renderApp() {
     <main class="main">
       <div class="topbar"><div class="breadcrumbs">${iconButton('toggle-sidebar', 'Toggle projects', 'menu')}</div><div class="workspace-chat-activity"><button class="button small secondary" data-action="workspace-chat-activity">Chat activity</button><div id="chat-activity-list" hidden></div></div><div class="save-status" data-save-status></div></div>
       <div id="save-error" class="error-banner" role="alert" hidden></div>
-      ${p?.archivedAt ? archivedHeader(p) : p ? `<header class="board-header"><div><div class="heading-row"><h1>${escape(p.name)}</h1>${iconButton('edit-project', 'Project settings', 'more')}</div></div><div class="header-actions">${button('open-playbooks', 'Playbooks', 'playbook', 'button secondary')}${projectTemplate(p)?.fields.some((field) => field.key === 'prompt') ? button('set-project-prompt', 'Set prompt', 'text', 'button secondary') : ''}${button('add-lane', 'Add lane', 'plus', 'button secondary')}${button('add-card', 'New card', 'plus', 'button primary', p.lanes.length ? '' : 'disabled')}</div></header>
+      ${p?.archivedAt ? archivedHeader(p) : p ? `<header class="board-header"><div><div class="heading-row"><h1>${escape(p.name)}</h1>${iconButton('edit-project', 'Project settings', 'more')}</div></div><div class="header-actions">${button('open-playbooks', 'Playbooks', 'playbook', 'button secondary')}${flowTemplate(flow(p))?.fields.some((field) => field.key === 'prompt') ? button('set-project-prompt', 'Set prompt', 'text', 'button secondary') : ''}${button('add-lane', 'Add lane', 'plus', 'button secondary')}${button('add-card', 'New card', 'plus', 'button primary', flow(p)?.lanes.length ? '' : 'disabled')}</div></header>
       ${projectView(p, `${button('undo-move', 'Undo last move', 'undo', 'button small secondary', 'data-undo-move="board" disabled')}${button('toggle-cards', view.cardsCollapsed ? 'Expand cards' : 'Collapse cards', null, 'button small secondary', `aria-pressed="${view.cardsCollapsed}" aria-controls="board"`)}<span class="paste-hint">${icon('image')} Paste an image to start a card</span>${searchBox()}`)}` : `<div class="no-projects"><span class="empty-symbol">${icon('board')}</span><h1>No projects yet</h1><p>Create a project to start a board.</p>${button('add-project', 'Create a project', 'plus', 'button primary')}</div>`}
     </main>`;
   renderBoard();
@@ -99,10 +121,19 @@ function cardMarkup(card, draggable = true) {
       <div class="card-body"><h3>${title}</h3>${activityMarkup(card.id)}</div>
     </button></article>`;
 }
+// Card counts in the sidebar and on the Board tab.
+function renderCounts() {
+  document.querySelectorAll('.project-link').forEach((node) => {
+    const item = state.projects.find((item) => item.id === node.dataset.id);
+    if (item) $('.project-count', node).textContent = cardCount(item);
+  });
+  for (const f of project()?.flows ?? []) document.querySelectorAll(`[data-flow-count="${f.id}"]`).forEach((node) => { node.textContent = flowCardCount(f); });
+}
 export function renderBoard() {
   const container = $('#board');
   const p = project();
-  if (!container || !p) return;
+  const f = flow(p);
+  if (!container || !f) return;
   const search = view.query.toLocaleLowerCase().trim();
   container.classList.toggle('cards-collapsed', view.cardsCollapsed);
   const toggle = $('[data-action="toggle-cards"]');
@@ -111,16 +142,16 @@ export function renderBoard() {
     toggle.setAttribute('aria-pressed', String(view.cardsCollapsed));
   }
   if (p.archivedAt) {
-    container.innerHTML = p.lanes.map((lane) => {
+    container.innerHTML = f.lanes.map((lane) => {
       const cards = lane.cards.filter((card) => searchText(card).toLocaleLowerCase().includes(search));
       return `<section class="lane" data-lane="${lane.id}" aria-label="${escape(lane.name)} lane"><div class="lane-heading"><span class="lane-dot ${lane.color}"></span><h2>${escape(lane.name)}</h2><span class="lane-count">${search ? `${cards.length}/` : ''}${lane.cards.length}</span></div>
         <div class="lane-cards">${cards.map((card) => cardMarkup(card, false)).join('')}</div></section>`;
     }).join('');
-    $('#total-count').textContent = cardCount(p);
+    renderCounts();
     renderStatus();
     return;
   }
-  container.innerHTML = p.lanes.map((lane) => {
+  container.innerHTML = f.lanes.map((lane) => {
     const cards = lane.cards.filter((card) => searchText(card).toLocaleLowerCase().includes(search));
     return `<section class="lane" data-lane="${lane.id}" tabindex="0" aria-label="${escape(lane.name)} lane; paste images here">
       <div class="lane-heading"><span class="lane-dot ${lane.color}"></span><h2>${escape(lane.name)}</h2><span class="lane-count">${search ? `${cards.length}/` : ''}${lane.cards.length}</span>${lane.playbook?.hasInstructions && lane.playbook.run === 'on-enter' && !lane.playbook.errors.length ? `<span class="lane-playbook-badge" title="${escape(lane.playbook.summary)}">Auto</span>` : lane.playbook?.errors.length ? '<span class="lane-playbook-badge error" title="This lane playbook has errors">!</span>' : ''}<div class="lane-actions">${iconButton('edit-playbook', `${lane.name} playbook`, 'playbook', `data-id="${lane.id}"`)}${iconButton('edit-lane', `Edit ${lane.name} lane`, 'more', `data-id="${lane.id}"`)}${iconButton('add-card', `Add card to ${lane.name}`, 'plus', `data-lane-id="${lane.id}"`)}</div></div>
@@ -128,50 +159,65 @@ export function renderBoard() {
       ${button('add-card', 'Add card', 'plus', 'lane-add', `data-lane-id="${lane.id}"`)}
     </section>`;
   }).join('') + `<button class="add-lane-column" data-action="add-lane">${icon('plus')}<span>Add a lane</span></button>`;
-  $('#total-count').textContent = cardCount(p);
-  document.querySelectorAll('.project-link').forEach((node) => {
-    const item = state.projects.find((item) => item.id === node.dataset.id);
-    if (item) $('.project-count', node).textContent = cardCount(item);
-  });
+  renderCounts();
   renderStatus();
 }
+const templateField = (selectedId, label, help) => `<label class="form-label" for="flow-template">${label}</label><select class="form-input" id="flow-template" name="templateId">${state.templates.map((template, index) => `<option value="${escape(template.id)}" ${(selectedId ? template.id === selectedId : index === 0) ? 'selected' : ''}>${escape(template.name)}</option>`).join('')}</select><p class="field-help">${help}</p>${button('manage-templates', 'Manage templates…', null, 'text-button')}`;
+// A new project starts with one flow; its card template is chosen here.
+// Each flow's template is changed in that flow's settings.
 export function editProject(isNew = false) {
   const p = project();
-  // The template for new cards: the project's own when editing, the first when creating.
-  const templateOptions = state.templates.map((template, index) => `<option value="${escape(template.id)}" ${(isNew ? index === 0 : template.id === p.templateId) ? 'selected' : ''}>${escape(template.name)}</option>`).join('');
-  const templateFields = `<label class="form-label" for="project-template">Card template for new cards</label><select class="form-input" id="project-template" name="templateId">${templateOptions}</select><p class="field-help">Existing cards keep the template they were created with.</p>${button('manage-templates', 'Manage templates…', null, 'text-button')}`;
-  smallForm({ title: isNew ? 'New project' : 'Project settings', fields: nameField(isNew ? '' : p.name) + templateFields, submit: isNew ? 'Create project' : 'Save changes', extra: isNew ? '' : `${button('archive-project', 'Archive project', null, 'text-button')}${button('delete-project', 'Delete project', 'trash', 'text-button danger')}`, onSubmit: async (data) => {
-    const templateId = data.get('templateId') || undefined;
+  smallForm({ title: isNew ? 'New project' : 'Project settings', fields: nameField(isNew ? '' : p.name) + (isNew ? templateField(null, 'Card template for new cards', 'The project starts with one flow that uses this template. Add more flows, each with its own template, with Add a new flow in the sidebar.') : ''), submit: isNew ? 'Create project' : 'Save changes', extra: isNew ? '' : `${button('archive-project', 'Archive project', null, 'text-button')}${button('delete-project', 'Delete project', 'trash', 'text-button danger')}`, onSubmit: async (data) => {
     if (isNew) {
-      const next = await createProject(data.get('name').trim(), templateId);
+      const next = await createProject(data.get('name').trim(), data.get('templateId') || undefined);
       selectProject(next.id);
-    } else {
-      renameProject(p, data.get('name').trim());
-      if (templateId && templateId !== p.templateId) setProjectTemplate(p, templateId);
-    }
+    } else renameProject(p, data.get('name').trim());
     renderApp();
   } });
 }
-export function editLane(laneId) {
+// A flow's name, the card template its new cards use, and its place among the
+// project's flows. Deleting is offered while the project has another flow.
+export function editFlow(isNew = false) {
   const p = project();
-  const lane = p.lanes.find((item) => item.id === laneId);
+  const f = isNew ? null : flow(p);
+  const position = f && p.flows.length > 1 ? `<label class="form-label" for="flow-position">Position</label><select class="form-input" id="flow-position" name="position">${p.flows.map((item, index) => `<option value="${index}" ${item === f ? 'selected' : ''}>${index + 1}${index === 0 ? ' · First flow' : index === p.flows.length - 1 ? ' · Last flow' : ''}</option>`).join('')}</select>` : '';
+  smallForm({
+    title: isNew ? 'New flow' : 'Flow settings',
+    description: isNew ? `A flow is its own board of lanes in “${p.name}”, with its own playbooks, skills and flow map. Every flow shares the project Library, and cards can move between flows.` : '',
+    fields: nameField(f?.name ?? '', 'Flow name', 100) + templateField(f?.templateId, 'Card template for new cards', 'Existing cards keep the template they were created with.') + position,
+    submit: isNew ? 'Create flow' : 'Save changes',
+    extra: f && p.flows.length > 1 ? button('delete-flow', 'Delete flow', 'trash', 'text-button danger', `data-id="${f.id}"`) : '',
+    onSubmit: async (data) => {
+      const values = { name: data.get('name').trim(), templateId: data.get('templateId') || undefined };
+      if (isNew) {
+        const created = await createFlow(p, values.name, values.templateId);
+        selectFlow(p, created.id);
+        view.tab = 'board';
+      } else updateFlow(p, f, { ...values, ...(position ? { position: Number(data.get('position')) } : {}) });
+      renderApp();
+    },
+  });
+}
+export function editLane(laneId) {
+  const f = flow();
+  const lane = f.lanes.find((item) => item.id === laneId);
   const fields = nameField(lane?.name, 'Lane name', 100)
-    + `<fieldset class="color-field"><legend>Lane color</legend>${palette.map((color) => `<label class="color-option ${color}" title="${color}"><input type="radio" name="color" value="${color}" ${color === (lane?.color || palette[p.lanes.length % palette.length]) ? 'checked' : ''}><span>${icon('check')}<span class="sr-only">${color}</span></span></label>`).join('')}</fieldset>`
-    + (lane ? `<label class="form-label" for="lane-position">Position</label><select class="form-input" id="lane-position" name="position">${p.lanes.map((item, index) => `<option value="${index}" ${item.id === laneId ? 'selected' : ''}>${index + 1}${index === 0 ? ' · First lane' : index === p.lanes.length - 1 ? ' · Last lane' : ''}</option>`).join('')}</select>` : '')
+    + `<fieldset class="color-field"><legend>Lane color</legend>${palette.map((color) => `<label class="color-option ${color}" title="${color}"><input type="radio" name="color" value="${color}" ${color === (lane?.color || palette[f.lanes.length % palette.length]) ? 'checked' : ''}><span>${icon('check')}<span class="sr-only">${color}</span></span></label>`).join('')}</fieldset>`
+    + (lane ? `<label class="form-label" for="lane-position">Position</label><select class="form-input" id="lane-position" name="position">${f.lanes.map((item, index) => `<option value="${index}" ${item.id === laneId ? 'selected' : ''}>${index + 1}${index === 0 ? ' · First lane' : index === f.lanes.length - 1 ? ' · Last lane' : ''}</option>`).join('')}</select>` : '')
     + (lane ? `<div class="lane-command-settings"><span class="form-label">When a card enters this lane</span><p class="field-help">${escape(lane.playbook ? `${lane.playbook.summary}. Defined in ${lane.playbook.path}.` : 'Nothing happens yet. Write a lane playbook to set fields or have an agent work on each card.')}</p>${button('edit-playbook', lane.playbook ? 'Open playbook' : 'Write a playbook', 'playbook', 'button secondary', `data-id="${laneId}"`)}</div>` : '<p class="field-help lane-command-settings">After adding this lane, open its playbook to decide what happens when a card enters it.</p>');
   smallForm({ title: lane ? 'Edit lane' : 'Add a lane', fields, submit: lane ? 'Save changes' : 'Add lane', extra: lane ? button('delete-lane', 'Delete lane', 'trash', 'text-button danger', `data-id="${laneId}"`) : '', onSubmit: (data) => {
     const values = { name: data.get('name').trim(), color: data.get('color') };
-    if (lane) updateLane(p, lane, { ...values, position: Number(data.get('position')) });
-    else addLane(p, values);
+    if (lane) updateLane(f, lane, { ...values, position: Number(data.get('position')) });
+    else addLane(f, values);
     renderBoard();
     // Enable the new-card action when adding the first lane.
-    $('.header-actions [data-action="add-card"]').disabled = !p.lanes.length;
+    $('.header-actions [data-action="add-card"]').disabled = !f.lanes.length;
   } });
 }
 export function editProjectPrompt() {
   const p = project();
   // Cards of a template without a Prompt field are left alone.
-  const cards = p.lanes.flatMap((lane) => lane.cards).filter(hasPromptField);
+  const cards = lanesOf(p).flatMap((lane) => lane.cards).filter(hasPromptField);
   if (!cards.length) return toast('Add a card with a Prompt field before applying a shared prompt.');
   const current = cards.map((card) => card.fields.prompt);
   const commonPrompt = current.every((prompt) => prompt === current[0]) ? current[0] : '';
