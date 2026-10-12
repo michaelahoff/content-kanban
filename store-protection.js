@@ -1,6 +1,5 @@
 // Protected card mutations share the board transaction and history boundary.
 import { randomUUID } from 'node:crypto';
-import { templates } from './public/card-template.js';
 
 export const protectionMigration = `
   ALTER TABLE cards ADD COLUMN placement_version INTEGER NOT NULL DEFAULT 1;
@@ -26,7 +25,7 @@ const fail = (status, message) => { throw Object.assign(new Error(message), { st
 const check = (value, message) => { if (!value) fail(400, message); };
 const object = (v) => v && typeof v === 'object' && !Array.isArray(v);
 
-export function createProtectionStore({ all, get, run, transaction, requireCard, retainedCard, recordChange, now, updateCard, transitionCard, item, registerOutput, laneEntry }) {
+export function createProtectionStore({ all, get, run, transaction, requireCard, retainedCard, recordChange, now, updateCard, transitionCard, item, registerOutput, laneEntry, templateFor }) {
   const leases = new Map();
   const reviews = new Map();
   const versions = (id) => Object.fromEntries(all('SELECT field, version FROM card_field_versions WHERE card_id = ?', id).map((r) => [r.field, r.version]));
@@ -51,8 +50,9 @@ export function createProtectionStore({ all, get, run, transaction, requireCard,
   }
   function validateFields(card, fields, bases) {
     check(object(fields) && Object.keys(fields).length > 0 && object(bases), 'Fields and their base versions are required.');
+    const template = templateFor(card);
     for (const [key, value] of Object.entries(fields)) {
-      const field = key === 'title' ? templates[card.template].title : templates[card.template].fields.find((f) => f.key === key);
+      const field = key === 'title' ? template.title : template.fields.find((f) => f.key === key);
       check(field && typeof value === 'string' && value.length <= field.max && Number.isInteger(bases[key]) && bases[key] > 0, `Invalid field or base version: ${key}.`);
     }
   }
@@ -70,7 +70,7 @@ export function createProtectionStore({ all, get, run, transaction, requireCard,
     lease(ctx, cardId, input) {
       const card = requireCard(ctx, cardId);
       check(object(input) && typeof input.owner === 'string' && /^[\w-]{1,100}$/.test(input.owner) && Array.isArray(input.fields), 'A draft lease needs its tab identity and fields.');
-      const allowed = ['title', ...templates[card.template].fields.map((f) => f.key), 'images', 'imageRoles'];
+      const allowed = ['title', ...templateFor(card).fields.map((f) => f.key), 'images', 'imageRoles'];
       check(input.fields.length <= allowed.length && input.fields.every((f) => allowed.includes(f)), 'Invalid draft fields.');
       const key = `${cardId}:${input.owner}`;
       check(input.sequence === undefined || Number.isInteger(input.sequence) && input.sequence > 0, 'Invalid draft heartbeat sequence.');

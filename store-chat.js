@@ -2,6 +2,7 @@
 // happens here. All mutations use the board store's transaction and activity log.
 import { randomUUID } from 'node:crypto';
 import { defaultSelections, contextFields, selectedContext } from './public/chat-context.js';
+import { imageRoles } from './public/card-template.js';
 import { sourceKey } from './public/library-format.js';
 
 export const chatMigration = `
@@ -69,7 +70,7 @@ const submissionFrom = (row) => ({ ...JSON.parse(row.frozen), id: row.id, cardId
 const attemptFrom = (row) => row && ({ id: row.id, submissionId: row.submission_id, cardId: row.card_id,
   previousAttemptId: row.previous_attempt_id, status: row.status, turnId: row.turn_id, startedAt: row.started_at, completedAt: row.completed_at, error: row.error, cause: row.cause, revoked: row.revoked, delivery: row.delivery ? JSON.parse(row.delivery) : null });
 
-export function createChatStore({ all, get, run, transaction, retainedCard, requireCard, recordChange, now }) {
+export function createChatStore({ all, get, run, transaction, retainedCard, requireCard, recordChange, now, templateFor }) {
   function activity(ctx, cardId, type, data = {}) {
     const card = retainedCard(ctx, cardId);
     recordChange(ctx, 'chat', cardId, type, { projectId: card.project_id, data });
@@ -91,7 +92,7 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
         .map((row) => [row.provider, JSON.parse(row.selection)]));
       const provider = settings.codex?.enabled === false && settings.claude?.enabled === true ? 'claude' : 'codex';
       run('INSERT INTO card_chats (card_id, workspace_id, composer) VALUES (?, ?, ?)', cardId, ctx.workspaceId,
-        JSON.stringify({ prompt: '', provider, model: null, selections: defaultSelections(card.template), authority: { fields: [] } }));
+        JSON.stringify({ prompt: '', provider, model: null, selections: defaultSelections(templateFor(card)), authority: { fields: [] } }));
       newConversation(cardId, null, provider);
     });
     return get('SELECT * FROM card_chats WHERE card_id = ?', cardId);
@@ -106,13 +107,17 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
     check(value.model === null || (text(value.model, 200) && value.model.trim()), 'Choose a model.');
     check(value.provider === undefined || ['codex', 'claude'].includes(value.provider), 'Unknown chat provider.');
     const selections = value.selections;
-    const fields = contextFields(card.template).map((field) => field.key);
-    check(object(selections) && Array.isArray(selections.fields) && selections.fields.every((key) => fields.includes(key))
-      && selections.fields.length <= fields.length, 'Invalid context fields.');
-    check(Array.isArray(selections.roles) && selections.roles.length <= 3 && selections.roles.every((role) => ['original', 'inspiration', 'cover'].includes(role)), 'Invalid image roles.');
+    const template = templateFor(card);
+    const fields = contextFields(template).map((field) => field.key);
+    const roles = imageRoles(template).map((role) => role.key);
+    // A field or role the template has since hidden or removed may still be
+    // named by a saved composer; such names are dropped, never refused, so
+    // a template edit cannot lock a card chat.
+    check(object(selections) && Array.isArray(selections.fields) && selections.fields.length <= 200 && selections.fields.every((key) => typeof key === 'string'), 'Invalid context fields.');
+    check(Array.isArray(selections.roles) && selections.roles.length <= 200 && selections.roles.every((role) => typeof role === 'string'), 'Invalid image roles.');
     check(Array.isArray(selections.images) && selections.images.length <= 200 && selections.images.every((id) => text(id, 100)), 'Invalid image references.');
-    check(object(value.authority) && Array.isArray(value.authority.fields) && value.authority.fields.length <= fields.length
-      && value.authority.fields.every((key) => fields.includes(key)), 'Invalid text authority.');
+    check(object(value.authority) && Array.isArray(value.authority.fields) && value.authority.fields.length <= 200 && value.authority.fields.every((key) => typeof key === 'string'), 'Invalid text authority.');
+    const known = (list, allowed) => [...new Set(list.filter((entry) => allowed.includes(entry)))];
     // Library choices are ordered typed source IDs. A removed or foreign
     // source may stay selected; Send refuses it by name until corrected.
     const library = selections.library ?? [];
@@ -121,9 +126,9 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
     // Library sources: only this card chat's saved outputs can be sent.
     const outputs = selections.savedOutputs ?? [];
     check(Array.isArray(outputs) && outputs.length <= 200 && outputs.every(validId), 'Invalid saved output selections.');
-    return { prompt: value.prompt, provider: value.provider ?? 'codex', model: value.model, selections: { fields: [...new Set(selections.fields)], roles: [...new Set(selections.roles)], images: [...new Set(selections.images)],
+    return { prompt: value.prompt, provider: value.provider ?? 'codex', model: value.model, selections: { fields: known(selections.fields, fields), roles: known(selections.roles, roles), images: [...new Set(selections.images)],
       library: [...new Map(library.map((entry) => [sourceKey(entry), { kind: entry.kind, id: entry.id }])).values()], savedOutputs: [...new Set(outputs)] },
-      authority: { fields: [...new Set(value.authority.fields)] } };
+      authority: { fields: known(value.authority.fields, fields) } };
   }
   function activeAttempt(cardId) {
     return attemptFrom(get("SELECT * FROM chat_attempts WHERE card_id = ? AND status IN ('dispatching', 'accepted', 'running', 'interrupt-requested')", cardId));
@@ -230,7 +235,7 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
       const versions = Object.fromEntries(all('SELECT field, version FROM card_field_versions WHERE card_id = ?', cardId).map((row) => [row.field, row.version]));
       return { cardId, cardRevision: card.revision, composerRevision: row.composer_revision, conversationId: current(cardId).id, archiveGeneration: archiveGeneration(cardId),
         projectId: card.projectId, librarySelections: JSON.parse(row.composer).selections.library ?? [], savedOutputSelections: JSON.parse(row.composer).selections.savedOutputs ?? [], prompt: JSON.parse(row.composer).prompt, provider: JSON.parse(row.composer).provider ?? 'codex', model: JSON.parse(row.composer).model,
-        authority: JSON.parse(row.composer).authority, context: selectedContext(card, JSON.parse(row.composer).selections, versions,
+        authority: JSON.parse(row.composer).authority, context: selectedContext(card, templateFor(card), JSON.parse(row.composer).selections, versions,
           all("SELECT image_id AS id, name, id AS outputId FROM chat_outputs WHERE card_id = ? AND import_status = 'imported'", cardId)) };
     },
     // Saved card values for a lane run's selections, plus every field version
@@ -242,7 +247,7 @@ export function createChatStore({ all, get, run, transaction, retainedCard, requ
       return { cardRevision: card.revision, conversationId: current(cardId).id, projectId: card.projectId, versions, card,
         // A lane can need portraits, backgrounds or other gallery photos that
         // have no role. Text selections must never hide those inputs.
-        context: selectedContext(card, { fields: selections.fields, roles: ['original', 'inspiration', 'cover'], images: card.images.map((image) => image.id) }, versions, []) };
+        context: selectedContext(card, templateFor(card), { fields: selections.fields, roles: imageRoles(templateFor(card)).map((role) => role.key), images: card.images.map((image) => image.id) }, versions, []) };
     },
     findSubmission(ctx, cardId, id) {
       retainedCard(ctx, cardId);

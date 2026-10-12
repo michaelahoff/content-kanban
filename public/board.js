@@ -1,6 +1,6 @@
 // The project sidebar, the board of lanes and cards, and the project and lane forms.
 import { $, escape, icon, button, iconButton, imageURL, palette, smallForm, nameField, toast, themeSwitchMarkup, accentSwitchMarkup } from './ui.js';
-import { state, project, locateCard, cardCount, searchText, saveStatus, createProject, renameProject, addLane, updateLane, setProjectPrompt, latestMoveCard } from './state.js';
+import { state, project, locateCard, cardCount, searchText, saveStatus, createProject, renameProject, setProjectTemplate, projectTemplate, addLane, updateLane, setProjectPrompt, latestMoveCard, hasPromptField, promptLimit } from './state.js';
 import { activityMarkup } from './chat.js';
 import { renderLibrary } from './library.js';
 
@@ -81,7 +81,7 @@ export function renderApp() {
     <main class="main">
       <div class="topbar"><div class="breadcrumbs">${iconButton('toggle-sidebar', 'Toggle projects', 'menu')}</div><div class="workspace-chat-activity"><button class="button small secondary" data-action="workspace-chat-activity">Chat activity</button><div id="chat-activity-list" hidden></div></div><div class="save-status" data-save-status></div></div>
       <div id="save-error" class="error-banner" role="alert" hidden></div>
-      ${p?.archivedAt ? archivedHeader(p) : p ? `<header class="board-header"><div><div class="heading-row"><h1>${escape(p.name)}</h1>${iconButton('edit-project', 'Project settings', 'more')}</div></div><div class="header-actions">${button('open-playbooks', 'Playbooks', 'playbook', 'button secondary')}${button('set-project-prompt', 'Set prompt', 'text', 'button secondary')}${button('add-lane', 'Add lane', 'plus', 'button secondary')}${button('add-card', 'New card', 'plus', 'button primary', p.lanes.length ? '' : 'disabled')}</div></header>
+      ${p?.archivedAt ? archivedHeader(p) : p ? `<header class="board-header"><div><div class="heading-row"><h1>${escape(p.name)}</h1>${iconButton('edit-project', 'Project settings', 'more')}</div></div><div class="header-actions">${button('open-playbooks', 'Playbooks', 'playbook', 'button secondary')}${projectTemplate(p)?.fields.some((field) => field.key === 'prompt') ? button('set-project-prompt', 'Set prompt', 'text', 'button secondary') : ''}${button('add-lane', 'Add lane', 'plus', 'button secondary')}${button('add-card', 'New card', 'plus', 'button primary', p.lanes.length ? '' : 'disabled')}</div></header>
       ${projectView(p, `${button('undo-move', 'Undo last move', 'undo', 'button small secondary', 'data-undo-move="board" disabled')}${button('toggle-cards', view.cardsCollapsed ? 'Expand cards' : 'Collapse cards', null, 'button small secondary', `aria-pressed="${view.cardsCollapsed}" aria-controls="board"`)}<span class="paste-hint">${icon('image')} Paste an image to start a card</span>${searchBox()}`)}` : `<div class="no-projects"><span class="empty-symbol">${icon('board')}</span><h1>No projects yet</h1><p>Create a project to start a board.</p>${button('add-project', 'Create a project', 'plus', 'button primary')}</div>`}
     </main>`;
   renderBoard();
@@ -137,11 +137,18 @@ export function renderBoard() {
 }
 export function editProject(isNew = false) {
   const p = project();
-  smallForm({ title: isNew ? 'New project' : 'Project settings', fields: nameField(isNew ? '' : p.name), submit: isNew ? 'Create project' : 'Save changes', extra: isNew ? '' : `${button('archive-project', 'Archive project', null, 'text-button')}${button('delete-project', 'Delete project', 'trash', 'text-button danger')}`, onSubmit: async (data) => {
+  // The template for new cards: the project's own when editing, the first when creating.
+  const templateOptions = state.templates.map((template, index) => `<option value="${escape(template.id)}" ${(isNew ? index === 0 : template.id === p.templateId) ? 'selected' : ''}>${escape(template.name)}</option>`).join('');
+  const templateFields = `<label class="form-label" for="project-template">Card template for new cards</label><select class="form-input" id="project-template" name="templateId">${templateOptions}</select><p class="field-help">Existing cards keep the template they were created with.</p>${button('manage-templates', 'Manage templates…', null, 'text-button')}`;
+  smallForm({ title: isNew ? 'New project' : 'Project settings', fields: nameField(isNew ? '' : p.name) + templateFields, submit: isNew ? 'Create project' : 'Save changes', extra: isNew ? '' : `${button('archive-project', 'Archive project', null, 'text-button')}${button('delete-project', 'Delete project', 'trash', 'text-button danger')}`, onSubmit: async (data) => {
+    const templateId = data.get('templateId') || undefined;
     if (isNew) {
-      const next = await createProject(data.get('name').trim());
+      const next = await createProject(data.get('name').trim(), templateId);
       selectProject(next.id);
-    } else renameProject(p, data.get('name').trim());
+    } else {
+      renameProject(p, data.get('name').trim());
+      if (templateId && templateId !== p.templateId) setProjectTemplate(p, templateId);
+    }
     renderApp();
   } });
 }
@@ -163,14 +170,17 @@ export function editLane(laneId) {
 }
 export function editProjectPrompt() {
   const p = project();
-  const cards = p.lanes.flatMap((lane) => lane.cards);
-  if (!cards.length) return toast('Add a card before applying a shared prompt.');
+  // Cards of a template without a Prompt field are left alone.
+  const cards = p.lanes.flatMap((lane) => lane.cards).filter(hasPromptField);
+  if (!cards.length) return toast('Add a card with a Prompt field before applying a shared prompt.');
   const current = cards.map((card) => card.fields.prompt);
   const commonPrompt = current.every((prompt) => prompt === current[0]) ? current[0] : '';
+  // The shortest Prompt limit among the affected cards' templates bounds the text.
+  const limit = Math.min(...cards.map(promptLimit));
   smallForm({
     title: 'Set prompt for all cards',
-    description: `This replaces the prompt on all ${cards.length} cards in “${p.name}”.`,
-    fields: `<label class="form-label" for="prompt-input">Shared prompt</label><textarea class="form-input prompt-input" id="prompt-input" name="prompt" maxlength="200000" placeholder="Write the prompt to apply to every card…">${escape(commonPrompt)}</textarea>`,
+    description: `This replaces the prompt on all ${cards.length} cards in “${p.name}” (up to ${limit.toLocaleString()} characters).`,
+    fields: `<label class="form-label" for="prompt-input">Shared prompt</label><textarea class="form-input prompt-input" id="prompt-input" name="prompt" maxlength="${limit}" placeholder="Write the prompt to apply to every card…">${escape(commonPrompt)}</textarea>`,
     submit: 'Apply to all cards',
     onSubmit: (data) => {
       setProjectPrompt(p, String(data.get('prompt') || ''));

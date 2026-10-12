@@ -466,3 +466,156 @@ test('closing during an in-flight save retains subsequent typing in a separate c
   assert.equal((await f.call('GET', `/api/cards/${card.id}`)).card.fields.script, 'Typed during save');
   assert.ok(saved[1].closedAt, 'The closed session is not reopened by a delayed save');
 });
+
+const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+// Fails instead of hanging when a request waits behind the write queue.
+async function within(ms, promise, message) {
+  let timer;
+  const deadline = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(message)), ms); });
+  try { return await Promise.race([promise, deadline]); } finally { clearTimeout(timer); }
+}
+
+test('a field the template gains while cards are loaded is not a local edit, and saves once typed', async (t) => {
+  const f = await fixture(t);
+  const card = await f.card();
+  const youtube = (await f.call('GET', '/api/templates')).templates.find((template) => template.id === 'youtube-video');
+  await f.call('PATCH', '/api/templates/youtube-video', { revision: youtube.revision, name: youtube.name, title: youtube.title, imageRoles: youtube.imageRoles,
+    fields: [...youtube.fields, { key: 'summary', label: 'Summary', control: 'textarea' }] });
+  await f.client.loadTemplates();
+  assert.equal(card.fields.summary, '');
+  assert.equal(card.fieldVersions.summary, 1);
+  assert.equal(f.client.saveStatus().saving, false, 'The backfilled field is not dirty');
+  await pause(50);
+  assert.equal(f.api.syncState().pending, 0);
+  assert.equal(f.client.hasUnsavedWork(), false);
+  card.fields.summary = 'x';
+  f.client.cardChanged(card);
+  f.client.flushCards();
+  await f.idle();
+  assert.equal((await f.call('GET', `/api/cards/${card.id}`)).card.fields.summary, 'x');
+  assert.deepEqual(f.client.saveStatus().conflicts, []);
+  assert.equal(f.api.syncState().error, '');
+});
+
+test('the shared prompt reaches only cards whose template has a Prompt field', async (t) => {
+  const f = await fixture(t);
+  const projectId = f.client.state.projectId;
+  const youtube = [await f.card(), await f.card()];
+  const plainTemplate = await f.call('POST', '/api/templates', { name: 'Plain', title: { label: 'Card title', max: 500 }, fields: [{ key: 'body', label: 'Body', control: 'textarea' }], imageRoles: [] });
+  assert.equal(plainTemplate.id, 'plain');
+  await f.call('PATCH', `/api/projects/${projectId}`, { templateId: 'plain' });
+  // Reload as the fixture does: the project's template changed in another tab.
+  await f.client.loadWorkspace();
+  await f.client.loadCards(projectId);
+  const p = f.client.project();
+  assert.equal(p.templateId, 'plain');
+  const plain = f.client.createCard(p.lanes[0]);
+  await f.idle();
+  assert.equal(plain.template, 'plain');
+  assert.deepEqual(Object.keys(plain.fields), ['body']);
+  assert.equal(f.client.hasPromptField(plain), false);
+  assert.equal(f.client.setProjectPrompt(p, 'Shared'), 2, 'Only the YouTube cards take the prompt');
+  await f.idle();
+  assert.equal(f.api.syncState().error, '');
+  assert.deepEqual(f.client.saveStatus().conflicts, []);
+  assert.equal(Object.hasOwn(plain.fields, 'prompt'), false);
+  assert.equal(Object.hasOwn((await f.call('GET', `/api/cards/${plain.id}`)).card.fields, 'prompt'), false);
+  for (const card of youtube) {
+    assert.equal(f.client.locateCard(card.id).card.fields.prompt, 'Shared');
+    assert.equal((await f.call('GET', `/api/cards/${card.id}`)).card.fields.prompt, 'Shared');
+  }
+  // A project whose cards all lack the field has nothing to set.
+  const plainOnly = await f.client.createProject('Plain only', 'plain');
+  f.client.createCard(plainOnly.lanes[0], plainOnly);
+  await f.idle();
+  assert.equal(f.client.setProjectPrompt(plainOnly, 'Shared'), 0);
+  await f.idle();
+  assert.equal(f.api.syncState().error, '');
+});
+
+test('a shared prompt over a card’s template limit is refused before any card changes', async (t) => {
+  const f = await fixture(t);
+  const projectId = f.client.state.projectId;
+  const youtube = (await f.call('GET', '/api/templates')).templates.find((template) => template.id === 'youtube-video');
+  const short = await f.call('POST', '/api/templates', { name: 'Short prompts', title: youtube.title, imageRoles: youtube.imageRoles,
+    fields: youtube.fields.map((field) => (field.key === 'prompt' ? { ...field, max: 5 } : field)) });
+  assert.equal(short.id, 'short-prompts');
+  await f.call('PATCH', `/api/projects/${projectId}`, { templateId: short.id });
+  // Reload as the fixture does: the project's template changed in another tab.
+  await f.client.loadWorkspace();
+  await f.client.loadCards(projectId);
+  const p = f.client.project();
+  const card = f.client.createCard(p.lanes[0]);
+  await f.idle();
+  assert.equal(f.client.promptLimit(card), 5);
+  assert.throws(() => f.client.setProjectPrompt(p, 'Too long prompt'), { name: 'Error', message: /“Short prompts”.*\b5 characters/ });
+  assert.equal(card.fields.prompt, '');
+  await f.idle();
+  assert.equal(f.api.syncState().pending, 0);
+  assert.equal(f.api.syncState().error, '');
+  assert.equal(f.client.hasUnsavedWork(), false);
+  assert.equal((await f.call('GET', `/api/cards/${card.id}`)).card.fields.prompt, '');
+  // The refusal queues nothing, so the next save goes straight through.
+  card.title = 'Edited after the refusal';
+  f.client.cardChanged(card);
+  f.client.flushCards();
+  await f.idle();
+  assert.equal((await f.call('GET', `/api/cards/${card.id}`)).card.title, 'Edited after the refusal');
+  assert.equal(f.client.setProjectPrompt(p, 'Short'), 1);
+  await f.idle();
+  assert.equal(f.api.syncState().error, '');
+  assert.equal(card.fields.prompt, 'Short');
+  assert.equal((await f.call('GET', `/api/cards/${card.id}`)).card.fields.prompt, 'Short');
+});
+
+test('a draft in a field the template dropped is let go and no longer holds the write queue', async (t) => {
+  const f = await fixture(t);
+  const card = await f.card();
+  const definitionOf = ({ name, title, fields, imageRoles }) => ({ name, title, fields, imageRoles });
+  const youtube = (await f.call('GET', '/api/templates')).templates.find((template) => template.id === 'youtube-video');
+  const gained = await f.call('PATCH', '/api/templates/youtube-video', { revision: youtube.revision, ...definitionOf(youtube), fields: [...youtube.fields, { key: 'hook', label: 'Hook', control: 'text' }] });
+  await f.client.loadTemplates();
+  card.fields.hook = 'typed in this tab';
+  f.client.cardChanged(card);
+  // Another tab drops the field (allowed: no live card stores a value) before
+  // this tab hears of it, so the save that was already on its way is refused.
+  await f.call('PATCH', '/api/templates/youtube-video', { revision: gained.revision, ...definitionOf(youtube) });
+  f.client.flushCards();
+  await waitFor(() => f.api.syncState().error);
+  assert.match(f.api.syncState().error, /Unknown card field/);
+  const later = f.client.createCard(f.client.project().lanes[0]);
+  assert.equal(f.api.syncState().pending, 2, 'The later write waits behind the refused save');
+  // Learning of the template change lets the field go, draft included, and the queue through.
+  await f.client.loadTemplates();
+  assert.equal(Object.hasOwn(card.fields, 'hook'), false, 'The dropped field leaves the card');
+  assert.equal(Object.hasOwn(later.fields, 'hook'), false, 'A card made from the stale template loses it too');
+  await f.idle();
+  assert.equal(f.api.syncState().error, '');
+  assert.deepEqual(f.client.saveStatus().conflicts, []);
+  assert.equal(f.client.hasUnsavedWork(), false);
+  assert.equal((await f.call('GET', `/api/cards/${later.id}`)).card.id, later.id, 'The later write reached the server');
+  // The card itself saves as before.
+  card.title = 'Still saves';
+  f.client.cardChanged(card);
+  f.client.flushCards();
+  await f.idle();
+  assert.equal(f.api.syncState().error, '');
+  assert.equal((await f.call('GET', `/api/cards/${card.id}`)).card.title, 'Still saves');
+});
+
+test('template saves do not wait behind a held card write', async (t) => {
+  const f = await fixture(t);
+  const card = await f.card();
+  // Deleted elsewhere, so the next save fails with 404 and holds the queue until retry.
+  await f.call('DELETE', `/api/cards/${card.id}`);
+  card.title = 'Edited after deletion';
+  f.client.cardChanged(card);
+  f.client.flushCards();
+  await waitFor(() => f.api.syncState().error);
+  assert.equal(f.api.syncState().pending, 1);
+  const created = await within(2000, f.client.createTemplate({ name: 'Queued', title: { label: 'Card title', max: 500 }, fields: [], imageRoles: [] }), 'createTemplate waited behind the held card write');
+  assert.equal(created.id, 'queued');
+  assert.ok(f.client.state.templates.some((template) => template.id === 'queued'));
+  assert.equal(f.api.syncState().pending, 1, 'The card write is still held');
+  assert.ok(f.api.syncState().error, 'The held write is still reported');
+});

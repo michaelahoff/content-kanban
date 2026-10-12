@@ -1,30 +1,19 @@
 // Lane playbooks, the project map and skills are Markdown files. This module
 // reads them the same way in the browser and on the server: frontmatter
 // settings, the prompt a lane run sends, and the result block a reply returns.
-import { templates } from './card-template.js';
-import { contextFields } from './chat-context.js';
+// Every function that depends on card fields takes the card template
+// definition (see card-template.js), never a template ID.
+import { setFields, contextFields, imageRoles, roleKey, roleLabel, fieldKey, squash } from './card-template.js';
+
+export { setFields };
 
 export const maxDocumentLength = 200000;
 export const runModes = ['on-enter', 'manual', 'off'];
 export const conversationModes = ['continue', 'fresh'];
 export const providers = ['codex', 'claude'];
-// Playbooks say "display"; the card stores that image role as "cover".
-const roleNames = { original: 'original', inspiration: 'inspiration', display: 'cover', cover: 'cover' };
-const roleLabels = { original: 'Original', inspiration: 'Inspiration', cover: 'Display' };
-const knownKeys = ['lane', 'run', 'provider', 'model', 'context', 'may_edit', 'set', 'conversation', 'skills', 'assets'];
+export const knownKeys = ['lane', 'run', 'provider', 'model', 'context', 'may_edit', 'set', 'conversation', 'skills', 'assets'];
 export const skillName = /^[a-z0-9][a-z0-9_-]{0,79}$/i;
 const notesInPrompt = 20000;
-
-// Field keys may be written as camelCase, snake_case or their label.
-const squash = (value) => String(value).toLowerCase().replace(/[^a-z0-9]/g, '');
-export function setFields(templateId) {
-  const template = templates[templateId];
-  return [{ key: 'title', ...template.title }, ...template.fields];
-}
-function fieldKey(fields, name) {
-  const wanted = squash(name);
-  return fields.find((field) => squash(field.key) === wanted || squash(field.label) === wanted)?.key ?? null;
-}
 
 // --- Frontmatter: a small YAML subset -------------------------------------
 // Supported: `key: value`, quoted strings, inline [a, b] lists, block lists,
@@ -159,7 +148,7 @@ export function parseDocument(text) {
 
 function quote(value) {
   if (value === '') return '""';
-  if (/^[\s]|[\s]$|^[[\]{}"'|>#&*!%@`,?:-]|: | #|[,\r\u2028\u2029]/.test(value)) return JSON.stringify(value);
+  if (/^[\s]|[\s]$|^[[\]{}"'|>#&*!%@`,?:-]|: |\s#|[,\r\u2028\u2029]/.test(value)) return JSON.stringify(value);
   return value;
 }
 // Several lines are written as block text when that reads back exactly;
@@ -269,12 +258,113 @@ export function withAssets(text, sources) {
   return patched;
 }
 
-// Resolves a parsed lane playbook against a card template. Problems that
-// would make a run misbehave are errors; unknown settings are warnings.
-export function playbookSettings(document, templateId) {
+const refuse = (message) => Object.assign(new Error(message), { status: 400 });
+const closingLine = (lines) => lines.findIndex((line, index) => index > 0 && line.replace(/\r$/, '') === '---');
+
+// The draft with one setting changed, as the settings form edits it. `value`
+// is text, a list of text, a map of text, or undefined to remove the key.
+// Only that key's lines change: an absent key is added before the closing
+// --- (with a settings block when there is none), a repeated key collapses
+// into its last copy, and a comment on the key line stays. Everything else
+// is kept byte for byte, as withAssets does, and a draft whose settings
+// cannot be read, or where the change would touch anything else, is refused.
+export function withSetting(text, key, value) {
+  const original = String(text ?? '');
+  if (!/^[A-Za-z_][\w-]*$/.test(key)) throw refuse('Setting names start with a letter and use letters, numbers, _ and -.');
+  const isMap = value !== null && typeof value === 'object' && !Array.isArray(value);
+  const texts = Array.isArray(value) ? value : isMap ? Object.values(value) : [value];
+  if (value !== undefined && !texts.every((entry) => typeof entry === 'string')) throw refuse('A setting is text, a list of text or a map of text.');
+  if (isMap && !texts.length) value = undefined; // a map with no entries reads as nothing
+  const before = parseDocument(original);
+  if (before.errors.length) throw refuse(`Fix the settings in Markdown before changing settings with the form: ${before.errors[0]}`);
+  // quote() leaves inner quote marks alone, which read back wrong next to a
+  // comma or a comment; such text is written as JSON text instead.
+  const plain = (entry) => (/["'\n]/.test(entry) ? JSON.stringify(entry) : quote(entry));
+  const scalarOf = (entry, indent) => (entry.includes('\n') ? textValue(entry, indent) : ` ${plain(entry)}`);
+  // The key's lines as serializeDocument writes them; a comment from the old
+  // key line follows a one-line value, or "key:" when the value is a block.
+  const written = (comment = '') => {
+    if (Array.isArray(value)) return [`${key}: [${value.map(plain).join(', ')}]${comment}`];
+    const [first, ...more] = (isMap ? [`${key}:`, ...Object.entries(value).map(([child, entry]) => `  ${child}:${scalarOf(entry, 2)}`)].join('\n') : `${key}:${scalarOf(value, 0)}`).split('\n');
+    return [first + comment, ...more];
+  };
+  const lines = original.split('\n');
+  const cr = lines[0].endsWith('\r') ? '\r' : '';
+  let patched;
+  if (before.body === original.replace(/\r\n?/g, '\n')) {
+    if (value === undefined) return original;
+    patched = [`---${cr}`, ...written().map((line) => line + cr), `---${cr}`, ...lines].join('\n');
+  } else {
+    const close = closingLine(lines);
+    if (close < 0) throw refuse(`Fix the settings in Markdown before changing settings with the form: the ${key} setting could not be changed on its own.`);
+    // A lone CR inside the settings block hides a line break from the lines
+    // above; the parser reads it but the lines cannot be patched safely.
+    if (lines.slice(0, close + 1).some((line) => /\r(?!$)/.test(line))) throw refuse('Fix the line endings in Markdown before changing settings with the form: the settings block mixes line endings.');
+    const front = lines.slice(1, close).map((line) => line.replace(/\r$/, ''));
+    const found = front.flatMap((line, index) => (line.startsWith(`${key}:`) ? [index] : []));
+    // A key's block: its lines as the parser reads them (so a block-text line
+    // that starts with # is content, not a comment), without the blank lines
+    // after it. An unreadable value falls back to the indented lines after it.
+    const blockEnd = (start) => {
+      let end = start;
+      try { end = Math.max(start, parseValue(front, start, front[start].slice(key.length + 1), 0).next - 1); }
+      catch { for (let index = start + 1; index < front.length && (blank(front[index]) || indentOf(front[index])); index++) if (!blank(front[index])) end = index; }
+      // The parser also swallows blank lines and top-level comments before
+      // the next key; those belong to the file, not to this setting.
+      while (end > start && (!front[end].trim() || (!indentOf(front[end]) && blank(front[end])))) end--;
+      return end;
+    };
+    const last = found.at(-1);
+    if (last === undefined) { if (value !== undefined) front.push(...written()); }
+    else {
+      const rest = front[last].slice(key.length + 1);
+      const comment = rest.slice(withoutComment(rest).length);
+      const replacement = value === undefined ? [] : written(comment && !/^\s/.test(comment) ? ` ${comment}` : comment);
+      let end = blockEnd(last);
+      // Text written as |+ owns the blank lines after it: the old value's
+      // go with it, and a new one would absorb any left behind.
+      const want = JSON.stringify(before.data[key]);
+      const reads = (stop) => { try { return JSON.stringify(parseValue(front.slice(0, stop), last, rest, 0).value) === want; } catch { return false; } };
+      while (end + 1 < front.length && !front[end + 1].trim() && (replacement.at(-1) === '' || !reads(end + 1))) end++;
+      front.splice(last, end - last + 1, ...replacement);
+      for (const earlier of found.slice(0, -1).reverse()) front.splice(earlier, blockEnd(earlier) - earlier + 1);
+    }
+    patched = [lines[0], ...front.map((line) => line + cr), ...lines.slice(close)].join('\n');
+  }
+  // The patch must change nothing but this setting.
+  const after = parseDocument(patched);
+  const others = (data) => JSON.stringify(Object.fromEntries(Object.entries(data).filter(([name]) => name !== key)));
+  if (after.errors.length || after.body !== before.body || others(after.data) !== others(before.data) || JSON.stringify(after.data[key]) !== JSON.stringify(value)) {
+    throw refuse(`Fix the settings in Markdown before changing settings with the form: the ${key} setting could not be changed on its own.`);
+  }
+  return patched;
+}
+// Several settings changed in turn, in the order given.
+export function withSettings(text, changes) {
+  return Object.entries(changes).reduce((draft, [key, value]) => withSetting(draft, key, value), text);
+}
+
+// The draft with its Markdown body replaced: everything after the closing
+// --- line, or the whole text when there are no settings. The settings
+// bytes stay as they are.
+export function withBody(text, body) {
+  const original = String(text ?? '');
+  const before = parseDocument(original);
+  if (before.errors.length) throw refuse(`Fix the settings in Markdown before editing the instructions with the form: ${before.errors[0]}`);
+  if (before.body === original.replace(/\r\n?/g, '\n')) return body;
+  const lines = original.split('\n');
+  const close = closingLine(lines);
+  if (close < 0) throw refuse('Fix the settings in Markdown before editing the instructions with the form: the settings block could not be kept as it is.');
+  return `${lines.slice(0, close + 1).join('\n')}\n${body}`;
+}
+
+// Resolves a parsed lane playbook against a card template definition.
+// Problems that would make a run misbehave are errors; unknown settings are
+// warnings.
+export function playbookSettings(document, template) {
   const { data, body } = document;
   const errors = [...document.errors]; const warnings = [];
-  const fields = setFields(templateId); const readable = contextFields(templateId);
+  const fields = setFields(template); const readable = contextFields(template);
   for (const key of Object.keys(data)) if (!knownKeys.includes(key)) warnings.push(`Unknown setting “${key}” is ignored.`);
   const run = data.run === undefined || data.run === '' ? 'on-enter' : String(data.run).toLowerCase();
   if (!runModes.includes(run)) errors.push(`run must be ${runModes.join(', ')}.`);
@@ -285,15 +375,16 @@ export function playbookSettings(document, templateId) {
   const conversation = data.conversation ? String(data.conversation).toLowerCase() : 'continue';
   if (!conversationModes.includes(conversation)) errors.push('conversation must be continue or fresh.');
 
-  let selections = { fields: readable.map((field) => field.key), roles: ['original', 'inspiration'] };
+  let selections = { fields: readable.map((field) => field.key), roles: template.imageRoles.map((role) => role.key) };
   if (data.context !== undefined) {
     selections = { fields: [], roles: [] };
+    const roleWords = imageRoles(template).map((role) => role.aliases[0] ?? role.key);
     for (const name of listOf(data.context)) {
-      const role = roleNames[squash(name)];
+      const role = roleKey(template, name);
       const key = role ? null : fieldKey(readable, name);
       if (role) { if (!selections.roles.includes(role)) selections.roles.push(role); }
       else if (key) { if (!selections.fields.includes(key)) selections.fields.push(key); }
-      else errors.push(`context: “${name}” is not a card field or image (original, inspiration, display).`);
+      else errors.push(`context: “${name}” is not a card field or image (${roleWords.join(', ')}).`);
     }
   }
   const mayEdit = [];
@@ -326,9 +417,9 @@ export function playbookSettings(document, templateId) {
 }
 
 // One sentence for the board and editor, e.g. "Runs on entry · Claude · may edit Title Options".
-export function describeSettings(settings, templateId) {
+export function describeSettings(settings, template) {
   if (settings.errors.length) return 'Has errors';
-  const label = (key) => setFields(templateId).find((field) => field.key === key)?.label ?? key;
+  const label = (key) => setFields(template).find((field) => field.key === key)?.label ?? key;
   const parts = [];
   if (settings.instructions && settings.run !== 'off') parts.push(settings.run === 'on-enter' ? 'Runs on entry' : 'Runs when you choose');
   else parts.push('No agent run');
@@ -340,7 +431,7 @@ export function describeSettings(settings, templateId) {
 }
 
 // --- Starter documents -----------------------------------------------------
-export function mapTemplate(projectName, lanes) {
+export function mapTemplate(projectName, lanes, template) {
   return `# ${projectName} — project map
 
 Every lane run reads this file first. Describe what this project is for and how the lanes fit together, so an agent always knows where it is.
@@ -355,9 +446,7 @@ ${lanes.map((lane, index) => `${index + 1}. **${lane.name}** — (what happens h
 
 ## Card fields
 
-- **Title Options**: candidate titles, one per line
-- **Intro**: the opening hook
-- **Script**: the full script
+${contextFields(template).map((field) => `- **${field.label}**: (what goes here)`).join('\n')}
 
 ## Rules for every lane
 
@@ -390,9 +479,12 @@ export function skillTemplate(name) {
 export const resultTag = 'frameboard-result';
 const maxLaneOutputs = 20;
 
-export function composeLanePrompt({ projectName, laneName, lanes, trigger = 'enter', map, playbook, skills = [], notes = '', settings, templateId }) {
-  const fields = setFields(templateId).filter((field) => field.key !== 'prompt');
+export function composeLanePrompt({ projectName, laneName, lanes, trigger = 'enter', map, playbook, skills = [], notes = '', settings, template }) {
+  const fields = setFields(template).filter((field) => field.editor !== false);
   const label = (key) => fields.find((field) => field.key === key)?.label ?? key;
+  // The example names a long-text field when there is one, never a URL or the title.
+  const example = (fields.find((field) => field.control === 'textarea') ?? fields.find((field) => field.key !== 'title' && field.control !== 'url') ?? fields.find((field) => field.key !== 'title'))?.key ?? 'title';
+  const roles = imageRoles(template).filter((role) => role.key !== 'cover').map((role) => role.label.toLowerCase());
   const trimmedNotes = notes.length > notesInPrompt ? `…(earlier notes omitted)\n${notes.slice(-notesInPrompt)}` : notes;
   const sections = [
     `You are working on one card in the Frameboard project “${projectName}”. ${trigger === 'manual' ? `The user asked you to run the “${laneName}” lane playbook for it.` : `The card just entered the “${laneName}” lane.`} Follow that lane's playbook below.`,
@@ -400,14 +492,14 @@ export function composeLanePrompt({ projectName, laneName, lanes, trigger = 'ent
     `## Lane playbook: ${laneName} (${playbook.path})\n\n${settings.instructions}`,
     ...skills.map((skill) => (skill.text === null ? `## Skill ${skill.name}\n\n(skills/${skill.name}.md does not exist yet.)` : `## Skill: ${skill.name} (${skill.path})\n\n${skill.text.trim()}`)),
     `## Hand-off notes (notes.md)\n\n${trimmedNotes.trim() || 'No notes yet. This is the first lane run that leaves notes for this card.'}`,
-    'Every photo in the card gallery is attached to this run. Use the current image references listed below to identify the available portraits, backgrounds and thumbnails. Hand-off notes describe earlier runs; check these attachments before treating a photo as missing.',
+    `Every photo in the card gallery is attached to this run. Use the current image references listed below to identify the available photos${roles.length ? `; the ${roles.join(', ')} and display labels mark the roles the card assigns` : ''}. Hand-off notes describe earlier runs; check these attachments before treating a photo as missing.`,
     `## Reporting your result
 
 When you finish, end your reply with exactly one fenced code block tagged \`${resultTag}\` that contains JSON:
 
 \`\`\`${resultTag}
 {
-  "fields": { "titleOptions": "the complete new value" },
+  "fields": { "${example}": "the complete new value" },
   "notes": "a short hand-off for whoever works on this card next",
   "move": "Lane name",
   "outputs": [
@@ -430,14 +522,14 @@ When you finish, end your reply with exactly one fenced code block tagged \`${re
 
 // The last result block in a reply. Missing blocks are not errors; a block
 // that cannot be read is.
-export function parseLaneResult(text, templateId) {
+export function parseLaneResult(text, template) {
   const blocks = [...String(text ?? '').matchAll(/^```[ \t]*frameboard(?:-result)?[ \t]*\r?\n([\s\S]*?)^```[ \t]*(?=\r?$)/gm)];
   if (!blocks.length) return null;
   let value;
   try { value = JSON.parse(blocks.at(-1)[1]); } catch (error) { return { fields: {}, notes: '', move: null, outputs: [], errors: [`The result block is not valid JSON: ${error.message}`] }; }
   const result = { fields: {}, notes: '', move: null, outputs: [], errors: [] };
   if (!value || typeof value !== 'object' || Array.isArray(value)) return { ...result, errors: ['The result block must be a JSON object.'] };
-  const fields = setFields(templateId).filter((field) => field.key !== 'prompt');
+  const fields = setFields(template).filter((field) => field.editor !== false);
   if (value.fields !== undefined) {
     if (!value.fields || typeof value.fields !== 'object' || Array.isArray(value.fields)) result.errors.push('“fields” must be an object of text values.');
     else for (const [name, fieldValue] of Object.entries(value.fields)) {
@@ -486,4 +578,4 @@ export function parseLaneResult(text, templateId) {
   }
   return result;
 }
-export const imageRoleLabel = (role) => roleLabels[role] ?? role;
+export const imageRoleLabel = (template, role) => roleLabel(template, role);

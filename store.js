@@ -6,7 +6,8 @@ import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { rename, rm } from 'node:fs/promises';
 import path from 'node:path';
-import { templates, defaultTemplate, emptyFields, emptyImageRoles } from './public/card-template.js';
+import { emptyFields, emptyImageRoles, normalizeCard, youtubeVideoTemplate } from './public/card-template.js';
+import { templatesMigration, createTemplateStore } from './store-templates.js';
 import { readLegacyBoard } from './legacy-board.js';
 import { createPlaybooks } from './playbooks.js';
 import { parseDocument, playbookSettings, describeSettings } from './public/playbook-format.js';
@@ -252,7 +253,7 @@ const migrations = [`
 `, libraryDraftsMigration, `
   -- What each delivery attempt actually did with a submission's inputs.
   ALTER TABLE chat_attempts ADD COLUMN delivery TEXT;
-`, foldersMigration, savedOutputsMigration];
+`, foldersMigration, savedOutputsMigration, templatesMigration];
 
 // The newest schema this version can open; restore refuses newer backups.
 export const supportedSchemaVersion = migrations.length;
@@ -286,9 +287,9 @@ const savedStateFrom = (row) => ({
   snapshot: JSON.parse(row.snapshot), startedAt: row.started_at, updatedAt: row.updated_at, closedAt: row.closed_at,
 });
 
-// Applies a partial content update to a card and checks the result.
-function cardContent(templateId, input, current, validateMembership = true) {
-  const template = templates[templateId];
+// Applies a partial content update to a card and checks the result against
+// the card's template definition.
+function cardContent(template, input, current, validateMembership = true) {
   const next = { title: current.title, fields: { ...current.fields }, images: current.images, imageRoles: { ...current.imageRoles } };
   if ('title' in input) {
     check(isText(input.title, template.title.max), `Card titles can be up to ${template.title.max} characters.`);
@@ -394,6 +395,10 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
     } finally { depth--; }
   };
 
+  // Card templates: definitions by ID, the project default, and the keys
+  // every card of a template carries.
+  const templates = createTemplateStore({ all, get, run, transaction, recordChange, now });
+
   const schemaVersion = () => (get("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'meta'")
     ? Number(get("SELECT value FROM meta WHERE key = 'schema_version'")?.value || 0) : 0);
 
@@ -470,7 +475,7 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
   // movement. The revision before them lets a client acknowledge just these
   // fields without treating another tab's unseen content as its own draft.
   function applyEntrySet(ctx, card, stage, at) {
-    const found = playbooks.settings(stage.flowId, stage.id, card.template);
+    const found = playbooks.settings(stage.flowId, stage.id, templates.forCard(card));
     if (!found || found.settings.errors.length || !Object.keys(found.settings.set).length) return null;
     const values = found.settings.set;
     const changedFields = Object.keys(values).filter((key) => values[key] !== (key === 'title' ? card.title : card.fields[key]));
@@ -491,7 +496,7 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
     createdAt: row.created_at, updatedAt: row.updated_at,
     submissionStatus: row.submission_id ? get('SELECT status FROM chat_submissions WHERE id = ?', row.submission_id)?.status ?? null : null });
   function requestLaneRun(ctx, card, stage, trigger, moveId = null) {
-    const found = playbooks.settings(stage.flowId, stage.id, card.template);
+    const found = playbooks.settings(stage.flowId, stage.id, templates.forCard(card));
     if (!found) return null;
     const { settings } = found;
     if (trigger === 'enter' && (settings.run !== 'on-enter' || !settings.instructions)) return null;
@@ -526,15 +531,16 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
       run('INSERT INTO workspaces (id, name, created_at) VALUES (?, ?, ?)', workspaceId, 'Personal workspace', now());
       run('INSERT INTO users (id, name, created_at) VALUES (?, ?, ?)', userId, 'You', now());
       run("INSERT INTO meta (key, value) VALUES ('owner_user_id', ?), ('owner_workspace_id', ?)", userId, workspaceId);
+      templates.seed(workspaceId);
       const projects = legacy?.board.projects ?? [{ id: randomUUID(), name: 'My project', lanes: defaultStages.map(([name, color]) => ({ id: randomUUID(), name, color, cards: [] })) }];
       projects.forEach((project, projectIndex) => {
         const flowId = insertFlow(workspaceId, project.name, project.lanes.map((lane) => [lane.id, lane.name, lane.color]));
-        run('INSERT INTO projects (id, workspace_id, flow_id, name, position, created_at) VALUES (?, ?, ?, ?, ?, ?)', project.id, workspaceId, flowId, project.name, projectIndex, now());
+        run('INSERT INTO projects (id, workspace_id, flow_id, name, position, created_at, template_id) VALUES (?, ?, ?, ?, ?, ?, ?)', project.id, workspaceId, flowId, project.name, projectIndex, now(), youtubeVideoTemplate.id);
         for (const lane of project.lanes) lane.cards.forEach((card, cardIndex) => {
-          const fields = Object.fromEntries(Object.keys(emptyFields()).map((key) => [key, card[key] ?? '']));
+          const fields = Object.fromEntries(Object.keys(emptyFields(youtubeVideoTemplate)).map((key) => [key, card[key] ?? '']));
           const imageRoles = { cover: card.coverImageId ?? null, original: card.originalImageId ?? null, inspiration: card.inspirationImageId ?? null };
           run('INSERT INTO cards (id, project_id, stage_id, position, template, title, fields, images, image_roles, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-            card.id, project.id, lane.id, cardIndex + 1, defaultTemplate, card.title, JSON.stringify(fields), JSON.stringify(card.images), JSON.stringify(imageRoles), card.updatedAt ?? null);
+            card.id, project.id, lane.id, cardIndex + 1, youtubeVideoTemplate.id, card.title, JSON.stringify(fields), JSON.stringify(card.images), JSON.stringify(imageRoles), card.updatedAt ?? null);
           insertEvent(workspaceId, { id: card.id, projectId: project.id }, 'created', `user:${userId}`, { to: lane.id, at: card.updatedAt ?? now() });
         });
       });
@@ -566,12 +572,17 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
   const owner = { userId: meta('owner_user_id'), workspaceId: meta('owner_workspace_id') };
 
   const activeStages = (flowId) => all('SELECT * FROM stages WHERE flow_id = ? AND deleted_at IS NULL ORDER BY position', flowId).map(stageFrom);
+  // The template a project's new cards use; a project row from `projects`.
+  const templateForProject = (row) => templates.get(row.template_id) ?? templates.require(templates.defaultId({ workspaceId: row.workspace_id }));
+  // The built-in template exists in every workspace and each project has a
+  // default (a database upgraded from before templates gets both here).
   // Every flow gets a playbook folder with a starter map, and retired lane
   // command graphs become set: values in their lane's playbook. The file is
   // written before the graph is cleared, so a crash only repeats a no-op.
   try {
-    for (const flow of all('SELECT f.id, p.name FROM flows f JOIN projects p ON p.flow_id = f.id WHERE p.deleted_at IS NULL')) {
-      playbooks.ensure(flow.id, { projectName: flow.name, lanes: activeStages(flow.id) });
+    transaction(() => templates.seed(owner.workspaceId));
+    for (const flow of all('SELECT f.id, p.name, p.template_id, p.workspace_id FROM flows f JOIN projects p ON p.flow_id = f.id WHERE p.deleted_at IS NULL')) {
+      playbooks.ensure(flow.id, { projectName: flow.name, lanes: activeStages(flow.id), template: templateForProject(flow) });
     }
     for (const row of all('SELECT * FROM stages WHERE entry_graph != ?', emptyGraphJson)) {
       const values = legacySetValues(JSON.parse(row.entry_graph));
@@ -584,15 +595,16 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
     db.close();
     throw error;
   }
-  // Lane playbook summaries for the board, read once per flow.
-  function withPlaybooks(flowId, stages) {
+  // Lane playbook summaries for the board, read once per flow and checked
+  // against the project's card template.
+  function withPlaybooks(flowId, stages, template) {
     const documents = playbooks.lanes(flowId);
     return stages.map((stage) => {
       const document = documents.find((entry) => entry.laneId === stage.id);
       if (!document) return { ...stage, playbook: null };
-      const settings = playbookSettings(parseDocument(document.text), defaultTemplate);
+      const settings = playbookSettings(parseDocument(document.text), template);
       return { ...stage, playbook: { path: document.path, hash: document.hash, run: settings.run, provider: settings.provider, model: settings.model,
-        hasInstructions: Boolean(settings.instructions), errors: settings.errors, summary: describeSettings(settings, defaultTemplate) } };
+        hasInstructions: Boolean(settings.instructions), errors: settings.errors, summary: describeSettings(settings, template) } };
     });
   }
   // Archived projects stay readable; only reads pass { allowArchived: true }.
@@ -608,8 +620,11 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
   function requireCard(ctx, id, { allowArchived = false } = {}) {
     const row = get(`SELECT c.*, p.archived_at FROM cards c JOIN projects p ON p.id = c.project_id
       WHERE c.id = ? AND p.workspace_id = ? AND c.deleted_at IS NULL AND p.deleted_at IS NULL`, id, ctx.workspaceId);
-    return row ? withLastMove(cardFrom(checkActive(row, allowArchived))) : fail(404, 'This card no longer exists. Reload the page.');
+    return row ? withLastMove(fullCard(checkActive(row, allowArchived))) : fail(404, 'This card no longer exists. Reload the page.');
   }
+  // A card as the app reads it: every field and image role of its template
+  // present, with stored values for fields the template no longer has kept.
+  const fullCard = (row) => normalizeCard(templates.require(row.template), cardFrom(row));
   function withLastMove(card) {
     const move = get('SELECT id, created_at, undone_at FROM card_moves WHERE card_id = ? ORDER BY id DESC LIMIT 1', card.id);
     return { ...card, fieldVersions: Object.fromEntries(all('SELECT field, version FROM card_field_versions WHERE card_id = ?', card.id).map((r) => [r.field, r.version])),
@@ -656,9 +671,9 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
     }
   }
 
-  const chats = createChatStore({ all, get, run, transaction, retainedCard, requireCard, recordChange, now });
+  const chats = createChatStore({ all, get, run, transaction, retainedCard, requireCard, recordChange, now, templateFor: templates.forCard });
 
-  const protection = createProtectionStore({ all, get, run, transaction, requireCard, retainedCard, recordChange, now,
+  const protection = createProtectionStore({ all, get, run, transaction, requireCard, retainedCard, recordChange, now, templateFor: templates.forCard,
     laneEntry: (cardId) => api.laneRuns.entry(cardId),
     updateCard: (...args) => api.updateCard(...args), transitionCard: (...args) => api.transitionCard(...args), item: (...args) => chats.item(...args), registerOutput: (...args) => images.registered(...args) });
   // Adoption appends one exact version to the gallery. It never assigns a
@@ -680,6 +695,7 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
   const api = {
     owner,
     playbooks,
+    templates,
     transaction,
     chats,
     protection,
@@ -736,40 +752,51 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
     workspace(ctx) {
       const workspace = get('SELECT id, name FROM workspaces WHERE id = ?', ctx.workspaceId);
       const user = ctx.userId ? get('SELECT id, name FROM users WHERE id = ?', ctx.userId) : null;
-      const projects = all(`SELECT p.id, p.name, p.flow_id, p.position, p.archived_at, (SELECT COUNT(*) FROM cards c WHERE c.project_id = p.id AND c.deleted_at IS NULL) AS card_count
-        FROM projects p WHERE p.workspace_id = ? AND p.deleted_at IS NULL ORDER BY p.position`, ctx.workspaceId)
-        .map((row) => ({ id: row.id, name: row.name, flowId: row.flow_id, position: row.position, cardCount: row.card_count, archivedAt: row.archived_at }));
-      const flows = all('SELECT id, name FROM flows WHERE workspace_id = ? ORDER BY created_at', ctx.workspaceId).map((row) => ({ ...row, stages: withPlaybooks(row.id, activeStages(row.id)) }));
+      const rows = all(`SELECT p.*, (SELECT COUNT(*) FROM cards c WHERE c.project_id = p.id AND c.deleted_at IS NULL) AS card_count
+        FROM projects p WHERE p.workspace_id = ? AND p.deleted_at IS NULL ORDER BY p.position`, ctx.workspaceId);
+      const projects = rows.map((row) => ({ id: row.id, name: row.name, flowId: row.flow_id, position: row.position, cardCount: row.card_count, archivedAt: row.archived_at, templateId: templateForProject(row).id }));
+      // A flow's playbooks are checked against its project's template; a flow
+      // whose project was deleted is listed against the workspace default.
+      const flows = all('SELECT id, name, workspace_id FROM flows WHERE workspace_id = ? ORDER BY created_at', ctx.workspaceId)
+        .map((row) => ({ id: row.id, name: row.name, stages: withPlaybooks(row.id, activeStages(row.id), templateForProject(rows.find((project) => project.flow_id === row.id) ?? { template_id: null, workspace_id: row.workspace_id })) }));
       const eventCursor = get('SELECT MAX(id) AS cursor FROM activity_log WHERE workspace_id = ?', ctx.workspaceId).cursor ?? 0;
-      return { workspace, user, projects, flows, eventCursor };
+      return { workspace, user, projects, flows, templates: templates.list(ctx), eventCursor };
     },
 
     createProject(ctx, input) {
       check(isObject(input), 'Invalid project.');
       checkId(input.id);
       checkName(input.name, 150, 'Projects need a name (up to 150 characters).');
+      check(input.templateId === undefined || typeof input.templateId === 'string', 'Choose a card template.');
       return transaction(() => {
         const { count } = get('SELECT COUNT(*) AS count FROM projects WHERE workspace_id = ? AND deleted_at IS NULL', ctx.workspaceId);
         check(count < 200, 'A workspace can hold up to 200 projects.');
+        const template = templates.requireLive(ctx, input.templateId ?? templates.defaultId(ctx));
         const id = input.id ?? randomUUID();
         const name = input.name.trim();
         const flowId = insertFlow(ctx.workspaceId, name, defaultStages.map(([stageName, color]) => [randomUUID(), stageName, color]));
         const position = (get('SELECT MAX(position) AS position FROM projects WHERE workspace_id = ?', ctx.workspaceId).position ?? -1) + 1;
-        run('INSERT INTO projects (id, workspace_id, flow_id, name, position, created_at) VALUES (?, ?, ?, ?, ?, ?)', id, ctx.workspaceId, flowId, name, position, now());
-        recordChange(ctx, 'project', id, 'created', { projectId: id, data: { flowId } });
-        playbooks.ensure(flowId, { projectName: name, lanes: activeStages(flowId) });
-        return { project: { id, name, flowId, position, cardCount: 0, archivedAt: null }, flow: { id: flowId, name, stages: withPlaybooks(flowId, activeStages(flowId)) } };
+        run('INSERT INTO projects (id, workspace_id, flow_id, name, position, created_at, template_id) VALUES (?, ?, ?, ?, ?, ?, ?)', id, ctx.workspaceId, flowId, name, position, now(), template.id);
+        recordChange(ctx, 'project', id, 'created', { projectId: id, data: { flowId, templateId: template.id } });
+        playbooks.ensure(flowId, { projectName: name, lanes: activeStages(flowId), template });
+        return { project: { id, name, flowId, position, cardCount: 0, archivedAt: null, templateId: template.id }, flow: { id: flowId, name, stages: withPlaybooks(flowId, activeStages(flowId), template) } };
       });
     },
 
+    // A project's name, and the card template its new cards use. Changing the
+    // template never changes existing cards: each keeps the template it was
+    // created with.
     updateProject(ctx, id, input) {
       check(isObject(input), 'Invalid project.');
-      requireProject(ctx, id);
-      checkName(input.name, 150, 'Projects need a name (up to 150 characters).');
+      const project = requireProject(ctx, id);
+      const columns = {};
+      if ('name' in input || !('templateId' in input)) { checkName(input.name, 150, 'Projects need a name (up to 150 characters).'); columns.name = input.name.trim(); }
+      if ('templateId' in input) { check(typeof input.templateId === 'string', 'Choose a card template.'); columns.template_id = templates.requireLive(ctx, input.templateId).id; }
       return transaction(() => {
-        run('UPDATE projects SET name = ? WHERE id = ?', input.name.trim(), id);
-        recordChange(ctx, 'project', id, 'updated', { projectId: id });
-        return { id, name: input.name.trim() };
+        const keys = Object.keys(columns);
+        run(`UPDATE projects SET ${keys.map((key) => `${key} = ?`).join(', ')} WHERE id = ?`, ...Object.values(columns), id);
+        recordChange(ctx, 'project', id, 'updated', { projectId: id, data: columns.template_id ? { templateId: columns.template_id } : {} });
+        return { id, name: columns.name ?? project.name, templateId: columns.template_id ?? templateForProject(project).id };
       });
     },
 
@@ -810,14 +837,18 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
       return { id, archivedAt: null };
     },
 
+    // Cards whose template has a Prompt field take the shared prompt; every
+    // affected card's own limit is checked before any card changes.
     setProjectPrompt(ctx, projectId, prompt) {
       requireProject(ctx, projectId);
-      check(isText(prompt, 200000), 'Prompts can be up to 200,000 characters.');
+      check(typeof prompt === 'string', 'Prompts must be text.');
       return transaction(() => {
         const at = now();
-        return all('SELECT * FROM cards WHERE project_id = ? AND deleted_at IS NULL', projectId).map(cardFrom)
-          .filter((card) => templates[card.template].fields.some((field) => field.key === 'prompt'))
-          .map((card) => {
+        const affected = all('SELECT * FROM cards WHERE project_id = ? AND deleted_at IS NULL', projectId).map(cardFrom)
+          .map((card) => ({ card, template: templates.forCard(card) })).map(({ card, template }) => ({ card, template, field: template.fields.find((field) => field.key === 'prompt') }))
+          .filter(({ field }) => field);
+        for (const { template, field } of affected) check(prompt.length <= field.max, `Prompts for “${template.name}” cards can be up to ${field.max.toLocaleString('en-US')} characters.`);
+        return affected.map(({ card }) => {
             run('UPDATE cards SET fields = ?, revision = revision + 1, updated_at = ? WHERE id = ?', JSON.stringify({ ...card.fields, prompt }), at, card.id);
             recordChange(ctx, 'card', card.id, 'updated', { projectId, data: { revision: card.revision + 1 }, at });
             recordSavedState(ctx, card.id, 'bulk_prompt', at);
@@ -885,7 +916,7 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
 
     listCards(ctx, projectId) {
       requireProject(ctx, projectId, { allowArchived: true });
-      return all('SELECT c.* FROM cards c JOIN stages s ON s.id = c.stage_id WHERE c.project_id = ? AND c.deleted_at IS NULL ORDER BY s.position, c.position', projectId).map((row) => withLastMove(cardFrom(row)));
+      return all('SELECT c.* FROM cards c JOIN stages s ON s.id = c.stage_id WHERE c.project_id = ? AND c.deleted_at IS NULL ORDER BY s.position, c.position', projectId).map((row) => withLastMove(fullCard(row)));
     },
 
     getCard(ctx, id) {
@@ -909,8 +940,9 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
       check(isObject(input), 'Invalid card.');
       const project = requireProject(ctx, projectId);
       checkId(input.id);
-      const template = input.template ?? defaultTemplate;
-      check(Object.hasOwn(templates, template), 'Unknown card template.');
+      check(input.template === undefined || typeof input.template === 'string', 'Unknown card template.');
+      const template = input.template === undefined ? templateForProject(project) : templates.get(input.template);
+      check(template && !template.deletedAt && template.workspaceId === ctx.workspaceId, 'Unknown card template.');
       const stage = requireStage(ctx, input.stageId);
       check(stage.flowId === project.flow_id, 'Choose a lane in this project.');
       const content = cardContent(template, input, { title: '', fields: emptyFields(template), images: [], imageRoles: emptyImageRoles(template) });
@@ -918,7 +950,7 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
         const id = input.id ?? randomUUID();
         const at = now();
         run('INSERT INTO cards (id, project_id, stage_id, position, template, title, fields, images, image_roles, entered_stage_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-          id, projectId, stage.id, positionFor(stage.id, null), template, content.title, JSON.stringify(content.fields), JSON.stringify(content.images), JSON.stringify(content.imageRoles), at, at, at);
+          id, projectId, stage.id, positionFor(stage.id, null), template.id, content.title, JSON.stringify(content.fields), JSON.stringify(content.images), JSON.stringify(content.imageRoles), at, at, at);
         insertEvent(ctx.workspaceId, { id, projectId }, 'created', ctx.actor, { to: stage.id, at });
         applyEntrySet(ctx, requireCard(ctx, id), stage, at);
         recordSavedState(ctx, id, 'created', at);
@@ -942,7 +974,7 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
         for (const [key, value] of Object.entries(input.changes)) {
           if (['title', 'images', 'imageRoles'].includes(key)) requested[key] = value; else requested.fields[key] = value;
         }
-        cardContent(card.template, requested, card, false);
+        cardContent(templates.forCard(card), requested, card, false);
         const patch = {}; const fields = {};
         for (const [key, value] of Object.entries(input.changes)) {
           check(Object.hasOwn(card.fieldVersions, key) && Number.isInteger(input.baseVersions[key]), 'Unknown field or missing field version.');
@@ -962,16 +994,20 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
       }
       check(Number.isInteger(input.revision), 'Card updates need the revision they were based on.');
       if (input.revision !== card.revision) fail(409, 'This card changed in another tab. Copy any unsaved text, then reload to get the latest version.');
-      const content = cardContent(card.template, input, card);
+      const content = cardContent(templates.forCard(card), input, card);
       return transaction(() => {
         const at = now();
+        const roles = Object.keys(content.imageRoles).filter((role) => content.imageRoles[role] !== card.imageRoles[role]);
+        // Roles the template gained since the card was stored are null on read.
+        // Writing them back would read as a gallery edit to the version trigger,
+        // so a save that touches no role keeps the stored roles as they are.
+        const imageRoles = roles.length ? JSON.stringify(content.imageRoles) : get('SELECT image_roles FROM cards WHERE id = ?', id).image_roles;
         run('UPDATE cards SET title = ?, fields = ?, images = ?, image_roles = ?, revision = revision + 1, updated_at = ? WHERE id = ?',
-          content.title, JSON.stringify(content.fields), JSON.stringify(content.images), JSON.stringify(content.imageRoles), at, id);
+          content.title, JSON.stringify(content.fields), JSON.stringify(content.images), imageRoles, at, id);
         const before = new Set(card.images.map((image) => image.id));
         const after = new Set(content.images.map((image) => image.id));
         const added = [...after].filter((imageId) => !before.has(imageId));
         const removed = [...before].filter((imageId) => !after.has(imageId));
-        const roles = Object.keys(content.imageRoles).filter((role) => content.imageRoles[role] !== card.imageRoles[role]);
         const imagesChanged = JSON.stringify(content.images) !== JSON.stringify(card.images) || roles.length > 0;
         if (imagesChanged) {
           insertEvent(ctx.workspaceId, card, 'images_changed', ctx.actor, { data: { added, removed, roles }, at });
@@ -1134,7 +1170,7 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
         const cardRow = get('SELECT * FROM cards WHERE id = ?', runRow.card_id);
         const project = get('SELECT * FROM projects WHERE id = ?', cardRow.project_id);
         const stage = stageFrom(get('SELECT * FROM stages WHERE id = ?', runRow.stage_id));
-        return { run: laneRunFrom(runRow), card: cardFrom(cardRow), deleted: Boolean(cardRow.deleted_at || project.deleted_at), archived: Boolean(project.archived_at),
+        return { run: laneRunFrom(runRow), card: fullCard(cardRow), deleted: Boolean(cardRow.deleted_at || project.deleted_at), archived: Boolean(project.archived_at),
           stage, stageDeleted: Boolean(get('SELECT deleted_at FROM stages WHERE id = ?', stage.id).deleted_at), project: { id: project.id, name: project.name, flowId: project.flow_id }, stages: activeStages(project.flow_id) };
       },
       place(ctx, cardId) {
@@ -1146,7 +1182,7 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
       request(ctx, cardId) {
         const card = requireCard(ctx, cardId);
         const stage = requireStage(ctx, card.stageId);
-        const found = playbooks.settings(stage.flowId, stage.id, card.template);
+        const found = playbooks.settings(stage.flowId, stage.id, templates.forCard(card));
         if (!found) fail(409, `${stage.name} has no lane playbook yet. Open its playbook to write one.`);
         if (found.settings.errors.length) fail(409, `Fix the playbook first: ${found.settings.errors.join(' ')}`);
         if (!found.settings.instructions) fail(409, 'This lane playbook has no instructions to run.');

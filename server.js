@@ -210,6 +210,11 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
       ['PUT', /^\/api\/providers\/(codex|claude)$/, async (ctx, req, provider) => store.saveProviderConfiguration(ctx, await read(req), provider)],
       ['POST', /^\/api\/providers\/(codex|claude)\/discover$/, (ctx, req, provider) => codexAction(() => providers.refresh(ctx, provider))],
       ['GET', /^\/api\/workspace$/, (ctx) => store.workspace(ctx)],
+      // Card templates: the fields and image roles cards carry (store-templates.js).
+      ['GET', /^\/api\/templates$/, (ctx) => ({ templates: store.templates.list(ctx) })],
+      ['POST', /^\/api\/templates$/, async (ctx, req) => store.templates.create(ctx, await read(req)), 201],
+      ['PATCH', /^\/api\/templates\/([^/]+)$/, async (ctx, req, id) => store.templates.update(ctx, id, await read(req))],
+      ['DELETE', /^\/api\/templates\/([^/]+)$/, (ctx, req, id) => (store.templates.remove(ctx, id), { ok: true })],
       ['POST', /^\/api\/projects$/, async (ctx, req) => store.createProject(ctx, await read(req)), 201],
       ['PATCH', /^\/api\/projects\/([^/]+)$/, async (ctx, req, id) => store.updateProject(ctx, id, await read(req))],
       ['DELETE', /^\/api\/projects\/([^/]+)$/, (ctx, req, id) => (store.deleteProject(ctx, id), { ok: true })],

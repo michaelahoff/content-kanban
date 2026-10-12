@@ -8,6 +8,7 @@ import { setPlaybook } from './support/playbooks.js';
 import { parseDocument, playbookSettings, serializeDocument, parseLaneResult, composeLanePrompt } from '../public/playbook-format.js';
 import { createPlaybooks } from '../playbooks.js';
 import { referencePath } from '../public/chat-context.js';
+import { youtubeVideoTemplate } from '../public/card-template.js';
 
 const lanes = async (f) => { const workspace = await f.ok('GET', '/api/workspace'); return { flowId: workspace.projects[0].flowId, stages: workspace.flows[0].stages }; };
 const runs = async (f, cardId) => (await f.ok('GET', `/api/cards/${cardId}/lane-runs`)).runs;
@@ -43,7 +44,7 @@ for (const context of [null, ['title', 'intro']]) test(`lane runs attach every c
 });
 
 test('playbooks accept comments and empty settings and preserve quoted separators', () => {
-  const settings = playbookSettings(parseDocument('---\nrun: manual # Start on request\nmodel: test-model # Default\nmay_edit: [intro] # Allowed\nset:\n  title: "Episode #3, part 2" # Keep the quoted hash\n---\nDo the work.'), 'youtube-video');
+  const settings = playbookSettings(parseDocument('---\nrun: manual # Start on request\nmodel: test-model # Default\nmay_edit: [intro] # Allowed\nset:\n  title: "Episode #3, part 2" # Keep the quoted hash\n---\nDo the work.'), youtubeVideoTemplate);
   assert.deepEqual(settings.errors, []);
   assert.equal(settings.run, 'manual');
   assert.equal(settings.model, 'test-model');
@@ -57,7 +58,7 @@ test('playbooks accept comments and empty settings and preserve quoted separator
 
 test('result blocks accept Windows newlines and Markdown fences inside a field', () => {
   const value = { fields: { script: 'Example:\n```js\nconsole.log("ok");\n```\nEnd.' }, notes: 'Hand-off' };
-  const parsed = parseLaneResult(result(value).replaceAll('\n', '\r\n'), 'youtube-video');
+  const parsed = parseLaneResult(result(value).replaceAll('\n', '\r\n'), youtubeVideoTemplate);
   assert.deepEqual(parsed.errors, []);
   assert.deepEqual(parsed.fields, value.fields);
 });
@@ -229,7 +230,7 @@ skills: [voice]
 Use skills/hooks.md too.
 `);
   assert.deepEqual(document.errors, []);
-  const settings = playbookSettings(document, 'youtube-video');
+  const settings = playbookSettings(document, youtubeVideoTemplate);
   assert.equal(settings.run, 'manual');
   assert.equal(settings.provider, 'claude');
   assert.deepEqual(settings.selections, { fields: ['title', 'titleOptions'], roles: ['original', 'cover'] });
@@ -237,10 +238,10 @@ Use skills/hooks.md too.
   assert.deepEqual(settings.set, { prompt: 'Two lines\nof prompt\n', title: 'Colon: kept' });
   assert.deepEqual(settings.skills, ['voice', 'hooks']);
   assert.equal(settings.instructions, '# Titling\nUse skills/hooks.md too.');
-  const roundTrip = playbookSettings(parseDocument(serializeDocument(document.data, document.body)), 'youtube-video');
+  const roundTrip = playbookSettings(parseDocument(serializeDocument(document.data, document.body)), youtubeVideoTemplate);
   assert.deepEqual({ ...roundTrip, instructions: '' }, { ...settings, instructions: '' });
 
-  const bad = playbookSettings(parseDocument('---\nrun: sometimes\nmay_edit: [nonsense]\nset:\n  missing: x\ncolour: red\n---\nBody'), 'youtube-video');
+  const bad = playbookSettings(parseDocument('---\nrun: sometimes\nmay_edit: [nonsense]\nset:\n  missing: x\ncolour: red\n---\nBody'), youtubeVideoTemplate);
   assert.equal(bad.errors.length, 3);
   assert.deepEqual(bad.warnings, ['Unknown setting “colour” is ignored.']);
   assert.match(parseDocument('---\nrun: on-enter\nBody without a closing line').errors[0], /Close the settings block/);
@@ -248,17 +249,17 @@ Use skills/hooks.md too.
 });
 
 test('lane results read the last block and ignore what they cannot apply', () => {
-  assert.equal(parseLaneResult('No block here', 'youtube-video'), null);
-  const parsed = parseLaneResult(`${result({ fields: { title: 'Old' } })}\n${result({ fields: { 'Title Options': 'A\nB', unknown: 'x', intro: 5 }, notes: 'Next: intro', move: 'Review' })}`, 'youtube-video');
+  assert.equal(parseLaneResult('No block here', youtubeVideoTemplate), null);
+  const parsed = parseLaneResult(`${result({ fields: { title: 'Old' } })}\n${result({ fields: { 'Title Options': 'A\nB', unknown: 'x', intro: 5 }, notes: 'Next: intro', move: 'Review' })}`, youtubeVideoTemplate);
   assert.deepEqual(parsed.fields, { titleOptions: 'A\nB' });
   assert.equal(parsed.notes, 'Next: intro');
   assert.equal(parsed.move, 'Review');
   assert.equal(parsed.errors.length, 2);
-  assert.match(parseLaneResult('```frameboard-result\n{oops}\n```', 'youtube-video').errors[0], /not valid JSON/);
-  const settings = playbookSettings(parseDocument('---\nmay_edit: [intro]\n---\nWrite the hook.'), 'youtube-video');
+  assert.match(parseLaneResult('```frameboard-result\n{oops}\n```', youtubeVideoTemplate).errors[0], /not valid JSON/);
+  const settings = playbookSettings(parseDocument('---\nmay_edit: [intro]\n---\nWrite the hook.'), youtubeVideoTemplate);
   const prompt = composeLanePrompt({ projectName: 'Channel', laneName: 'Intro', lanes: [{ name: 'Ideas' }, { name: 'Intro' }],
     map: { path: 'MAP.md', text: 'The map' }, playbook: { path: 'lanes/intro.md' }, skills: [{ name: 'voice', path: 'skills/voice.md', text: 'Be warm.' }, { name: 'gone', text: null }],
-    notes: 'Earlier notes', settings, templateId: 'youtube-video' });
+    notes: 'Earlier notes', settings, template: youtubeVideoTemplate });
   for (const part of ['The map', 'Write the hook.', 'Be warm.', 'skills/gone.md does not exist yet', 'Earlier notes', 'applies Intro directly', 'Lanes: Ideas, Intro']) assert.ok(prompt.includes(part), part);
 });
 
@@ -331,7 +332,7 @@ test('retired command graphs become set: values in a lane playbook once', async 
   const { lanes: documents } = await f.ok('GET', `/api/flows/${flowId}/playbooks`);
   assert.equal(documents.length, 1);
   assert.equal(documents[0].path, 'lanes/review.md');
-  const settings = playbookSettings(parseDocument(documents[0].text), 'youtube-video');
+  const settings = playbookSettings(parseDocument(documents[0].text), youtubeVideoTemplate);
   assert.deepEqual(settings.set, { title: 'Final', intro: 'Line one\nLine two' });
   assert.equal(settings.run, 'off');
   const card = await f.card({ stageId: stages[2].id });

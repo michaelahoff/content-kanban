@@ -146,6 +146,11 @@ try {
       return { ...project, lanes: stages.map((stage) => ({ ...stage, cards: cards.filter((card) => card.stageId === stage.id) })) };
     })) };
   };
+  // A JSON request that must succeed.
+  const api = async (method, url, body) => {
+    const response = await fetch(base + url, { method, headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
+    const value = await response.json(); assert.ok(response.ok, JSON.stringify(value)); return value;
+  };
   await send('Page.navigate', { url: base });
   await waitFor(`document.querySelectorAll('.lane').length === 4`);
   await snapshot('empty-board');
@@ -442,7 +447,12 @@ try {
   await click(`[data-action="edit-playbook"][data-id="${addedLane}"]`);
   await waitFor(`document.querySelector('#playbook-dialog').open && document.querySelector('.playbook-empty')`);
   await click('[data-playbook-action="create-lane"]');
+  // A new lane playbook opens as a settings form. These checks type the whole
+  // Markdown file, and the mode chosen here is remembered for the session.
+  await waitFor(`document.querySelector('[data-playbook-action="mode"][data-mode="form"]')?.getAttribute('aria-pressed') === 'true' && !!document.querySelector('#playbook-body') && !document.querySelector('#playbook-text')`);
+  await click('[data-playbook-action="mode"][data-mode="markdown"]');
   await waitFor(`document.querySelector('#playbook-text')?.value.includes('lane: ${addedLane}')`);
+  assert.equal(await evaluate(`document.querySelector('[data-playbook-action="mode"][data-mode="markdown"]').getAttribute('aria-pressed')`), 'true');
   const playbookText = `---
 lane: ${addedLane}
 run: off
@@ -726,6 +736,82 @@ These values apply when a card enters this lane.
   await saved();
   assert.equal((await state()).projects[0].lanes.length, 4);
   console.log('PASS lane creation, editing, reordering, deletion');
+
+  // The settings form on a lane playbook: each control writes one setting
+  // into the draft the Markdown mode shows, Save writes the file, and the
+  // editor reopens in the remembered mode with the saved values.
+  {
+    const formLane = (await state()).projects[0].lanes.at(-1).id;
+    const pressed = (mode) => evaluate(`document.querySelector('[data-playbook-action="mode"][data-mode="${mode}"]')?.getAttribute('aria-pressed')`);
+    const markdown = () => evaluate(`document.querySelector('#playbook-text').value`);
+    const inspectorHeading = () => evaluate(`document.querySelector('.playbook-inspector h3').textContent`);
+    const switchTo = async (mode) => {
+      await click(`[data-playbook-action="mode"][data-mode="${mode}"]`);
+      await waitFor(mode === 'form' ? `!!document.querySelector('#playbook-body') && !document.querySelector('#playbook-text')` : `!!document.querySelector('#playbook-text') && !document.querySelector('#playbook-body')`);
+    };
+    await click(`[data-action="edit-playbook"][data-id="${formLane}"]`);
+    await waitFor(`document.querySelector('#playbook-dialog').open && !!document.querySelector('.playbook-empty')`);
+    await click('[data-playbook-action="create-lane"]');
+    await waitFor(`document.querySelector('#playbook-text')?.value.includes('lane: ${formLane}')`);
+    await switchTo('form');
+    assert.equal(await pressed('form'), 'true');
+    assert.equal(await pressed('markdown'), 'false');
+    assert.equal(await evaluate(`document.querySelector('#playbook-run-on-enter').getAttribute('aria-pressed')`), 'true');
+    assert.ok(await evaluate(`document.querySelector('#playbook-body').value.includes('What should happen when a card enters this lane?')`), 'The instructions sit under the controls');
+    await click('#playbook-run-manual');
+    await waitFor(`document.querySelector('#playbook-run-manual')?.getAttribute('aria-pressed') === 'true'`);
+    assert.ok((await inspectorHeading()).includes('Runs when you choose'), 'Manual changes the summary');
+    assert.equal(await evaluate(`document.querySelector('#playbook-status').textContent`), 'Unsaved changes · Ctrl+S saves');
+    await click('input[data-playbook-action="form-may-edit"][data-key="intro"]');
+    await waitFor(`document.querySelector('.playbook-inspector h3')?.textContent.includes('may edit Intro')`);
+    await switchTo('markdown');
+    assert.match(await markdown(), /^run: manual$/m, 'The chip wrote run:');
+    assert.match(await markdown(), /^may_edit: \[intro\]$/m, 'The checkbox wrote may_edit:');
+    assert.match(await markdown(), /^lane: /m);
+    await switchTo('form');
+    await click('[data-playbook-action="form-set-add"]');
+    await waitFor(`!!document.querySelector('.playbook-set-row #playbook-set-value-0')`);
+    assert.equal(await evaluate(`document.querySelector('#playbook-set-field-0').value`), 'title', 'Add field picks the first field without a value');
+    await fill('#playbook-set-value-0', 'Ready for review\nSecond line');
+    // Typed values reach the draft after a short pause in typing.
+    await waitFor(`document.querySelector('.playbook-inspector h3')?.textContent.includes('sets Card title')`);
+    await switchTo('markdown');
+    assert.match(await markdown(), /^set:\n  title: \|-?\n    Ready for review\n    Second line$/m, 'Several lines are written as block text');
+    await switchTo('form');
+    assert.equal(await evaluate(`document.querySelector('#playbook-field-context-all').checked`), true);
+    assert.equal(await evaluate(`document.querySelector('#playbook-context-field-0')`), null, 'Send everything hides the checklist');
+    await click('#playbook-field-context-all');
+    await waitFor(`document.querySelector('#playbook-context-field-0')?.checked === true && document.querySelector('#playbook-context-role-0')?.checked === true && !document.querySelector('#playbook-field-context-all').checked`);
+    await switchTo('markdown');
+    assert.match(await markdown(), /^context: \[title, originalVideoUrl, titleOptions, intro, script, publishedVideoUrl, originalVideoTitle, original, inspiration\]$/m, 'Unchecking Send everything writes what is sent now');
+    await switchTo('form');
+    await click('[data-playbook-action="save"]');
+    await waitFor(`document.querySelector('#playbook-status').textContent.startsWith('Saved')`);
+    await click('[data-playbook-action="close"]');
+    await waitFor(`!document.querySelector('#playbook-dialog').open`);
+    await saved();
+    assert.match((await state()).projects[0].lanes.at(-1).playbook.summary, /^Runs when you choose · Card chat provider · may edit Intro · sets Card title$/);
+    await click(`[data-action="edit-playbook"][data-id="${formLane}"]`);
+    await waitFor(`document.querySelector('#playbook-dialog').open && !!document.querySelector('#playbook-body')`);
+    assert.equal(await pressed('form'), 'true', 'The editing mode is remembered');
+    assert.equal(await evaluate(`document.querySelector('#playbook-run-manual').getAttribute('aria-pressed')`), 'true');
+    assert.equal(await evaluate(`document.querySelector('input[data-playbook-action="form-may-edit"][data-key="intro"]').checked`), true);
+    assert.equal(await evaluate(`document.querySelector('#playbook-field-context-all').checked`), false);
+    assert.equal(await evaluate(`document.querySelector('#playbook-set-field-0').value`), 'title');
+    assert.equal(await evaluate(`document.querySelector('#playbook-set-value-0').value`), 'Ready for review\nSecond line');
+    assert.ok(await evaluate(`document.querySelector('#playbook-status').textContent.startsWith('Saved')`));
+    await snapshot('lane-playbook-form');
+    // Later checks type whole Markdown files and expect lanes without playbooks.
+    await switchTo('markdown');
+    await click('[data-playbook-action="delete"]');
+    await waitFor(`document.querySelector('#form-dialog').open`);
+    await click('#small-form [type="submit"]');
+    await waitFor(`!!document.querySelector('.playbook-empty')`);
+    await click('[data-playbook-action="close"]');
+    await waitFor(`!document.querySelector('#playbook-dialog').open`);
+    assert.equal((await state()).projects[0].lanes.at(-1).playbook, null);
+    console.log('PASS the playbook settings form writes run, may_edit, set and context into the Markdown draft, saves them and reopens in the remembered mode');
+  }
 
   await click('.sidebar-section [data-action="add-project"]');
   await fill('#name-input', 'Another project');
@@ -1104,22 +1190,182 @@ These values apply when a card enters this lane.
   await click('[data-action="close-card"]');
   console.log('PASS original URL fetches title and thumbnail');
 
-  // Editor labels and limits come from the same template as server validation.
-  await evaluate(`(async () => {
-    const { templates } = await import('/card-template.js');
-    const field = templates['youtube-video'].fields.find(field => field.key === 'titleOptions');
-    window.originalTemplateField = { ...field };
-    field.label = 'Candidate titles'; field.max = 1234;
-  })()`);
+  // Editor labels and limits come from the saved template. A change made
+  // elsewhere reaches the board through the activity stream.
+  const youtubeTemplate = (await api('GET', '/api/templates')).templates.find((template) => template.id === 'youtube-video');
+  const definitionOf = ({ name, title, fields, imageRoles }) => ({ name, title, fields, imageRoles });
+  const titleOptionsLabel = `import('/state.js').then(m => m.state.templates.find(t => t.id === 'youtube-video')?.fields.find(f => f.key === 'titleOptions')?.label)`;
+  const relabelled = await api('PATCH', '/api/templates/youtube-video', { revision: youtubeTemplate.revision, ...definitionOf(youtubeTemplate),
+    fields: youtubeTemplate.fields.map((field) => (field.key === 'titleOptions' ? { ...field, label: 'Candidate titles', max: 1234 } : field)) });
+  assert.equal(relabelled.revision, youtubeTemplate.revision + 1);
+  await waitFor(`${titleOptionsLabel}.then(label => label === 'Candidate titles')`);
   await click('[data-action="open-card"]');
   assert.equal(await evaluate(`document.querySelector('label[for="card-title-options"]').textContent`), 'Candidate titles');
   assert.equal(await evaluate(`document.querySelector('#card-title-options').maxLength`), 1234);
-  await evaluate(`(async () => {
-    const { templates } = await import('/card-template.js');
-    Object.assign(templates['youtube-video'].fields.find(field => field.key === 'titleOptions'), window.originalTemplateField);
-  })()`);
   await click('[data-action="close-card"]');
+  await waitFor(`!document.querySelector('#card-dialog').open`);
+  await api('PATCH', '/api/templates/youtube-video', { revision: relabelled.revision, ...definitionOf(youtubeTemplate) });
+  await waitFor(`${titleOptionsLabel}.then(label => label === 'Title Options')`);
   console.log('PASS editor reads template labels and limits');
+
+  // Card templates: Project settings → Manage templates… edits a new
+  // template, the project adopts it for new cards and the editor follows it.
+  await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
+  await click('[data-action="edit-project"]');
+  await waitFor(`document.querySelector('#form-dialog').open && !!document.querySelector('#project-template')`);
+  assert.equal(await evaluate(`document.querySelector('#project-template').value`), 'youtube-video');
+  await click('[data-action="manage-templates"]');
+  await waitFor(`document.querySelector('#template-dialog').open && !document.querySelector('#form-dialog').open`);
+  assert.equal(await evaluate(`document.querySelector('#template-heading').textContent`), 'YouTube video');
+  await click('[data-template-action="new"]');
+  await waitFor(`document.querySelector('#template-heading')?.textContent === 'New template'`);
+  await fill('.template-main [name="name"]', 'Blog post');
+  await click('[data-template-action="add-field"]');
+  await waitFor(`!!document.querySelector('[data-list="fields"][data-index="0"] [name="label"]')`);
+  await fill('[data-list="fields"][data-index="0"] [name="label"]', 'Headline');
+  await click('[data-template-action="add-field"]');
+  await waitFor(`!!document.querySelector('[data-list="fields"][data-index="1"] [name="label"]')`);
+  await fill('[data-list="fields"][data-index="1"] [name="label"]', 'Body');
+  await select('[data-list="fields"][data-index="1"] [name="control"]', 'textarea');
+  await waitFor(`document.querySelector('[data-list="fields"][data-index="1"] [name="max"]')?.value === '200000'`);
+  await click('[data-list="fields"][data-index="1"] [name="countWords"]');
+  await click('[data-template-action="add-role"]');
+  await waitFor(`!!document.querySelector('[data-list="imageRoles"][data-index="0"] [name="label"]')`);
+  await fill('[data-list="imageRoles"][data-index="0"] [name="label"]', 'Hero');
+  assert.equal(await evaluate(`document.querySelector('#template-status').textContent`), 'Unsaved changes · Ctrl+S saves');
+  await click('[data-template-action="save"]');
+  await waitFor(`document.querySelector('#template-status')?.textContent === 'Saved' && document.querySelector('#template-heading')?.textContent === 'Blog post'`);
+  const blogTemplate = (await api('GET', '/api/templates')).templates.find((template) => template.id === 'blog-post');
+  assert.deepEqual(blogTemplate.fields.map((field) => [field.key, field.control, field.countWords ?? false]), [['headline', 'text', false], ['body', 'textarea', true]], 'Keys come from the labels');
+  assert.deepEqual(blogTemplate.imageRoles, [{ key: 'hero', label: 'Hero' }]);
+  await waitFor(`!!document.querySelector('.template-nav-item[data-id="blog-post"]')`);
+  await snapshot('template-editor');
+  // A save that is slow to answer must not swallow what is typed meanwhile:
+  // the typed text stays as the unsaved draft on top of the saved copy.
+  await evaluate(`(() => {
+    const originalFetch = window.fetch;
+    window.restoreTemplateFetch = () => { window.fetch = originalFetch; };
+    window.fetch = async (url, options) => {
+      if (options?.method === 'PATCH' && String(url).includes('/api/templates/')) {
+        window.fetch = originalFetch;
+        const response = await originalFetch(url, options);
+        await new Promise(resolve => { window.releaseTemplateSave = resolve; });
+        return response;
+      }
+      return originalFetch(url, options);
+    };
+  })()`);
+  await fill('.template-main [name="name"]', 'Submitted name');
+  await click('[data-template-action="save"]');
+  await waitFor(`typeof window.releaseTemplateSave === 'function'`);
+  assert.equal(await evaluate(`document.querySelector('#template-status').textContent`), 'Saving…');
+  await fill('.template-main [name="name"]', 'Typed during save');
+  await evaluate(`window.releaseTemplateSave()`);
+  await waitFor(`document.querySelector('#template-status').textContent !== 'Saving…'`);
+  assert.equal(await evaluate(`document.querySelector('.template-main [name="name"]').value`), 'Typed during save', 'Typing while saving keeps the newer draft');
+  assert.equal(await evaluate(`document.querySelector('#template-status').textContent`), 'Unsaved changes · Ctrl+S saves');
+  assert.equal(await evaluate(`document.querySelector('#template-heading').textContent`), 'Typed during save');
+  const blogName = async () => (await api('GET', '/api/templates')).templates.find((template) => template.id === 'blog-post').name;
+  assert.equal(await blogName(), 'Submitted name', 'The save carried the name as submitted');
+  await click('[data-template-action="save"]');
+  await waitFor(`document.querySelector('#template-status')?.textContent === 'Saved'`);
+  assert.equal(await blogName(), 'Typed during save', 'The next save carries the newer draft');
+  await evaluate(`window.restoreTemplateFetch(); delete window.restoreTemplateFetch; delete window.releaseTemplateSave;`);
+  // Back to the name the rest of this section uses.
+  await fill('.template-main [name="name"]', 'Blog post');
+  await click('[data-template-action="save"]');
+  await waitFor(`document.querySelector('#template-status')?.textContent === 'Saved' && document.querySelector('#template-heading')?.textContent === 'Blog post'`);
+  assert.equal(await blogName(), 'Blog post');
+  console.log('PASS template edits typed during a slow save stay as the unsaved draft and save next');
+  await click('[data-template-action="close"]');
+  await waitFor(`!document.querySelector('#template-dialog').open`);
+  const templateProjectId = await evaluate(`import('/state.js').then(m => m.state.projectId)`);
+  const chooseProjectTemplate = async (templateId) => {
+    await click('[data-action="edit-project"]');
+    await waitFor(`!!document.querySelector('#project-template option[value="${templateId}"]')`);
+    await select('#project-template', templateId);
+    await click('#small-form [type="submit"]');
+    await waitFor(`!document.querySelector('#form-dialog').open`);
+    await saved();
+    assert.equal((await api('GET', '/api/workspace')).projects.find((item) => item.id === templateProjectId).templateId, templateId);
+  };
+  await chooseProjectTemplate('blog-post');
+  assert.equal(await evaluate(`document.querySelector('[data-action="set-project-prompt"]')`), null, 'Set prompt needs a Prompt field');
+  await click('.header-actions [data-action="add-card"]');
+  await waitFor(`document.querySelector('#card-dialog').open && !!document.querySelector('#card-headline') && !!document.querySelector('#card-body')`);
+  assert.equal(await evaluate(`document.querySelector('#card-headline').tagName + ' ' + document.querySelector('#card-body').tagName`), 'INPUT TEXTAREA');
+  assert.equal(await evaluate(`document.querySelector('#body-count')?.textContent`), '0 words');
+  assert.equal(await evaluate(`document.querySelector('#card-intro')`), null, 'The built-in fields are not on this card');
+  assert.equal(await evaluate(`document.querySelector('[data-action="copy-trifecta"]')`), null, 'Trifecta copy needs fields this template lacks');
+  await evaluate(`(async () => {
+    const canvas = document.createElement('canvas'); canvas.width = 320; canvas.height = 180;
+    const ctx = canvas.getContext('2d'); ctx.fillStyle = '#b07a4a'; ctx.fillRect(0, 0, 320, 180);
+    const file = new File([await new Promise(resolve => canvas.toBlob(resolve))], 'hero.png', { type: 'image/png' });
+    const transfer = new DataTransfer(); transfer.items.add(file);
+    const input = document.querySelector('#image-files'); input.files = transfer.files; input.dispatchEvent(new Event('change', { bubbles: true }));
+  })()`);
+  await waitFor(`document.querySelectorAll('.image-tile').length === 1`);
+  assert.deepEqual(await evaluate(`[...document.querySelectorAll('.image-tile [data-action="set-image-role"]')].map(node => node.dataset.role)`), ['hero'], 'One role button per template role');
+  await click('.image-tile [data-action="set-image-role"][data-role="hero"]');
+  await fill('#card-headline', 'Quokka season');
+  await fill('#card-body', 'Why the quokka smiles.');
+  await saved();
+  const blogCardId = await evaluate(`import('/state.js').then(m => m.state.cardId)`);
+  const { card: blogCard } = await api('GET', `/api/cards/${blogCardId}`);
+  assert.equal(blogCard.template, 'blog-post');
+  assert.deepEqual(blogCard.fields, { headline: 'Quokka season', body: 'Why the quokka smiles.' });
+  assert.equal(blogCard.imageRoles.hero, blogCard.images[0].id);
+  assert.equal(await evaluate(`document.querySelector('#body-count').textContent`), '4 words');
+  await click('[data-action="close-card"]');
+  await waitFor(`!document.querySelector('#card-dialog').open`);
+  await fill('#search', 'quokka');
+  assert.deepEqual(await evaluate(`[...document.querySelectorAll('.card')].map(card => card.dataset.card)`), [blogCardId], 'Search reads the new template’s fields');
+  await fill('#search', '');
+  // Two URL fields flagged for YouTube: each lookup button names its field,
+  // so the clicked one is looked up. The server refuses the stand-in video
+  // IDs; only the request matters here.
+  const blogSaved = (await api('GET', '/api/templates')).templates.find((template) => template.id === 'blog-post');
+  const videoFields = [{ key: 'firstVideo', label: 'First video', control: 'url', youtube: true }, { key: 'secondVideo', label: 'Second video', control: 'url', youtube: true }];
+  await api('PATCH', '/api/templates/blog-post', { revision: blogSaved.revision, ...definitionOf(blogSaved), fields: [...blogSaved.fields, ...videoFields] });
+  const blogFieldKeys = `import('/state.js').then(m => m.state.templates.find(t => t.id === 'blog-post')?.fields.map(f => f.key).join(' '))`;
+  await waitFor(`${blogFieldKeys}.then(keys => keys === 'headline body firstVideo secondVideo')`);
+  await click(`[data-action="open-card"][data-id="${blogCardId}"]`);
+  await waitFor(`document.querySelector('#card-dialog').open && !!document.querySelector('#card-first-video') && !!document.querySelector('#card-second-video')`);
+  await fill('#card-first-video', 'https://youtu.be/first');
+  await fill('#card-second-video', 'https://youtu.be/second');
+  assert.equal(await evaluate(`document.querySelector('#card-first-video-link [data-action="fetch-youtube"]')?.dataset.field`), 'firstVideo', 'Each lookup button names its field');
+  assert.equal(await evaluate(`document.querySelector('#card-second-video-link [data-action="fetch-youtube"]')?.dataset.field`), 'secondVideo');
+  await evaluate(`(() => {
+    const originalFetch = window.fetch;
+    window.youtubeLookups = { requests: [], restore: () => { window.fetch = originalFetch; } };
+    window.fetch = async (url, options) => {
+      if (options?.method === 'POST' && String(url).includes('/api/youtube')) window.youtubeLookups.requests.push(JSON.parse(options.body));
+      return originalFetch(url, options);
+    };
+  })()`);
+  await click('#card-second-video-link [data-action="fetch-youtube"][data-field="secondVideo"]');
+  await waitFor(`window.youtubeLookups.requests.length === 1`);
+  assert.deepEqual(await evaluate(`window.youtubeLookups.requests`), [{ url: 'https://youtu.be/second' }], 'The clicked button looks up its own field, not the first flagged one');
+  await waitFor(`document.querySelector('#card-second-video-link [data-action="fetch-youtube"]') && !document.querySelector('#card-second-video-link [data-action="fetch-youtube"]').disabled`);
+  await evaluate(`window.youtubeLookups.restore(); delete window.youtubeLookups`);
+  await click('[data-action="close-card"]');
+  await waitFor(`!document.querySelector('#card-dialog').open`);
+  await saved();
+  console.log('PASS the lookup button of each YouTube-flagged field looks up its own URL');
+  // Later checks assume the built-in template and its cards.
+  await click(`[data-action="open-card"][data-id="${blogCardId}"]`);
+  await waitFor(`!!document.querySelector('#card-headline')`);
+  await click('[data-action="delete-card"]');
+  await click('#small-form [type="submit"]');
+  await waitFor(`!document.querySelector('#card-dialog').open && !document.querySelector('[data-card="${blogCardId}"]')`);
+  await saved();
+  // The deleted card no longer locks the video fields: put the template back as saved above.
+  const blogWithVideos = (await api('GET', '/api/templates')).templates.find((template) => template.id === 'blog-post');
+  await api('PATCH', '/api/templates/blog-post', { revision: blogWithVideos.revision, ...definitionOf(blogSaved) });
+  await waitFor(`${blogFieldKeys}.then(keys => keys === 'headline body')`);
+  await chooseProjectTemplate('youtube-video');
+  await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+  console.log('PASS a template made in the editor drives the project’s new cards: fields, word count, image roles, search and no Trifecta');
 
   // Preserve unsaved text and show actionable feedback if another tab saved the same card first.
   const conflictId = await evaluate(`document.querySelector('[data-action="open-card"]').dataset.id`);
@@ -1164,10 +1410,6 @@ These values apply when a card enters this lane.
   // HTTP/worker/browser path. Native availability has its separate live gate.
   await click('[data-action="close-card"]');
   await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
-  async function api(method, url, body) {
-    const response = await fetch(base + url, { method, headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
-    const value = await response.json(); assert.ok(response.ok, JSON.stringify(value)); return value;
-  }
   const chatWorkspace = await api('GET', '/api/workspace'); const chatProject = chatWorkspace.projects[0];
   const chatStage = chatWorkspace.flows.find((flow) => flow.id === chatProject.flowId).stages[0].id;
   const a = await api('POST', `/api/projects/${chatProject.id}/cards`, { stageId: chatStage, title: 'Chat browser A', images: fetchedCard.images, imageRoles: fetchedCard.imageRoles });

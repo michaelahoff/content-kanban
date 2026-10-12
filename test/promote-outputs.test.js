@@ -10,6 +10,7 @@ import { parseLaneResult } from '../public/playbook-format.js';
 import { createBackup, restoreBackup } from '../backup.js';
 import { createApp } from '../server.js';
 import { ControlledCodex } from './support/controlled-codex.js';
+import { youtubeVideoTemplate } from '../public/card-template.js';
 
 const reply = '# Hook guide\n\nOpen on the question, not the answer.';
 async function promotionFixture(t, options) {
@@ -174,7 +175,7 @@ const block = (value) => `Done.\n\n\`\`\`frameboard-result\n${JSON.stringify(val
 
 test('an agent’s registered output is never promoted: a requested Library placement is reported as ignored and only the user can save it to the Library', async (t) => {
   const asked = { outputs: [{ filename: 'hook.md', text: '# Hook', library: 'Guides/Hook guide.md', replace: true }] };
-  const parsed = parseLaneResult(block(asked), 'youtube-video');
+  const parsed = parseLaneResult(block(asked), youtubeVideoTemplate);
   assert.deepEqual(parsed.outputs, [{ filename: 'hook.md', text: '# Hook', sources: null }]);
   assert.equal(parsed.errors.length, 1);
   assert.match(parsed.errors[0], /Ignored “library”, “replace” in “hook\.md”.*only the user can save it to the project Library/);
