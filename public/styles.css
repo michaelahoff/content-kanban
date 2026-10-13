@@ -392,6 +392,15 @@
   .image-drop input { position: absolute; opacity: 0; width: 1px; height: 1px; }
   .upload-status:empty { display: none; }
   .upload-status { margin-top: 10px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+  .card-library { margin-top: 20px; }
+  .card-library-files { list-style: none; margin: 0 0 10px; padding: 0; display: grid; gap: 2px; }
+  .card-library-files li { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 36px; padding: 4px 4px 4px 10px; border-radius: 8px; background: var(--raised); font-size: 14px; }
+  .card-library-files li > span { display: flex; align-items: center; gap: 8px; min-width: 0; overflow-wrap: anywhere; }
+  .card-library-files .icon { flex-shrink: 0; width: 16px; height: 16px; color: var(--muted); }
+  .card-library-files small { color: var(--muted); }
+  .card-library .field-help { margin: 8px 0 0; }
+  #card-library-list .field-help { margin: 0 0 10px; }
+  .card-library-missing { color: var(--danger); font-weight: 500; }
   .editor-footer { min-height: 60px; padding: 10px 16px; border-top: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; gap: 12px; }
   .editor-footer > span { margin-left: auto; margin-right: 8px; }
   .editor-footer .button { min-width: 85px; }
@@ -401,7 +410,7 @@
   .image-dialog p { text-align: center; font-size: 13px; color: var(--muted); margin-top: 12px; overflow-wrap: anywhere; }
   @keyframes enter { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
   @keyframes card-panel-in { from { opacity: 0; transform: translateX(40px); } to { opacity: 1; transform: none; } }
-  #card-dialog.archived :is(.image-drop, .image-flags, [data-action="remove-image"], [data-action="delete-card"], [data-undo-move], #card-playbook button) { display: none; }
+  #card-dialog.archived :is(.image-drop, .image-flags, [data-action="remove-image"], [data-action="delete-card"], [data-undo-move], #card-playbook button, .card-library button) { display: none; }
 }
 @layer forms {
   .small-dialog { width: 480px; max-width: calc(100vw - 32px); padding: 24px; }

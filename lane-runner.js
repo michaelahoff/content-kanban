@@ -4,8 +4,15 @@
 import { composeLanePrompt, parseLaneResult, setFields } from './public/playbook-format.js';
 import { submissionText } from './public/chat-context.js';
 import { problemMessage } from './submission-inputs.js';
+import { sourceKey } from './public/library-format.js';
 
 const providerName = (provider) => (provider === 'claude' ? 'Claude' : 'Codex');
+// The Library sources a run sends: its playbook's, then the card's own. A
+// source both name is sent once, in the playbook's place.
+export function laneAssets(settings, card) {
+  const keys = new Set();
+  return [...settings.assets, ...card.library ?? []].filter((source) => !keys.has(sourceKey(source)) && keys.add(sourceKey(source)));
+}
 
 export function createLaneRunner({ store, service, providers, ctx, paused = () => false }) {
   let draining = false; let again = false; let closed = false; let scheduled = null;
@@ -106,6 +113,7 @@ export function createLaneRunner({ store, service, providers, ctx, paused = () =
     if (!prepared.model) return end('failed', prepared.warning);
     const { card, stage } = info;
     const { chat, settings, provider } = prepared;
+    const assets = laneAssets(settings, card);
     // Fresh context waits until the card chat has nothing running or queued.
     if (needsFresh(prepared)) {
       if (chat.busy) {
@@ -132,10 +140,11 @@ export function createLaneRunner({ store, service, providers, ctx, paused = () =
       // The prompt holds the documents; name it only for a lane, flow or project rename.
       const changed = differs.length > 1 ? differs.filter((key) => key !== 'prompt') : differs;
       if (changed.length) throw conflict(`The ${listed.format(changed.map((key) => partNames[key]))} changed while preparing the lane run.`);
+      if (JSON.stringify(laneAssets(latest.settings, now.card)) !== JSON.stringify(assets)) throw conflict('The card’s Library files changed while preparing the lane run.');
     };
     // queueLane links the run and its submission in one commit.
     const submission = await service.queueLane(ctx, card.id, { id: `lane-${run.id}`, prompt: prepared.prompt, provider, model: prepared.model,
-      selections: settings.selections, assets: settings.assets, authority: { fields: settings.mayEdit }, confirm,
+      selections: settings.selections, assets, authority: { fields: settings.mayEdit }, confirm,
       lane: { runId: run.id, stageId: stage.id, stageName: stage.name, trigger: run.trigger, entry: store.laneRuns.entry(card.id),
         playbook: { ...prepared.document }, map: prepared.map && { ...prepared.map },
         skills: prepared.skills.map(({ name, path, hash, text }) => ({ name, path, hash: hash ?? null, text })),
@@ -173,7 +182,7 @@ export function createLaneRunner({ store, service, providers, ctx, paused = () =
     async preview(cardId) {
       const { card, stage, project, stages } = store.laneRuns.place(ctx, cardId);
       const prepared = prepare(card, stage, project, stages, 'manual');
-      const captured = prepared.prompt ? await service.previewLane(ctx, cardId, { selections: prepared.settings.selections, assets: prepared.settings.assets,
+      const captured = prepared.prompt ? await service.previewLane(ctx, cardId, { selections: prepared.settings.selections, assets: laneAssets(prepared.settings, card),
         provider: prepared.provider, model: prepared.model, prompt: prepared.prompt }) : null;
       // Sources that cannot be sent stay inspectable here; a run refuses them.
       const problems = captured?.problems ?? [];

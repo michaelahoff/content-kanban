@@ -225,7 +225,7 @@ function renderInspector() {
       <dt>When</dt><dd>${!settings.instructions ? 'No instructions, so no agent runs' : settings.run === 'on-enter' ? 'Each time a card enters this lane' : settings.run === 'manual' ? 'When you choose Run playbook on a card' : 'Turned off'}</dd>
       <dt>Agent</dt><dd>${settings.provider ? (settings.provider === 'claude' ? 'Claude' : 'Codex') : 'The card chat’s provider'}${settings.model ? ` · ${escape(settings.model)}` : ' · its selected or default model'}</dd>
       <dt>Conversation</dt><dd>${settings.conversation === 'fresh' ? 'Starts fresh context each run' : 'Continues the card chat'}</dd>
-      <dt>Sends</dt><dd>${escape([...settings.selections.fields.map(label), `All card photos (with ${roleWords} labels)`, ...(settings.assets.length ? [`then ${settings.assets.length} Library source${settings.assets.length === 1 ? '' : 's'} listed below`] : [])].join(', '))}</dd>
+      <dt>Sends</dt><dd>${escape([...settings.selections.fields.map(label), `All card photos (with ${roleWords} labels)`, ...(settings.assets.length ? [`then ${settings.assets.length} Library source${settings.assets.length === 1 ? '' : 's'} listed below`] : []), 'then the card\'s own Library files'].join(', '))}</dd>
       <dt>May edit</dt><dd>${escape(settings.mayEdit.map(label).join(', ') || 'Nothing directly; changes become proposals')}</dd>
     </dl>
     <h4>Sets on entry</h4><ul>${list(Object.entries(settings.set).map(([key, value]) => `<strong>${escape(label(key))}</strong> ${value ? `= ${escape(value.length > 80 ? `${value.slice(0, 80)}…` : value)}` : '(cleared)'}`))}</ul>
@@ -264,8 +264,8 @@ function libraryMarkup(settings) {
       : problem ? `<strong class="playbook-missing">Unresolved ${noun}</strong> <code>${escape(key)}</code> <small>${escape(problem.reason)}</small>` : `<code>${escape(key)}</code>`;
     return `<li><span>${name}</span>${control('remove-asset', `Remove<span class="sr-only"> ${escape(found?.path ?? key)}</span>`, null, 'text-button', `data-key="${escape(key)}"`)}</li>`;
   });
-  return `<h4>Library files</h4><p class="field-help">Sent after the card photos as reference material, in this order. Naming a file in the instructions does not send it.</p>
-    ${items.length ? `<ol class="playbook-assets">${items.join('')}</ol>` : '<p class="field-help">None. Runs send the card, all its photos and the playbook documents.</p>'}
+  return `<h4>Library files</h4><p class="field-help">Sent after the card photos as reference material, in this order, followed by any Library files on the card itself. Naming a file in the instructions does not send it.</p>
+    ${items.length ? `<ol class="playbook-assets">${items.join('')}</ol>` : '<p class="field-help">None. Runs send the card, all its photos, its own Library files and the playbook documents.</p>'}
     ${checked.error ? `<p class="playbook-error">Library files could not be checked: ${escape(checked.error)}</p>` : checked.problems?.length ? '<p class="playbook-missing">Runs are refused until every unresolved source is removed or replaced.</p>' : ''}
     ${control('add-assets', 'Add Library files…', 'plus', 'button small secondary')}`;
 }
