@@ -9,6 +9,7 @@ import { openCard, closeCard, cardPanelOpen, renderImages, copyText, copyTrifect
 import { openPlaybooks, playbooksChanged } from './playbook-editor.js';
 import { openTemplates, templatesChanged } from './template-editor.js';
 import { renderBar, cardPlaybookActivity, hasUnsavedNotes } from './card-playbook.js';
+import { cardLibraryActivity } from './card-library.js';
 import { initializeChats, hasUnsentChatChanges, flushComposers, onActivity } from './chat.js';
 
 const formDialog = $('#form-dialog');
@@ -450,6 +451,7 @@ try {
   onActivity((entry) => {
     cardPlaybookActivity(entry);
     libraryActivity(entry);
+    cardLibraryActivity(entry);
     // Another tab changed the card templates: reload them and redraw the board,
     // or the whole app when the header's Set prompt button may have changed.
     if (entry.entity === 'template') void loadTemplates().then(() => { if (flowTemplate()?.id === entry.entityId) renderApp(); else renderBoard(); templatesChanged(); }).catch(() => {});

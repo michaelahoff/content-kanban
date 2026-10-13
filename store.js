@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { rename, rm } from 'node:fs/promises';
 import path from 'node:path';
-import { emptyFields, emptyImageRoles, normalizeCard, youtubeVideoTemplate } from './public/card-template.js';
+import { emptyFields, emptyImageRoles, normalizeCard, youtubeVideoTemplate, cardContentKeys } from './public/card-template.js';
 import { templatesMigration, templatesTable, projectTemplateColumn, createTemplateStore } from './store-templates.js';
 import { readLegacyBoard } from './legacy-board.js';
 import { createPlaybooks } from './playbooks.js';
@@ -19,6 +19,7 @@ import { createRetainedStorage } from './retained-storage.js';
 import { createLibrary, deliverableVersions } from './library.js';
 import { savedOutputsMigration, createSavedOutputStore } from './store-saved-outputs.js';
 import { libraryDraftsMigration, createDraftStore } from './store-drafts.js';
+import { uniqueSources } from './public/library-format.js';
 
 export const imageIdPattern = /^[a-f0-9-]{36}\.(png|jpg|webp|gif|avif)$/;
 
@@ -154,6 +155,20 @@ function projectFlowsMigration(db) {
   db.exec(`UPDATE flows SET project_id = (SELECT id FROM projects WHERE flow_id = flows.id) WHERE project_id IS NULL;
     UPDATE flows SET template_id = (SELECT template_id FROM projects WHERE id = flows.project_id) WHERE template_id IS NULL;
     CREATE INDEX IF NOT EXISTS flows_by_project ON flows(project_id, position);`);
+}
+
+// A card's Library files: the ordered Library sources it names, which every
+// lane run sends after its playbook's. Versioned like the gallery, so a save
+// based on an older list is a conflict rather than an overwrite.
+function cardLibraryMigration(db) {
+  if (!hasColumn(db, 'cards', 'library')) db.exec("ALTER TABLE cards ADD COLUMN library TEXT NOT NULL DEFAULT '[]';");
+  db.exec(`INSERT OR IGNORE INTO card_field_versions (card_id, field, version) SELECT id, 'library', revision FROM cards;
+    CREATE TRIGGER IF NOT EXISTS card_library_created AFTER INSERT ON cards BEGIN
+      INSERT OR IGNORE INTO card_field_versions VALUES (NEW.id, 'library', 1);
+    END;
+    CREATE TRIGGER IF NOT EXISTS card_library_changed AFTER UPDATE OF library ON cards WHEN NEW.library != OLD.library BEGIN
+      UPDATE card_field_versions SET version = version + 1 WHERE card_id = NEW.id AND field = 'library';
+    END;`);
 }
 
 function hasTable(db, table) {
@@ -302,7 +317,7 @@ const migrations = [`
 `, libraryDraftsMigration, `
   -- What each delivery attempt actually did with a submission's inputs.
   ALTER TABLE chat_attempts ADD COLUMN delivery TEXT;
-`, foldersMigration, savedOutputsMigration, templatesMigration, schemaRepairMigration, projectFlowsMigration];
+`, foldersMigration, savedOutputsMigration, templatesMigration, schemaRepairMigration, projectFlowsMigration, cardLibraryMigration];
 
 // Delivery was already v16 on an earlier feature branch, so the released v17
 // entry (this index) runs only where that column is still missing.
@@ -330,7 +345,7 @@ const stageFrom = (row) => ({
 });
 const cardFrom = (row) => ({
   id: row.id, projectId: row.project_id, stageId: row.stage_id, position: row.position, template: row.template, title: row.title,
-  fields: JSON.parse(row.fields), images: JSON.parse(row.images), imageRoles: JSON.parse(row.image_roles), revision: row.revision,
+  fields: JSON.parse(row.fields), images: JSON.parse(row.images), imageRoles: JSON.parse(row.image_roles), library: JSON.parse(row.library ?? '[]'), revision: row.revision,
   enteredStageAt: row.entered_stage_at, createdAt: row.created_at, updatedAt: row.updated_at,
 });
 const eventFrom = (row) => ({
@@ -350,7 +365,7 @@ const savedStateFrom = (row) => ({
 // Applies a partial content update to a card and checks the result against
 // the card's template definition.
 function cardContent(template, input, current, validateMembership = true) {
-  const next = { title: current.title, fields: { ...current.fields }, images: current.images, imageRoles: { ...current.imageRoles } };
+  const next = { title: current.title, fields: { ...current.fields }, images: current.images, imageRoles: { ...current.imageRoles }, library: current.library ?? [] };
   if ('title' in input) {
     check(isText(input.title, template.title.max), `Card titles can be up to ${template.title.max} characters.`);
     next.title = input.title;
@@ -380,6 +395,15 @@ function cardContent(template, input, current, validateMembership = true) {
       check(imageId === null || typeof imageId === 'string', 'Invalid image flags.');
       next.imageRoles[role] = imageId;
     }
+  }
+  if ('library' in input) {
+    // Shape only, as for a chat selection: a removed or foreign source may
+    // stay listed, and a lane run refuses it by name until it is removed.
+    check(Array.isArray(input.library) && input.library.length <= 200, 'A card can list up to 200 Library files and folders.');
+    for (const source of input.library) {
+      check(isObject(source) && ['asset', 'folder'].includes(source.kind) && typeof source.id === 'string' && idPattern.test(source.id), 'Invalid Library file.');
+    }
+    next.library = uniqueSources(input.library.map(({ kind, id }) => ({ kind, id })));
   }
   for (const [role, imageId] of validateMembership ? Object.entries(next.imageRoles) : []) {
     check(imageId === null || next.images.some((image) => image.id === imageId), role === 'cover' ? 'The display image must belong to the card.' : 'Flagged images must belong to the card.');
@@ -1079,12 +1103,12 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
       // A new card takes its flow's template unless it names one.
       const template = input.template === undefined ? templateForFlow(flow) : templates.get(input.template);
       check(template && !template.deletedAt && template.workspaceId === ctx.workspaceId, 'Unknown card template.');
-      const content = cardContent(template, input, { title: '', fields: emptyFields(template), images: [], imageRoles: emptyImageRoles(template) });
+      const content = cardContent(template, input, { title: '', fields: emptyFields(template), images: [], imageRoles: emptyImageRoles(template), library: [] });
       return transaction(() => {
         const id = input.id ?? randomUUID();
         const at = now();
-        run('INSERT INTO cards (id, project_id, stage_id, position, template, title, fields, images, image_roles, entered_stage_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-          id, projectId, stage.id, positionFor(stage.id, null), template.id, content.title, JSON.stringify(content.fields), JSON.stringify(content.images), JSON.stringify(content.imageRoles), at, at, at);
+        run('INSERT INTO cards (id, project_id, stage_id, position, template, title, fields, images, image_roles, library, entered_stage_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          id, projectId, stage.id, positionFor(stage.id, null), template.id, content.title, JSON.stringify(content.fields), JSON.stringify(content.images), JSON.stringify(content.imageRoles), JSON.stringify(content.library), at, at, at);
         insertEvent(ctx.workspaceId, { id, projectId }, 'created', ctx.actor, { to: stage.id, at });
         applyEntrySet(ctx, requireCard(ctx, id), stage, at);
         recordSavedState(ctx, id, 'created', at);
@@ -1106,7 +1130,7 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
         // image being added in this same save.
         const requested = { fields: {} };
         for (const [key, value] of Object.entries(input.changes)) {
-          if (['title', 'images', 'imageRoles'].includes(key)) requested[key] = value; else requested.fields[key] = value;
+          if (cardContentKeys.includes(key)) requested[key] = value; else requested.fields[key] = value;
         }
         cardContent(templates.forCard(card), requested, card, false);
         const patch = {}; const fields = {};
@@ -1114,7 +1138,7 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
           check(Object.hasOwn(card.fieldVersions, key) && Number.isInteger(input.baseVersions[key]), 'Unknown field or missing field version.');
           if (key === 'imageRoles') check(Number.isInteger(input.baseVersions.images), 'Image role edits need the gallery base version.');
           if (input.baseVersions[key] !== card.fieldVersions[key] || key === 'imageRoles' && input.baseVersions.images !== card.fieldVersions.images) { conflicts.push(key); continue; }
-          if (['title', 'images', 'imageRoles'].includes(key)) patch[key] = value; else fields[key] = value;
+          if (cardContentKeys.includes(key)) patch[key] = value; else fields[key] = value;
         }
         if (conflicts.some((key) => ['images', 'imageRoles'].includes(key))) {
           // Gallery membership and roles cannot be partially combined with a
@@ -1136,8 +1160,8 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
         // Writing them back would read as a gallery edit to the version trigger,
         // so a save that touches no role keeps the stored roles as they are.
         const imageRoles = roles.length ? JSON.stringify(content.imageRoles) : get('SELECT image_roles FROM cards WHERE id = ?', id).image_roles;
-        run('UPDATE cards SET title = ?, fields = ?, images = ?, image_roles = ?, revision = revision + 1, updated_at = ? WHERE id = ?',
-          content.title, JSON.stringify(content.fields), JSON.stringify(content.images), imageRoles, at, id);
+        run('UPDATE cards SET title = ?, fields = ?, images = ?, image_roles = ?, library = ?, revision = revision + 1, updated_at = ? WHERE id = ?',
+          content.title, JSON.stringify(content.fields), JSON.stringify(content.images), imageRoles, JSON.stringify(content.library), at, id);
         const before = new Set(card.images.map((image) => image.id));
         const after = new Set(content.images.map((image) => image.id));
         const added = [...after].filter((imageId) => !before.has(imageId));

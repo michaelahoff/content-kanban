@@ -1684,6 +1684,22 @@ These values apply when a card enters this lane.
   await snapshot('chat-library-folder-drop');
   await click('[data-action="close-card"]');
   console.log('PASS Library script and opaque file selected in the composer, previewed by route, sent and shown frozen with their delivery; a folder dragged from the picker overlaps it once with both selection paths');
+  // Library files added on the card itself save with the card and join its lane runs.
+  await open(libraryCard.id);
+  await click('[data-action="card-library-add"]');
+  await waitFor(`[...document.querySelectorAll('#small-form label')].some(label => label.textContent.includes('opaque.bin'))`);
+  for (const name of ['opaque.bin', 'Thumbnails/']) await evaluate(`[...document.querySelectorAll('#small-form label')].find(label => label.textContent.startsWith(${JSON.stringify(name)})).querySelector('input').click()`);
+  await click('#small-form button[type="submit"]');
+  await waitFor(`document.querySelector('.card-library-files')?.textContent.includes('opaque.bin') && document.querySelector('.card-library-files')?.textContent.includes('Thumbnails/ · 1 file')`);
+  await waitFor(`import('/state.js').then(m => !m.hasUnsavedWork())`);
+  assert.deepEqual((await api('GET', `/api/cards/${libraryCard.id}`)).card.library.map((source) => source.kind), ['folder', 'asset'], 'chosen sources join in picker order');
+  await snapshot('card-library-files');
+  await click('.card-library-files li:first-child [data-action="card-library-remove"]');
+  await waitFor(`document.querySelectorAll('.card-library-files li').length === 1`);
+  await waitFor(`import('/state.js').then(m => !m.hasUnsavedWork())`);
+  assert.deepEqual((await api('GET', `/api/cards/${libraryCard.id}`)).card.library, [{ kind: 'asset', id: libraryListing.assets.find((entry) => entry.filename === 'opaque.bin').id }]);
+  await click('[data-action="close-card"]');
+  console.log('PASS Library files added to a card are listed by path, saved with the card and removable');
   // Global settings and provider combinations use one saved catalog for all cards.
   await click('[data-action="close-card"]');
   await waitFor(`import('/chat.js').then(m => !m.hasUnsentChatChanges())`);

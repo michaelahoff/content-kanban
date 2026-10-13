@@ -2,6 +2,11 @@
 // A filename is the asset's label, never a filesystem path.
 // A selected Library source's identity, such as asset:<id>.
 export const sourceKey = (source) => `${source.kind}:${source.id}`;
+// Sources in order, each kept once at its first place.
+export function uniqueSources(sources) {
+  const keys = new Set();
+  return sources.filter((source) => !keys.has(sourceKey(source)) && keys.add(sourceKey(source)));
+}
 export function parseSourceKey(key) {
   const [, kind, id] = /^(asset|folder):(.+)$/s.exec(key) ?? [];
   return kind ? { kind, id } : null;

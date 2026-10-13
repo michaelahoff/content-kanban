@@ -105,7 +105,11 @@ _Avoid_: Artifact, attachment, export
 A project's collection of project assets, shown in its Library tab beside the board. Selecting assets for prompts is separate from keeping them in the Library.
 
 **Library selection**:
-The ordered project assets and asset folders a user explicitly chose for a card chat's manual prompts, or that a lane playbook's `assets:` setting names for its lane runs. It names sources, not versions: each Send captures their current versions and each folder's current files, once per asset with every source that selected it. A manual selection persists across ordinary messages and is cleared by fresh context; a playbook's changes only when its file does. Selected files are reference material; choosing one does not tell the agent to follow it.
+The ordered project assets and asset folders a user explicitly chose for a card chat's manual prompts, that a lane playbook's `assets:` setting names for its lane runs, or that a card lists as its card Library files. It names sources, not versions: each Send captures their current versions and each folder's current files, once per asset with every source that selected it. A manual selection persists across ordinary messages and is cleared by fresh context; a playbook's changes only when its file does. Selected files are reference material; choosing one does not tell the agent to follow it.
+
+**Card Library files**:
+The Library selection saved on one card, edited in its card editor. Every lane run for the card sends them after its playbook's `assets:`, and a source both name is sent once, in the playbook's place. They are card content, versioned like the gallery; fresh context does not clear them, and manual prompts do not send them unless chosen there too. A source removed from the Library stays listed until the user removes it, and lane runs are refused until then.
+_Avoid_: Card attachments, card assets
 
 **Workspace copy**:
 An independent read-only copy of a frozen asset version in a card workspace, the route for files a target cannot take as text or an image. It is rebuilt from the retained original before each delivery, so edits to it never reach the original. It is usable only by a target with a tool that can read it (Codex with its shell tool); delivering one claims nothing about whether the format was interpreted. A Claude PDF route sends a copy's verified bytes as a native document instead.

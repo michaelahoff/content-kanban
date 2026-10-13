@@ -7,6 +7,7 @@ import { request } from './api.js';
 import { fieldInputId, editorFields } from './card-template.js';
 import { mountChat, unmountChat } from './chat.js';
 import { cardPlaybookMarkup, notesMarkup, mountCardPlaybook, renderBar } from './card-playbook.js';
+import { cardLibraryMarkup, mountCardLibrary, renderCardLibrary } from './card-library.js';
 
 const cardDialog = $('#card-dialog');
 let lastCardTrigger;
@@ -14,6 +15,7 @@ onCardFieldsChange((card, keys) => {
   renderBoard();
   if (state.cardId !== card.id || !cardDialog.open) return;
   if (keys.some((key) => ['images', 'imageRoles'].includes(key))) renderImages();
+  if (keys.includes('library')) renderCardLibrary();
   if (keys.includes('placement')) { $('#card-lane').value = card.stageId; renderBar(); }
   for (const key of keys) {
     const input = $(`#${fieldInputId(key)}`);
@@ -113,7 +115,7 @@ export function openCard(targetId) {
       ${fields.filter((field) => field.placement !== 'header').map((field) => editorField(field, card)).join('')}
       ${notesMarkup()}
     </div>
-    <aside class="images-panel" aria-label="Card images"><div class="field-heading"><h2>Images</h2><span id="image-count"></span></div><div id="card-images"></div><label class="image-drop" id="image-drop">${icon('upload')}<strong>Add images</strong><span>Drop, paste or <u>browse files</u></span><input id="image-files" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/avif" multiple aria-label="Upload images"></label><p id="upload-status" class="upload-status" role="status"></p></aside></div>
+    <aside class="images-panel" aria-label="Card images and Library files"><div class="field-heading"><h2>Images</h2><span id="image-count"></span></div><div id="card-images"></div><label class="image-drop" id="image-drop">${icon('upload')}<strong>Add images</strong><span>Drop, paste or <u>browse files</u></span><input id="image-files" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/avif" multiple aria-label="Upload images"></label><p id="upload-status" class="upload-status" role="status"></p>${cardLibraryMarkup()}</aside></div>
     <div class="editor-footer">${button('delete-card', 'Delete card', 'trash', 'text-button danger')}${template.fields.some((field) => ['titleOptions', 'intro', 'prompt'].includes(field.key)) ? button('copy-trifecta', 'Trifecta copy', 'text', 'button secondary') : ''}<span class="edited-at" data-edited-card="${card.id}">${lastEditedMarkup(card)}</span>${button('close-card', 'Done', 'check', 'button primary')}</div>`;
   // Cards in an archived project are read-only; the server refuses changes too.
   cardDialog.classList.toggle('archived', Boolean(p.archivedAt));
@@ -123,6 +125,7 @@ export function openCard(targetId) {
     $('#card-lane').disabled = true; $('#image-files').disabled = true;
   }
   renderImages();
+  mountCardLibrary();
   renderStatus();
   mountCardPlaybook(targetId);
   mountChat(targetId);

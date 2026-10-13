@@ -36,6 +36,8 @@ export function libraryChoices(listing, chosen) {
     ...listing.assets.map((asset) => ({ source: { kind: 'asset', id: asset.id }, label: paths.assets.get(asset.id), detail: `v${asset.current.number} · ${formatSize(asset.current.size)}${asset.current.available ? '' : ' · unavailable'}` })),
   ].filter((entry) => !chosen.has(sourceKey(entry.source))).sort((a, b) => comparePaths(a.label, b.label));
 }
+// The checkboxes of an Add Library files picker, read back as `source` values.
+export const libraryPickerFields = (available) => `<div class="chat-library-picker">${available.map((entry) => `<label><input type="checkbox" name="source" value="${escape(sourceKey(entry.source))}">${escape(entry.label)} <small>${escape(entry.detail)}</small></label>`).join('')}</div>`;
 const savedAt = (value) => new Date(value).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
 const extension = (filename) => splitExtension(filename)[1].slice(0, 5).toUpperCase() || 'FILE';
 const archived = () => Boolean(project()?.archivedAt);

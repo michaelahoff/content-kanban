@@ -19,7 +19,9 @@ export const templateIdPattern = /^[a-z0-9][a-z0-9-]{0,59}$/;
 // whose editor input id (card-<key>, <key>-count) would collide with the
 // editor's own elements. Compared squashed (lowercase, letters and digits).
 export const reservedFieldKeys = ['title', 'images', 'imageroles', 'placement', 'id', 'template', 'notes', 'move', 'outputs', 'fields', 'cover', 'display',
-  'lane', 'chat', 'dialog', 'playbook', 'image', 'total'];
+  'lane', 'chat', 'dialog', 'playbook', 'image', 'total', 'library'];
+// Card content saved beside its template fields rather than in them.
+export const cardContentKeys = ['title', 'images', 'imageRoles', 'library'];
 export const maxFields = 50;
 export const maxImageRoles = 10;
 export const maxFieldLength = 1000000;

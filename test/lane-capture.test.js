@@ -73,6 +73,25 @@ test('a playbook, map, skill or notes saved while a run is being prepared is cap
   assert.equal((await f.runs(card.id))[0].status, 'queued');
 });
 
+test('Library files added to or removed from the card while a run is being prepared are captured as saved at the commit', async (t) => {
+  const f = await laneFixture(t);
+  const before = await f.upload('before.md', Buffer.from('OLD CARD FILE'));
+  const after = await f.upload('after.md', Buffer.from('NEW CARD FILE'));
+  await setPlaybook(f.ok, f.flowId, f.stages[0], { run: 'manual', model: 'test-model' }, 'Write.');
+  const card = await f.card();
+  const listed = await f.ok('PATCH', `/api/cards/${card.id}`, { changes: { library: [{ kind: 'asset', id: before.id }] }, baseVersions: card.fieldVersions });
+  const held = f.holdDiscovery();
+  await f.ok('POST', `/api/cards/${card.id}/lane-runs`, {});
+  await held.reached;
+  await f.ok('PATCH', `/api/cards/${card.id}`, { changes: { library: [{ kind: 'asset', id: after.id }] }, baseVersions: listed.fieldVersions });
+  held.release();
+
+  const sent = f.sentText(await waitFor(() => f.codex.sends[0]));
+  assert.ok(sent.includes('NEW CARD FILE') && !sent.includes('OLD CARD FILE'), sent);
+  const { submissions } = await f.chat(card.id);
+  assert.deepEqual(submissions.map((submission) => submission.context.library.map((file) => file.assetId)), [[after.id]]);
+});
+
 // A manual prompt keeps the card chat busy, so an on-enter run that needs
 // fresh context waits for it.
 async function waitingRun(f, settings = {}, body = 'Start over.') {

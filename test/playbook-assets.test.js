@@ -187,3 +187,64 @@ test('an empty selection adds no Library inputs and keeps every gallery photo, t
   assert.ok(sent.includes('## Flow map (MAP.md)') && sent.includes('# Skill voice: be warm.'));
   assert.ok(!sent.includes('LIBRARY VOICE'));
 });
+
+test('a card\'s Library files save with the card, versioned and leased like its gallery, by shape only', async (t) => {
+  const f = await laneFixture(t);
+  const script = await f.upload('script.md', Buffer.from('Script'));
+  const thumbs = await f.folder('Thumbnails');
+  const card = await f.card();
+  assert.deepEqual(card.library, []);
+  const sources = [{ kind: 'asset', id: script.id }, { kind: 'folder', id: thumbs.id }, { kind: 'asset', id: script.id }, { kind: 'asset', id: 'not-in-library' }];
+  const saved = await f.ok('PATCH', `/api/cards/${card.id}`, { changes: { library: sources }, baseVersions: card.fieldVersions });
+  assert.deepEqual(saved.library, [sources[0], sources[1], sources[3]], 'a repeated source is kept once, and an unknown one stays listed');
+  assert.deepEqual(saved.conflicts, []);
+  assert.equal(saved.fieldVersions.library, card.fieldVersions.library + 1);
+  assert.equal(saved.fieldVersions.title, card.fieldVersions.title, 'other fields keep their versions');
+
+  await f.ok('PUT', `/api/cards/${card.id}/draft-lease`, { owner: 'tab', fields: ['library', 'intro'], sequence: 1 });
+  const stale = await f.ok('PATCH', `/api/cards/${card.id}`, { changes: { library: [] }, baseVersions: card.fieldVersions });
+  assert.deepEqual(stale.conflicts, ['library'], 'a save based on an older list does not overwrite a newer one');
+  assert.deepEqual((await f.ok('GET', `/api/cards/${card.id}`)).card.library, saved.library);
+  for (const library of ['asset:x', [{ kind: 'path', id: 'x' }], [{ kind: 'asset', id: '../x' }], Array.from({ length: 201 }, (_, i) => ({ kind: 'asset', id: `a${i}` }))]) {
+    assert.equal((await f.call('PATCH', `/api/cards/${card.id}`, { changes: { library }, baseVersions: saved.fieldVersions })).status, 400, JSON.stringify(library).slice(0, 60));
+  }
+});
+
+test('a lane run sends the card\'s Library files after the playbook\'s, a shared source once, and refuses an unresolved card source by identity', async (t) => {
+  const f = await laneFixture(t);
+  const guide = await f.upload('guide.md', Buffer.from('PLAYBOOK GUIDE'));
+  const script = await f.upload('script.md', Buffer.from('CARD SCRIPT'));
+  const refs = await f.folder('References');
+  const logo = await f.upload('logo.png', png, { folder: refs.id });
+  await setPlaybook(f.ok, f.flowId, f.stages[0], { run: 'manual', model: 'test-model', assets: [`asset:${guide.id}`] }, 'Write.');
+  const card = await f.card();
+  const saved = await f.ok('PATCH', `/api/cards/${card.id}`, { changes: { library: [{ kind: 'asset', id: script.id }, { kind: 'asset', id: guide.id }, { kind: 'folder', id: refs.id }] }, baseVersions: card.fieldVersions });
+
+  const preview = await f.ok('GET', `/api/cards/${card.id}/lane-runs/preview`);
+  assert.deepEqual(preview.problems, []);
+  assert.deepEqual(preview.library.map((file) => file.libraryPath), ['guide.md', 'script.md', 'References/logo.png'], 'the playbook\'s first, then the card\'s');
+  assert.deepEqual(preview.librarySelections.map((selection) => selection.path), ['guide.md', 'script.md', 'References/']);
+
+  await f.ok('POST', `/api/cards/${card.id}/lane-runs`, {});
+  const send = await waitFor(() => f.codex.sends[0]);
+  const submission = (await f.chat(card.id)).submissions[0];
+  assert.deepEqual(submission.context.library.map((file) => [file.assetId, file.method]), [[guide.id, 'text'], [script.id, 'text'], [logo.id, 'image']]);
+  const sent = send.input.filter((entry) => entry.type === 'text').map((entry) => entry.text).join('\n');
+  assert.ok(sent.includes('PLAYBOOK GUIDE') && sent.includes('CARD SCRIPT'));
+  assert.equal(sent.split('PLAYBOOK GUIDE').length, 2, 'a source both name is sent once');
+
+  await f.ok('DELETE', `/api/projects/${f.projectId}/library/assets/${script.id}`);
+  const blocked = await f.ok('GET', `/api/cards/${card.id}/lane-runs/preview`);
+  assert.deepEqual(blocked.problems.map((problem) => [problem.key, problem.reason]), [[`asset:${script.id}`, 'It was removed from the Library.']]);
+  f.codex.finish(send);
+  await waitFor(async () => (await f.runs(card.id)).every((run) => !['pending', 'queued'].includes(run.status)) || null);
+  await f.ok('POST', `/api/cards/${card.id}/lane-runs`, {});
+  const failed = await waitFor(async () => (await f.runs(card.id)).find((run) => run.status === 'failed'));
+  assert.ok(failed.reason.includes(`script.md (asset:${script.id}): It was removed`), failed.reason);
+  assert.equal(f.codex.sends.length, 1, 'nothing more is sent');
+
+  const fixed = await f.ok('PATCH', `/api/cards/${card.id}`, { changes: { library: [{ kind: 'folder', id: refs.id }] }, baseVersions: (await f.ok('GET', `/api/cards/${card.id}`)).card.fieldVersions });
+  assert.deepEqual(fixed.library, [{ kind: 'folder', id: refs.id }]);
+  assert.deepEqual((await f.ok('GET', `/api/cards/${card.id}/lane-runs/preview`)).problems, [], 'removing the source from the card lets runs go again');
+  assert.ok(saved.fieldVersions.library < fixed.fieldVersions.library);
+});

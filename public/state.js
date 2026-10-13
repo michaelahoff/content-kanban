@@ -1,7 +1,7 @@
 // The browser's copy of the workspace. Changes apply here immediately and are
 // queued for the server; card text is saved after a short pause in typing.
 import { request, send, enqueue, onSyncChange, syncState, retry } from './api.js';
-import { emptyFields, emptyImageRoles, editorFields, normalizeCard } from './card-template.js';
+import { emptyFields, emptyImageRoles, editorFields, normalizeCard, cardContentKeys } from './card-template.js';
 import { id, showEdited } from './ui.js';
 
 // `templates` holds the workspace's card template definitions by ID.
@@ -31,7 +31,7 @@ export function onCardPromptChange(listener) {
   onCardFieldsChange((card, keys) => { if (keys.includes('prompt')) listener(card); });
 }
 function contentValues(card) { return { ...card.fields, title: card.title }; }
-function editableValues(card) { return { ...contentValues(card), images: card.images, imageRoles: card.imageRoles }; }
+function editableValues(card) { return { ...contentValues(card), images: card.images, imageRoles: card.imageRoles, library: card.library ?? [] }; }
 function rememberSaved(card) { savedValues.set(card.id, structuredClone(editableValues(card))); }
 function changesFor(card) {
   const before = savedValues.get(card.id) ?? {};
@@ -196,7 +196,7 @@ function queueCardSave(cardId) {
         const sentVersions = { ...card.fieldVersions };
         const saved = await send('PATCH', url('cards', cardId), card.fieldVersions
           ? { changes, baseVersions: card.fieldVersions, editingSessionId }
-          : { revision: card.revision, title: card.title, fields: card.fields, images: card.images, imageRoles: card.imageRoles, editingSessionId });
+          : { revision: card.revision, title: card.title, fields: card.fields, images: card.images, imageRoles: card.imageRoles, library: card.library ?? [], editingSessionId });
         const previous = savedValues.get(card.id) ?? {};
         const failed = new Set(saved.conflicts ?? []);
         const acknowledged = editableValues(saved);
@@ -208,7 +208,7 @@ function queueCardSave(cardId) {
         for (const [key, value] of Object.entries(acknowledged)) {
           if (failed.has(key)) continue;
           if (JSON.stringify(local[key]) === JSON.stringify(changes[key] ?? previous[key])) {
-            if (key === 'title' || key === 'images' || key === 'imageRoles') card[key] = value; else card.fields[key] = value;
+            if (cardContentKeys.includes(key)) card[key] = value; else card.fields[key] = value;
             if (JSON.stringify(local[key]) !== JSON.stringify(value)) fieldListeners.forEach((listener) => listener(card, [key]));
           }
           previous[key] = structuredClone(value);
@@ -259,7 +259,7 @@ export function refreshSavedCard(saved) {
     if (Object.hasOwn(localChanges, key)) continue;
     const before = editableValues(card)[key];
     if (JSON.stringify(before) !== JSON.stringify(value)) {
-      if (['title', 'images', 'imageRoles'].includes(key)) card[key] = value; else card.fields[key] = value;
+      if (cardContentKeys.includes(key)) card[key] = value; else card.fields[key] = value;
       changed.push(key);
     }
     baseline[key] = structuredClone(value); card.fieldVersions[key] = saved.fieldVersions[key];
@@ -281,7 +281,7 @@ export function refreshSavedCard(saved) {
 export function createCard(lane, p = project()) {
   const at = now();
   const template = flowTemplate(flowOfLane(p, lane.id));
-  const card = { id: id(), projectId: p.id, stageId: lane.id, template: template.id, title: '', fields: emptyFields(template), images: [], imageRoles: emptyImageRoles(template), revision: 1, lastMove: null, enteredStageAt: at, createdAt: at, updatedAt: at };
+  const card = { id: id(), projectId: p.id, stageId: lane.id, template: template.id, title: '', fields: emptyFields(template), images: [], imageRoles: emptyImageRoles(template), library: [], revision: 1, lastMove: null, enteredStageAt: at, createdAt: at, updatedAt: at };
   rememberSaved(card);
   lane.cards.push(card);
   enqueue(async () => {

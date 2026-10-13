@@ -1,5 +1,6 @@
 // Protected card mutations share the board transaction and history boundary.
 import { randomUUID } from 'node:crypto';
+import { cardContentKeys } from './public/card-template.js';
 
 export const protectionMigration = `
   ALTER TABLE cards ADD COLUMN placement_version INTEGER NOT NULL DEFAULT 1;
@@ -70,7 +71,7 @@ export function createProtectionStore({ all, get, run, transaction, requireCard,
     lease(ctx, cardId, input) {
       const card = requireCard(ctx, cardId);
       check(object(input) && typeof input.owner === 'string' && /^[\w-]{1,100}$/.test(input.owner) && Array.isArray(input.fields), 'A draft lease needs its tab identity and fields.');
-      const allowed = ['title', ...templateFor(card).fields.map((f) => f.key), 'images', 'imageRoles'];
+      const allowed = [...cardContentKeys, ...templateFor(card).fields.map((f) => f.key)];
       check(input.fields.length <= allowed.length && input.fields.every((f) => allowed.includes(f)), 'Invalid draft fields.');
       const key = `${cardId}:${input.owner}`;
       check(input.sequence === undefined || Number.isInteger(input.sequence) && input.sequence > 0, 'Invalid draft heartbeat sequence.');
