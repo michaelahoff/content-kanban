@@ -1,10 +1,10 @@
 // The project Library tab: organize files in nested folders, upload files and
 // folders or write documents, inspect and download their exact retained
 // versions, and resolve name collisions explicitly. Rename, move and removal
-// keep identities; several chosen files and folders move together, by
-// dragging them onto a folder or with Move to…. Restoring an older version saves it as a new current one;
-// a project copy is a separate file. Document drafts are kept as the user
-// types; only Save publishes.
+// keep identities; chosen files and folders move together onto a folder.
+// Restoring an older version saves it as a new current one; a project copy is
+// a separate file. Document drafts are kept as the user types; only Save
+// publishes.
 import { $, escape, icon, button, iconButton, toast, smallForm, id } from './ui.js';
 import { request, send as sendJSON } from './api.js';
 import { assetPreview, comparePaths, libraryFilename, libraryPaths, searchLibrary, folderHolders, movableInto, nameConflict, parseSourceKey, splitExtension, sourceKey } from './library-format.js';
@@ -50,7 +50,6 @@ async function load() {
     Object.assign(library, { folders, assets, drafts, loaded: true, error: '' });
     // The open folder was removed, perhaps in another tab.
     if (!folders.some((folder) => folder.id === library.folder)) library.folder = null;
-    for (const key of library.chosen) { const { kind, id: itemId } = parseSourceKey(key); if (!libraryItem(kind, itemId)) library.chosen.delete(key); }
   } catch (error) { library.error = error.message; }
 }
 
@@ -69,23 +68,23 @@ function thumbnail(asset) {
   if (preview?.kind === 'image') return `<div class="library-thumb"><img src="${contentURL(asset.current.id, true)}" alt="" loading="lazy" draggable="false"></div>`;
   return `<div class="library-thumb file"><span>${escape(extension(asset.filename))}</span></div>`;
 }
-// A tile's select toggle; once anything is chosen, a click on a tile chooses too.
-const selectToggle = (key, name) => archived() ? '' : `<button type="button" class="library-select" data-action="library-select" aria-pressed="${library.chosen.has(key)}" aria-label="Select ${escape(name)}" title="Select">${icon('check')}</button>`;
+// A tile's choose toggle; once anything is chosen, a click on a tile chooses too.
+const chooseToggle = (key, name) => archived() ? '' : `<button type="button" class="library-choose" data-action="library-choose" aria-pressed="${library.chosen.has(key)}" aria-label="Choose ${escape(name)}" title="Choose">${icon('check')}</button>`;
 // Live files and folders can be dragged onto a folder to move them.
-const tileAttributes = (key) => `data-select="${escape(key)}"${archived() ? '' : ' draggable="true"'}`;
-const tileClass = (key) => `library-item${library.chosen.has(key) ? ' selected' : ''}`;
+const tileAttributes = (key) => `data-tile="${escape(key)}"${archived() ? '' : ' draggable="true"'}`;
+const tileClass = (key) => `library-item${library.chosen.has(key) ? ' chosen' : ''}`;
 const manage = (kind, item, name) => archived() ? '' : `<button type="button" class="library-manage" data-action="library-manage" data-kind="${kind}" data-id="${escape(item.id)}" aria-label="Manage ${escape(name)}" title="Rename, move or remove">${icon('more')}</button>`;
 // While searching, a tile shows where it lives.
 function assetMarkup(asset, path) {
   const key = sourceKey({ kind: 'asset', id: asset.id });
   return `<li class="${tileClass(key)}" ${tileAttributes(key)}><button class="library-asset" data-action="library-inspect" data-id="${escape(asset.id)}" aria-label="Inspect ${escape(asset.filename)}">${thumbnail(asset)}
-    <span class="library-name">${escape(asset.filename)}</span><span class="library-meta">${path ? `${escape(path)} · ` : ''}v${asset.current.number} · ${formatSize(asset.current.size)}${asset.current.available ? '' : ' · <strong>Unavailable</strong>'}${draftFor(asset) ? ' · <em>Draft</em>' : ''}</span></button>${selectToggle(key, asset.filename)}${manage('asset', asset, asset.filename)}</li>`;
+    <span class="library-name">${escape(asset.filename)}</span><span class="library-meta">${path ? `${escape(path)} · ` : ''}v${asset.current.number} · ${formatSize(asset.current.size)}${asset.current.available ? '' : ' · <strong>Unavailable</strong>'}${draftFor(asset) ? ' · <em>Draft</em>' : ''}</span></button>${chooseToggle(key, asset.filename)}${manage('asset', asset, asset.filename)}</li>`;
 }
 function folderMarkup(folder, paths, path) {
   const files = library.assets.filter((asset) => paths.assets.get(asset.id).startsWith(paths.folders.get(folder.id))).length;
   const key = sourceKey({ kind: 'folder', id: folder.id });
   return `<li class="${tileClass(key)}" ${tileAttributes(key)} data-folder-drop="${escape(folder.id)}"><button class="library-asset library-folder" data-action="library-open-folder" data-id="${escape(folder.id)}" aria-label="Open folder ${escape(folder.name)}"><div class="library-thumb folder">${icon('folder')}</div>
-    <span class="library-name">${escape(folder.name)}</span><span class="library-meta">${path ? `${escape(path)} · ` : ''}${files} ${files === 1 ? 'file' : 'files'}</span></button>${selectToggle(key, folder.name)}${manage('folder', folder, folder.name)}</li>`;
+    <span class="library-name">${escape(folder.name)}</span><span class="library-meta">${path ? `${escape(path)} · ` : ''}${files} ${files === 1 ? 'file' : 'files'}</span></button>${chooseToggle(key, folder.name)}${manage('folder', folder, folder.name)}</li>`;
 }
 function crumbs(paths) {
   const chain = [];
@@ -93,11 +92,11 @@ function crumbs(paths) {
   // Dropping onto a crumb moves items up to that folder.
   return `<nav class="library-crumbs" aria-label="Folder">${button('library-open-folder', 'Library', null, 'library-crumb', 'data-id="" data-folder-drop=""')}${chain.map((folder) => `<span aria-hidden="true">/</span>${button('library-open-folder', escape(folder.name), null, 'library-crumb', `data-id="${escape(folder.id)}" data-folder-drop="${escape(folder.id)}" title="${escape(paths.folders.get(folder.id))}"`)}`).join('')}</nav>`;
 }
-function selectionBar() {
+function chosenBar() {
   const count = library.chosen.size;
   if (!count || archived()) return '';
-  return `<div class="library-selection" role="status"><strong>${count} selected</strong><span class="library-selection-hint">Drag onto a folder to move</span>
-    ${button('library-move-selection', 'Move to…', 'folder', 'button small secondary')}${button('library-clear-selection', 'Clear', null, 'button small secondary')}</div>`;
+  return `<div class="library-chosen" role="status"><strong>${count} chosen</strong><span class="library-chosen-hint">Drag onto a folder to move</span>
+    ${button('library-move-chosen', 'Move to…', 'folder', 'button small secondary')}${button('library-clear-chosen', 'Clear', null, 'button small secondary')}</div>`;
 }
 // A new document's draft is not a Library file until its first Save.
 function draftMarkup(draft) {
@@ -118,14 +117,18 @@ function paint() {
   const search = library.query.trim();
   const paths = libraryPaths(library);
   // Search covers every folder and file path; otherwise show the open folder.
-  const tiles = search
-    ? searchLibrary(library, search).map((entry) => entry.kind === 'folder' ? folderMarkup(entry.item, paths, paths.folders.get(entry.item.parentId) || 'Library') : assetMarkup(entry.item, paths.folders.get(entry.item.folderId) || 'Library'))
-    : [...library.folders.filter((folder) => folder.parentId === library.folder).map((folder) => folderMarkup(folder, paths)),
-      ...library.assets.filter((asset) => asset.folderId === library.folder).map((asset) => assetMarkup(asset))];
+  const shown = search
+    ? searchLibrary(library, search).map(({ kind, item }) => ({ kind, item, path: paths.folders.get(kind === 'folder' ? item.parentId : item.folderId) || 'Library' }))
+    : [...library.folders.filter((folder) => folder.parentId === library.folder).map((item) => ({ kind: 'folder', item })),
+      ...library.assets.filter((asset) => asset.folderId === library.folder).map((item) => ({ kind: 'asset', item }))];
+  // Only shown tiles stay chosen, so a move never carries hidden items.
+  const keys = new Set(shown.map(({ kind, item }) => sourceKey({ kind, id: item.id })));
+  for (const key of library.chosen) if (!keys.has(key)) library.chosen.delete(key);
+  const tiles = shown.map(({ kind, item, path }) => kind === 'folder' ? folderMarkup(item, paths, path) : assetMarkup(item, path));
   // A new document's draft is saved at the root, so it shows there and in search.
   const drafts = library.drafts.filter((draft) => !draft.assetId && (search ? draft.filename.toLocaleLowerCase().includes(search.toLocaleLowerCase()) : library.folder === null));
   const finished = library.uploads.length && library.uploads.every((entry) => !['waiting', 'uploading'].includes(entry.status));
-  container.classList.toggle('selecting', library.chosen.size > 0);
+  container.classList.toggle('choosing', library.chosen.size > 0);
   container.innerHTML = `<div class="library-head"><p class="library-hint">${archived() ? 'This project is archived. Its files stay readable and downloadable.' : 'Upload any file or folder, or write a document. Frameboard keeps the exact original and every saved version.'}</p>
       <div class="library-tools"><label class="search">${icon('search')}<input id="library-search" type="search" placeholder="Find a file or folder…" aria-label="Find a file or folder" value="${escape(library.query)}"></label>
       ${button('library-removed', 'Removed files', null, 'button secondary')}
@@ -133,7 +136,7 @@ function paint() {
       <label class="button primary library-pick">${icon('upload')}Upload files<input id="library-files" type="file" multiple></label>`}</div></div>
     ${library.uploads.length ? `<section class="library-uploads" aria-label="Uploads"><div class="library-uploads-head"><h2>Uploads</h2>${finished ? button('library-clear-uploads', 'Clear', null, 'button small secondary') : ''}</div><ul>${library.uploads.map(uploadMarkup).join('')}</ul></section>` : ''}
     ${library.error ? `<p class="library-error" role="alert">${escape(library.error)}</p>` : ''}
-    ${search && !library.chosen.size ? '' : `<div class="library-bar">${search ? '<span></span>' : crumbs(paths)}${selectionBar()}</div>`}
+    ${search && !library.chosen.size ? '' : `<div class="library-bar">${search ? '' : crumbs(paths)}${chosenBar()}</div>`}
     <div class="library-drop" data-library-drop>${!library.loaded && !library.error ? '<p class="library-empty">Loading files…</p>'
       : tiles.length || drafts.length ? `<ul class="library-grid">${drafts.map(draftMarkup).join('')}${tiles.join('')}</ul>`
         : `<div class="library-empty">${icon(search ? 'search' : 'upload')}<p>${search ? 'No matching files or folders' : library.folder ? 'This folder is empty' : 'No files yet'}</p><span>${search ? 'Try another search.' : archived() ? '' : 'Drop files or folders here, or choose Upload.'}</span></div>`}</div>`;
@@ -402,50 +405,56 @@ function newFolder() {
     onSubmit: async (data) => { await sendJSON('POST', `${base()}/folders`, { name: data.get('name'), parentId }); await reload(); } });
 }
 const libraryItem = (kind, itemId) => (kind === 'folder' ? library.folders : library.assets).find((entry) => entry.id === itemId);
+const itemName = ({ kind, id: itemId }) => { const item = libraryItem(kind, itemId); return kind === 'folder' ? item.name : item.filename; };
+const itemURL = ({ kind, id: itemId }) => `${base()}/${kind === 'folder' ? 'folders' : 'assets'}/${encodeURIComponent(itemId)}`;
+// The Library root and every folder outside the moving folders: a folder
+// cannot move into itself or anything inside it.
+function locationField(movingFolderIds, current = null) {
+  const paths = libraryPaths(library); const moving = movingFolderIds.map((folderId) => paths.folders.get(folderId));
+  const targets = library.folders.filter((entry) => !moving.some((path) => paths.folders.get(entry.id).startsWith(path)))
+    .sort((a, b) => comparePaths(paths.folders.get(a.id), paths.folders.get(b.id)));
+  return `<label class="form-label" for="library-destination">Location</label><select class="form-input" id="library-destination" name="destination">
+      <option value="">Library</option>${targets.map((entry) => `<option value="${escape(entry.id)}" ${entry.id === current ? 'selected' : ''}>${escape(paths.folders.get(entry.id))}</option>`).join('')}</select>`;
+}
 // Rename and move in one form; a name taken in the destination is refused, never merged.
 function organize(kind, itemId) {
-  const folder = kind === 'folder'; const item = libraryItem(kind, itemId);
+  const folder = kind === 'folder'; const source = { kind, id: itemId }; const item = libraryItem(kind, itemId);
   if (!item) return;
-  const paths = libraryPaths(library); const name = folder ? item.name : item.filename; const current = folder ? item.parentId : item.folderId;
-  // A folder cannot move into itself or anything inside it.
-  const targets = library.folders.filter((entry) => !folder || !paths.folders.get(entry.id).startsWith(paths.folders.get(item.id)))
-    .sort((a, b) => comparePaths(paths.folders.get(a.id), paths.folders.get(b.id)));
+  const name = itemName(source);
   smallForm({
     title: `Organize ${name}`, description: 'Renaming or moving keeps its identity and every version.',
-    fields: `${nameInput(folder ? 'Folder name' : 'Filename', name)}<label class="form-label" for="library-destination">Location</label><select class="form-input" id="library-destination" name="destination">
-      <option value="">Library</option>${targets.map((entry) => `<option value="${escape(entry.id)}" ${entry.id === current ? 'selected' : ''}>${escape(paths.folders.get(entry.id))}</option>`).join('')}</select>`,
+    fields: `${nameInput(folder ? 'Folder name' : 'Filename', name)}${locationField(folder ? [item.id] : [], folder ? item.parentId : item.folderId)}`,
     submit: 'Save',
     extra: button('library-remove', 'Remove…', 'trash', 'button secondary library-remove', `data-kind="${kind}" data-id="${escape(item.id)}"`),
     onSubmit: async (data) => {
       const destination = data.get('destination') || null;
-      await sendJSON('PATCH', `${base()}/${folder ? 'folders' : 'assets'}/${encodeURIComponent(item.id)}`, folder ? { name: data.get('name'), parentId: destination } : { filename: data.get('name'), folderId: destination });
+      await sendJSON('PATCH', itemURL(source), folder ? { name: data.get('name'), parentId: destination } : { filename: data.get('name'), folderId: destination });
       await reload();
     },
   });
 }
 function remove(kind, itemId) {
-  const folder = kind === 'folder'; const item = libraryItem(kind, itemId);
-  if (!item) return;
+  const folder = kind === 'folder'; const source = { kind, id: itemId };
+  if (!libraryItem(kind, itemId)) return;
   smallForm({
-    title: `Remove ${folder ? item.name : item.filename}?`, submit: 'Remove', danger: true,
+    title: `Remove ${itemName(source)}?`, submit: 'Remove', danger: true,
     description: `${folder ? 'This folder and everything in it will' : 'This file will'} no longer be offered for new work. Every version stays retained, and work already queued keeps what it captured. Remembered selections of ${folder ? 'it' : 'this file'} need correcting.`,
-    onSubmit: async () => { await sendJSON('DELETE', `${base()}/${folder ? 'folders' : 'assets'}/${encodeURIComponent(item.id)}`); await reload(); },
+    onSubmit: async () => { await sendJSON('DELETE', itemURL(source)); await reload(); },
   });
 }
 
 // --- Choosing and moving several items ---------------------------------------
-// A click on the select toggle, or with Ctrl, Cmd or Shift, or while anything
+// A click on the choose toggle, or with Ctrl, Cmd or Shift, or while anything
 // is chosen, chooses instead of opening. Shift adds the range from the last
 // tile toggled, in the order shown.
 function choose(key, range) {
-  const order = [...document.querySelectorAll('#library [data-select]')].map((node) => node.dataset.select);
+  const order = [...document.querySelectorAll('#library [data-tile]')].map((node) => node.dataset.tile);
   const from = order.indexOf(library.anchor); const to = order.indexOf(key);
   if (range && from !== -1 && to !== -1) order.slice(Math.min(from, to), Math.max(from, to) + 1).forEach((entry) => library.chosen.add(entry));
   else { library.chosen[library.chosen.has(key) ? 'delete' : 'add'](key); library.anchor = key; }
   paint();
 }
-const clearSelection = () => { library.chosen.clear(); library.anchor = null; };
-const itemName = ({ kind, id: itemId }) => { const item = libraryItem(kind, itemId); return kind === 'folder' ? item.name : item.filename; };
+const clearChosen = () => { library.chosen.clear(); library.anchor = null; };
 // Each item moves on its own, so a taken name holds back only that item; the
 // server refuses it, never merges. Moved items leave the choice.
 async function moveInto(keys, folderId) {
@@ -454,50 +463,47 @@ async function moveInto(keys, folderId) {
   if (!sources.length) return toast(`Already in ${where}.`);
   const refused = [];
   for (const source of sources) {
-    const folder = source.kind === 'folder';
-    try { await sendJSON('PATCH', `${base()}/${folder ? 'folders' : 'assets'}/${encodeURIComponent(source.id)}`, folder ? { parentId: folderId } : { folderId }); library.chosen.delete(sourceKey(source)); }
+    try { await sendJSON('PATCH', itemURL(source), source.kind === 'folder' ? { parentId: folderId } : { folderId }); library.chosen.delete(sourceKey(source)); }
     catch (error) { refused.push(`${itemName(source)}: ${error.message}`); }
   }
   await reload();
   const moved = sources.length - refused.length;
   toast(refused.length ? `Moved ${moved} of ${sources.length} to ${where}. ${refused.join(' ')}` : `Moved ${moved} ${moved === 1 ? 'item' : 'items'} to ${where}.`);
 }
-// The keyboard way to move: every folder a chosen folder is not, or holds.
-function moveSelection() {
-  const keys = [...library.chosen]; const paths = libraryPaths(library);
-  const chosenFolders = keys.map(parseSourceKey).filter((source) => source.kind === 'folder').map((source) => paths.folders.get(source.id));
-  const targets = library.folders.filter((folder) => !chosenFolders.some((path) => paths.folders.get(folder.id).startsWith(path)))
-    .sort((a, b) => comparePaths(paths.folders.get(a.id), paths.folders.get(b.id)));
+// The keyboard way to move.
+function moveChosen() {
+  const keys = [...library.chosen];
   smallForm({
     title: `Move ${keys.length} ${keys.length === 1 ? 'item' : 'items'}`, description: 'Moving keeps each item’s identity and every version.',
-    fields: `<label class="form-label" for="library-destination">Location</label><select class="form-input" id="library-destination" name="destination">
-      <option value="">Library</option>${targets.map((entry) => `<option value="${escape(entry.id)}">${escape(paths.folders.get(entry.id))}</option>`).join('')}</select>`,
+    fields: locationField(keys.map(parseSourceKey).filter((source) => source.kind === 'folder').map((source) => source.id)),
     submit: 'Move',
     onSubmit: (data) => moveInto(keys, data.get('destination') || null),
   });
 }
 
 // Dragging a chosen tile carries every chosen item; any other tile goes alone.
-// Folder tiles and the folder crumbs take the drop.
+// Folder tiles and the folder crumbs take the drop, except a folder being
+// dragged. A repaint mid-drag can detach the source so its dragend never
+// arrives; only a drag carrying this type counts.
 const dragType = 'application/x-frameboard-library-items';
 let dragging = null;
-let verdicts = new Map();
+let dropAllowed = new Map();
 const dropZone = (event) => {
-  const zone = dragging && event.target.closest?.('#library [data-folder-drop]');
+  const zone = dragging && event.dataTransfer?.types.includes(dragType) && event.target.closest?.('#library [data-folder-drop]');
   if (!zone) return null;
   const folderId = zone.dataset.folderDrop || null;
-  if (!verdicts.has(folderId)) verdicts.set(folderId, movableInto(library, dragging, folderId).length > 0);
-  return verdicts.get(folderId) ? zone : null;
+  if (!dropAllowed.has(folderId)) dropAllowed.set(folderId, !dragging.includes(sourceKey({ kind: 'folder', id: folderId })) && movableInto(library, dragging, folderId).length > 0);
+  return dropAllowed.get(folderId) ? zone : null;
 };
 const clearDropZones = () => document.querySelectorAll('#library .drop-target').forEach((node) => node.classList.remove('drop-target'));
 document.addEventListener('dragstart', (event) => {
-  const tile = event.target.closest?.('#library [data-select]');
+  const tile = event.target.closest?.('#library [data-tile]');
   if (!tile || archived()) return;
-  dragging = library.chosen.has(tile.dataset.select) ? [...library.chosen] : [tile.dataset.select];
-  verdicts = new Map();
+  dragging = library.chosen.has(tile.dataset.tile) ? [...library.chosen] : [tile.dataset.tile];
+  dropAllowed = new Map();
   event.dataTransfer.setData(dragType, dragging.join('\n'));
   event.dataTransfer.effectAllowed = 'move';
-  document.querySelectorAll('#library [data-select]').forEach((node) => node.classList.toggle('dragging', dragging.includes(node.dataset.select)));
+  document.querySelectorAll('#library [data-tile]').forEach((node) => node.classList.toggle('dragging', dragging.includes(node.dataset.tile)));
   if (dragging.length > 1) {
     const ghost = document.createElement('div');
     ghost.className = 'library-drag-ghost'; ghost.textContent = `${dragging.length} items`;
@@ -518,10 +524,11 @@ for (const type of ['dragenter', 'dragover']) {
   });
 }
 document.addEventListener('drop', (event) => {
-  const zone = dropZone(event);
+  const zone = dropZone(event); const keys = dragging;
+  dragging = null; clearDropZones();
   if (!zone) return;
   event.preventDefault();
-  void moveInto(dragging, zone.dataset.folderDrop || null);
+  void moveInto(keys, zone.dataset.folderDrop || null);
 });
 document.addEventListener('dragend', () => {
   dragging = null;
@@ -530,16 +537,16 @@ document.addEventListener('dragend', () => {
 });
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape' || !library.chosen.size || !$('#library') || document.querySelector('dialog[open]')) return;
-  clearSelection(); paint();
+  clearChosen(); paint();
 });
 
 document.addEventListener('click', async (event) => {
   const target = event.target.closest('[data-action^="library-"]');
   if (!target) return;
-  const tile = target.closest('#library [data-select]');
-  if (tile && !archived() && target.dataset.action !== 'library-manage' && (target.dataset.action === 'library-select' || event.shiftKey || event.ctrlKey || event.metaKey || library.chosen.size)) {
+  const tile = target.closest('#library [data-tile]');
+  if (tile && !archived() && target.dataset.action !== 'library-manage' && (target.dataset.action === 'library-choose' || event.shiftKey || event.ctrlKey || event.metaKey || library.chosen.size)) {
     event.preventDefault();
-    return choose(tile.dataset.select, event.shiftKey);
+    return choose(tile.dataset.tile, event.shiftKey);
   }
   const action = target.dataset.action;
   if (action === 'library-inspect') void inspect(target.dataset.id);
@@ -551,9 +558,9 @@ document.addEventListener('click', async (event) => {
   if (action === 'library-discard-draft') discardDraft();
   if (action === 'library-keep-mine') void keepMine();
   if (action === 'library-load-theirs') void loadTheirs();
-  if (action === 'library-open-folder') { library.folder = target.dataset.id || null; library.query = ''; clearSelection(); paint(); }
-  if (action === 'library-move-selection') moveSelection();
-  if (action === 'library-clear-selection') { clearSelection(); paint(); }
+  if (action === 'library-open-folder') { library.folder = target.dataset.id || null; library.query = ''; paint(); }
+  if (action === 'library-move-chosen') moveChosen();
+  if (action === 'library-clear-chosen') { clearChosen(); paint(); }
   if (action === 'library-new-folder') newFolder();
   if (action === 'library-manage') organize(target.dataset.kind, target.dataset.id);
   if (action === 'library-remove') remove(target.dataset.kind, target.dataset.id);

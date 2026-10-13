@@ -79,9 +79,10 @@ test('a multi-item move skips what is already there and never puts a folder insi
   };
   const moving = (keys, folderId) => movableInto(listing, keys, folderId).map(sourceKey);
   assert.deepEqual(moving(['asset:a', 'asset:b', 'folder:scripts'], 'thumbs'), ['asset:a', 'asset:b', 'folder:scripts']);
-  assert.deepEqual(moving(['asset:a', 'asset:b', 'folder:refs'], null), ['asset:b', 'folder:refs'], 'the root already holds logo.png');
+  assert.deepEqual(moving(['asset:a', 'asset:b'], null), ['asset:b'], 'asset:a is already at the root');
   assert.deepEqual(moving(['folder:thumbs', 'asset:a'], 'refs'), ['asset:a'], 'Thumbnails cannot move into its own subfolder');
   assert.deepEqual(moving(['folder:refs', 'asset:gone', 'bogus'], 'refs'), [], 'a folder cannot move into itself; unknown sources are skipped');
+  assert.deepEqual(moving(['folder:thumbs', 'asset:b', 'folder:refs'], 'scripts'), ['folder:thumbs'], 'what a chosen folder holds moves with it, not out of it');
   // Thumbnails/ is not a prefix of a sibling named Thumbnails2/.
   listing.folders.push({ id: 'thumbs2', name: 'Thumbnails2', parentId: null });
   assert.deepEqual(moving(['folder:thumbs'], 'thumbs2'), ['folder:thumbs']);
