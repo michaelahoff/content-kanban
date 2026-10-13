@@ -801,6 +801,20 @@ These values apply when a card enters this lane.
     assert.equal(await evaluate(`document.querySelector('#playbook-set-value-0').value`), 'Ready for review\nSecond line');
     assert.ok(await evaluate(`document.querySelector('#playbook-status').textContent.startsWith('Saved')`));
     await snapshot('lane-playbook-form');
+    // The form is a sheet that fits a phone-wide column: no sideways scrolling,
+    // the set row folded, and the help text hidden until Hints is on.
+    await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+    assert.ok(await evaluate(`document.querySelector('#playbook-dialog').scrollWidth <= document.querySelector('#playbook-dialog').clientWidth && document.querySelector('.playbook-main').scrollWidth <= document.querySelector('.playbook-main').clientWidth`), 'The form fits the column without sideways scrolling');
+    assert.ok(await evaluate(`document.querySelector('#playbook-set-value-0').getBoundingClientRect().top >= document.querySelector('#playbook-set-field-0').getBoundingClientRect().bottom`), 'A narrow set row puts the value under the field picker');
+    assert.equal(await evaluate(`document.querySelector('.playbook-form .field-help').checkVisibility()`), false, 'Hints are hidden until asked for');
+    assert.equal(await evaluate(`document.querySelector('#playbook-hints').getAttribute('aria-pressed')`), 'false');
+    await click('#playbook-hints');
+    await waitFor(`document.querySelector('#playbook-hints')?.getAttribute('aria-pressed') === 'true' && document.querySelector('.playbook-form .field-help')?.checkVisibility()`);
+    await snapshot('mobile-playbook-form');
+    await click('#playbook-hints');
+    await waitFor(`document.querySelector('#playbook-hints')?.getAttribute('aria-pressed') === 'false' && !document.querySelector('.playbook-form .field-help').checkVisibility()`);
+    await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
+    assert.ok(await evaluate(`document.querySelector('#playbook-set-value-0').getBoundingClientRect().top < document.querySelector('#playbook-set-field-0').getBoundingClientRect().bottom`), 'A wide set row keeps the value beside the field picker');
     // Later checks type whole Markdown files and expect lanes without playbooks.
     await switchTo('markdown');
     await click('[data-playbook-action="delete"]');
@@ -810,7 +824,7 @@ These values apply when a card enters this lane.
     await click('[data-playbook-action="close"]');
     await waitFor(`!document.querySelector('#playbook-dialog').open`);
     assert.equal((await state()).projects[0].lanes.at(-1).playbook, null);
-    console.log('PASS the playbook settings form writes run, may_edit, set and context into the Markdown draft, saves them and reopens in the remembered mode');
+    console.log('PASS the playbook settings form writes run, may_edit, set and context into the Markdown draft, saves them, reopens in the remembered mode and fits a phone-wide column with its hints off');
   }
 
   await click('.sidebar-section [data-action="add-project"]');

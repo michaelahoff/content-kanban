@@ -1,6 +1,8 @@
-// The lane playbook settings form: one control per frontmatter key, with the
-// field and image-role choices read from the project's card template. This
-// module keeps no state. renderSettingsForm(context) returns HTML and
+// The lane playbook settings form: a sheet of short rows, one per frontmatter
+// key or pair of keys, with the field and image-role choices read from the
+// project's card template. Checkbox lists are pill chips and the help text
+// shows only when the hints are on, so the sheet fits a phone-wide column.
+// This module keeps no state. renderSettingsForm(context) returns HTML and
 // applySettingsChange(context, action, data) returns the draft with one
 // setting patched (or null when nothing changes). The editor owns the draft
 // text, the DOM and its events; every write goes through withSetting so the
@@ -9,10 +11,12 @@
 // context = { text, template, document (parseDocument result), settings
 //   (playbookSettings result), kind: 'lane' | 'file', lane: { id, name } | null,
 //   lanes: [{ id, name, taken }], skillNames: [...], models: [{ provider, id,
-//   displayName }], libraryMarkup: HTML for the Library files block }.
+//   displayName }] or null until the catalog has loaded, libraryMarkup: HTML
+//   for the Library files block,
+//   hints: whether the help text under the rows is shown }.
 import { escape } from './ui.js';
 import { contextFields, setFields, imageRoles, fieldKey } from './card-template.js';
-import { withSetting, skillName, knownKeys } from './playbook-format.js';
+import { withSetting, withSettings, skillName, knownKeys } from './playbook-format.js';
 
 const listOf = (value) => (Array.isArray(value) ? value.map(String) : typeof value === 'string' && value.trim() ? value.split(',').map((item) => item.trim()) : []);
 const cleanSkill = (name) => String(name).replace(/^skills\//i, '').replace(/\.md$/i, '');
@@ -28,8 +32,10 @@ function row(key, label, control, { forId = null, help = '' } = {}) {
   return `<div class="playbook-row" ${forId ? '' : `role="group" aria-labelledby="playbook-label-${key}"`}>${head}<div class="playbook-row-control">${control}${help ? `<p class="field-help">${help}</p>` : ''}</div></div>`;
 }
 
-function laneRow({ kind, lane, lanes, document }) {
-  if (kind === 'lane') return row('lane', 'Lane', `<p class="playbook-static">${escape(lane?.name ?? 'Lane')} <code>${escape(lane?.id ?? '')}</code></p>`);
+// A playbook opened from its lane needs no lane row: the lane is the heading
+// and the selected document. A file not attached to a lane gets a picker.
+function laneRow({ kind, lanes, document }) {
+  if (kind === 'lane') return '';
   const current = document.data.lane ? String(document.data.lane) : '';
   const free = lanes.filter((item) => !item.taken);
   const known = free.some((item) => item.id === current);
@@ -40,38 +46,42 @@ function laneRow({ kind, lane, lanes, document }) {
     { forId: 'playbook-field-lane', help: 'Attach this file to a lane that has no playbook yet, or leave it unattached.' });
 }
 
+// Run mode is one joined segmented control; the fresh-context chip sits beside it.
 function runRow({ settings }) {
   const modes = [['on-enter', 'On entry'], ['manual', 'Manual'], ['off', 'Off']];
   const buttons = modes.map(([value, label]) => `<button type="button" class="chip" id="playbook-run-${value}" data-playbook-action="form-run" data-value="${value}" aria-pressed="${settings.run === value}">${label}</button>`).join('');
-  return row('run', 'Run', `<div class="playbook-segments">${buttons}</div>`, { help: 'On entry runs the instructions each time a card enters the lane. Manual waits for Run playbook on a card.' });
+  const fresh = check('playbook-field-conversation', 'form-conversation', 'Fresh context each run', { checked: settings.conversation === 'fresh' });
+  return row('run', 'Run', `<div class="playbook-inline"><div class="playbook-segments" role="group" aria-label="Run mode">${buttons}</div>${fresh}</div>`,
+    { help: 'On entry runs the instructions each time a card enters the lane. Manual waits for Run playbook on a card. Fresh context starts a new conversation for each run instead of continuing the card chat.' });
 }
 
-function providerRow({ settings }) {
-  const options = [option('', "Card chat's provider", !settings.provider), option('codex', 'Codex', settings.provider === 'codex'), option('claude', 'Claude', settings.provider === 'claude')];
-  return row('provider', 'Provider', `<select id="playbook-field-provider" class="form-input" data-playbook-action="form-provider">${options.join('')}</select>`, { forId: 'playbook-field-provider' });
-}
-
-// Free text with the saved model list as suggestions: the chosen provider's
-// models, or every enabled provider's until one is chosen.
-function modelRow({ settings, models }) {
-  const choices = models.filter((model) => !settings.provider || model.provider === settings.provider);
-  const list = `<datalist id="playbook-models">${choices.map((model) => option(model.id, model.displayName ?? model.id, false)).join('')}</datalist>`;
-  const input = `<input id="playbook-field-model" class="form-input" list="playbook-models" data-playbook-action="form-model" value="${escape(settings.model ?? '')}" maxlength="200" autocomplete="off" placeholder="Card chat's selected or default model">`;
-  return row('model', 'Model', input + list, { forId: 'playbook-field-model', help: 'A model ID from Settings. Leave empty to use the card chat’s model.' });
-}
-
-function conversationRow({ settings }) {
-  return row('conversation', 'Conversation', check('playbook-field-conversation', 'form-conversation', 'Start fresh context for each run', { checked: settings.conversation === 'fresh' }));
+// Provider and model share a row. The model select lists the same saved
+// models the card chat offers: the chosen provider's, or every enabled
+// provider's grouped by provider until one is chosen. A model the list lacks
+// (typed in Markdown, or from a provider now disabled) stays selected and is
+// marked unavailable; until the catalog arrives (models null) it is shown as is.
+const providerName = (provider) => (provider === 'claude' ? 'Claude' : 'Codex');
+function agentRow({ settings, models }) {
+  const providers = [option('', "Card chat's provider", !settings.provider), option('codex', 'Codex', settings.provider === 'codex'), option('claude', 'Claude', settings.provider === 'claude')];
+  const provider = `<select id="playbook-field-provider" class="form-input" data-playbook-action="form-provider" aria-label="Provider">${providers.join('')}</select>`;
+  const current = settings.model ?? '';
+  const choices = (models ?? []).filter((model) => !settings.provider || model.provider === settings.provider);
+  const options = (list) => list.map((model) => option(model.id, model.displayName ?? model.id, model.id === current)).join('');
+  const grouped = settings.provider ? options(choices)
+    : ['codex', 'claude'].map((name) => { const own = choices.filter((model) => model.provider === name); return own.length ? `<optgroup label="${providerName(name)}">${options(own)}</optgroup>` : ''; }).join('');
+  const unlisted = current && !choices.some((model) => model.id === current) ? option(current, models ? `${current} (unavailable)` : current, true, Boolean(models)) : '';
+  const model = `<select id="playbook-field-model" class="form-input" data-playbook-action="form-model" aria-label="Model">${option('', "Card chat's model", !current)}${grouped}${unlisted}</select>`;
+  return row('agent', 'Agent', `<div class="playbook-agent">${provider}${model}</div>`, { help: 'The provider and one of the models saved in Settings. Leave them as they are to use the card chat’s.' });
 }
 
 // context: absent means every field and image role; a list names what to send.
 function contextRow({ template, settings, document }) {
   const all = document.data.context === undefined;
-  const toggle = check('playbook-field-context-all', 'form-context-all', 'Send every card field and image role', { checked: all });
+  const toggle = check('playbook-field-context-all', 'form-context-all', 'All fields and images', { checked: all });
   const fields = contextFields(template).map((field, index) => check(`playbook-context-field-${index}`, 'form-context', escape(field.label), { checked: settings.selections.fields.includes(field.key), attrs: `data-key="${escape(field.key)}" data-group="field"` }));
   const roles = imageRoles(template).map((role, index) => check(`playbook-context-role-${index}`, 'form-context', `${escape(role.label)} image`, { checked: settings.selections.roles.includes(role.key), attrs: `data-key="${escape(role.key)}" data-group="role"` }));
   const choices = all ? '' : `<div class="playbook-choices">${[...fields, ...roles].join('')}</div>`;
-  return row('context', 'What to send', toggle + choices, { help: 'Card fields and image roles included in every run, besides the flow map, this playbook and its skills.' });
+  return row('context', 'Sends', toggle + choices, { help: 'Card fields and image roles included in every run, besides the flow map, this playbook and its skills.' });
 }
 
 function mayEditRow({ template, settings }) {
@@ -86,7 +96,7 @@ const setResolved = (template, entries) => entries.map(([name]) => fieldKey(setF
 function setRow({ template, document }) {
   const raw = document.data.set;
   if (raw !== undefined && raw !== '' && (!raw || typeof raw !== 'object' || Array.isArray(raw))) {
-    return row('set', 'Set on entry', '<p class="playbook-missing">set: needs one “field: value” line per field. Fix it in Markdown.</p>');
+    return row('set', 'On entry', '<p class="playbook-missing">set: needs one “field: value” line per field. Fix it in Markdown.</p>');
   }
   const fields = setFields(template);
   const entries = setEntries(document); const keys = setResolved(template, entries);
@@ -100,7 +110,7 @@ function setRow({ template, document }) {
   });
   const free = fields.some((field) => !keys.includes(field.key));
   const add = `<button type="button" class="button small secondary" data-playbook-action="form-set-add" ${free ? '' : 'disabled'}>Add field</button>`;
-  return row('set', 'Set on entry', `${rows.join('')}${add}`, { help: 'Values written to the card the moment it enters the lane. Undo last move reverses them.' });
+  return row('set', 'On entry', `${rows.join('')}${add}`, { help: 'Values written to the card the moment it enters the lane. Undo last move reverses them.' });
 }
 
 // skills: the explicit list, plus every skill the instructions mention by
@@ -123,7 +133,7 @@ function unknownRow({ document }) {
   const keys = unknownKeys(document);
   if (!keys.length) return '';
   const lines = keys.map((key) => `<div class="playbook-unknown"><code>${escape(key)}</code><span>is not a setting and is ignored.</span><button type="button" class="text-button" data-playbook-action="form-unknown-remove" data-key="${escape(key)}">Remove<span class="sr-only"> ${escape(key)}</span></button></div>`);
-  return row('unknown', 'Unknown settings', lines.join(''));
+  return row('unknown', 'Unknown', lines.join(''));
 }
 
 function problems(settings) {
@@ -132,7 +142,7 @@ function problems(settings) {
 }
 
 export function renderSettingsForm(context) {
-  return `<div class="playbook-form">${problems(context.settings)}${laneRow(context)}${runRow(context)}${providerRow(context)}${modelRow(context)}${conversationRow(context)}${contextRow(context)}${mayEditRow(context)}${setRow(context)}${skillsRow(context)}${row('assets', 'Library files', `<div class="playbook-library">${context.libraryMarkup}</div>`)}${unknownRow(context)}</div>`;
+  return `<div class="playbook-form ${context.hints ? 'playbook-form-hints' : ''}">${problems(context.settings)}${laneRow(context)}${runRow(context)}${agentRow(context)}${contextRow(context)}${mayEditRow(context)}${setRow(context)}${skillsRow(context)}${row('assets', 'Library', `<div class="playbook-library">${context.libraryMarkup}</div>`)}${unknownRow(context)}</div>`;
 }
 
 // --- Changes ---------------------------------------------------------------
@@ -197,7 +207,13 @@ export function applySettingsChange(context, action, data = {}) {
     case 'form-lane': return withSetting(text, 'lane', value || undefined);
     case 'form-run': return withSetting(text, 'run', value);
     case 'form-provider': return withSetting(text, 'provider', value || undefined);
-    case 'form-model': return withSetting(text, 'model', value || undefined);
+    case 'form-model': {
+      // A model picked from a provider's group also picks that provider when
+      // none is set, so the run does not send the model to the wrong provider.
+      const chosen = (context.models ?? []).find((model) => model.id === value);
+      if (chosen && !context.settings.provider) return withSettings(text, { provider: chosen.provider, model: value });
+      return withSetting(text, 'model', value || undefined);
+    }
     case 'form-conversation': return withSetting(text, 'conversation', data.checked ? 'fresh' : undefined);
     case 'form-context-all': case 'form-context': case 'form-may-edit': return applyContext(context, action, data);
     case 'form-set-field': case 'form-set-value': case 'form-set-remove': case 'form-set-add': return applySet(context, action, data);
