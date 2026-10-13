@@ -1,7 +1,8 @@
 // Native Claude Code stream-json transport. Initialization lists models without
-// sending a prompt. Card chats keep native sessions and use text and image
-// inputs, and PDF documents where claude-pdf-gate.js has evidence for the setup.
-import { spawn, execFile } from 'node:child_process';
+// sending a prompt. Card chats keep native sessions with the user's full Claude
+// Code setup and tools, inside the retained-data boundary, and send text,
+// image and PDF document inputs.
+import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -31,15 +32,20 @@ export function createClaudeAdapter({ command = 'claude', args = [], env = proce
   const boundary = () => {
     if (!retainedDataDir) return null;
     // A failed setup is retried, so a corrected installation applies on refresh.
-    boundaryTask ??= createNativeBoundary({ dataDir: retainedDataDir, nativeHome }).catch((error) => { boundaryTask = null; throw error; });
+    // Without CLAUDE_CONFIG_DIR, Claude Code keeps its global config (MCP
+    // servers, onboarding) in ~/.claude.json beside its home.
+    const nativeFiles = env.CLAUDE_CONFIG_DIR ? [] : [path.join(homedir(), '.claude.json')];
+    boundaryTask ??= createNativeBoundary({ dataDir: retainedDataDir, nativeHome, nativeFiles }).catch((error) => { boundaryTask = null; throw error; });
     return boundaryTask;
   };
   const historyPath = (work, id) => path.join(nativeHome, 'projects', work.replace(/[^a-zA-Z0-9]/g, '-'), `${id}.jsonl`);
   const emit = (session, event) => { for (const handler of listeners.get(session.id) ?? []) handler.onEvent?.({ threadId: session.id, turnId: session.turnId, ...event }); };
-  async function launch({ id, work = cwd, model, instructions = '', resume = false } = {}) {
+  async function launch({ id, work = cwd, model, instructions = '', permissionMode = null, resume = false } = {}) {
     const guard = await boundary(); await guard?.check();
     const child = (guard ? guard.launch.bind(guard) : spawn)(command, [...args, '-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--include-partial-messages',
-      '--safe-mode', '--tools', '', '--strict-mcp-config', ...(id ? [resume ? '--resume' : '--session-id', id] : []),
+      // The boundary is the protection, as for Codex Full access: Claude runs
+      // its tools without prompts that nobody in a card chat could answer.
+      ...(permissionMode ? ['--permission-mode', permissionMode] : []), ...(id ? [resume ? '--resume' : '--session-id', id] : []),
       ...(model ? ['--model', model] : []), ...(instructions ? ['--append-system-prompt', instructions] : [])],
     { cwd: work, env, stdio: ['pipe', 'pipe', 'pipe'] });
     // A new session has no native history file until its first turn.
@@ -80,8 +86,8 @@ export function createClaudeAdapter({ command = 'claude', args = [], env = proce
           else pending.resolve(message.response.response);
         }
       } else if (message.type === 'control_request') {
-        // Tools are disabled. Deny unexpected requests rather than granting authority.
-        write({ type: 'control_response', response: { subtype: 'success', request_id: message.request_id, response: { behavior: 'deny', message: 'Tools are disabled for Frameboard Claude chats.' } } });
+        // Permissions are bypassed, so a tool request is allowed as asked.
+        write({ type: 'control_response', response: { subtype: 'success', request_id: message.request_id, response: message.request?.subtype === 'can_use_tool' ? { behavior: 'allow', updatedInput: message.request.input ?? {} } : {} } });
       } else if (session.turnId && message.type === 'stream_event') {
         const event = message.event;
         if (event.type === 'message_start') session.messageId = event.message.id;
@@ -129,10 +135,6 @@ export function createClaudeAdapter({ command = 'claude', args = [], env = proce
     write({ type: 'control_request', request_id: 'initialize', request: { subtype: 'initialize' } });
     try { session.info = await ready; return session; } catch (cause) { child.kill(); throw cause; }
   }
-  // The installed version, for matching PDF evidence. Inside retained-data
-  // protection no native process runs unconfined, and no evidence applies.
-  const harnessVersion = () => new Promise((resolve) => execFile(command, [...args, '--version'], { env, timeout: timeoutMs },
-    (failure, stdout) => resolve(failure ? null : /^(\d+\.\d+\.\d+)\b/.exec(stdout.trim())?.[1] ?? null)));
   async function stop(session) {
     if (session.ended) return;
     const done = new Promise((resolve) => session.child.once('close', resolve));
@@ -142,9 +144,7 @@ export function createClaudeAdapter({ command = 'claude', args = [], env = proce
   }
   return {
     async protectRetainedData(dataDir) { await Promise.all([...processes].map(stop)); retainedDataDir = dataDir; },
-    async assertProtection() {
-      if (retainedDataDir) throw error('configuration-unavailable', 'Retained-data protection for this installed Claude configuration is unproven. Use the verified Codex configuration until a Claude native gate is available.');
-    },
+    async assertProtection() { await (await boundary())?.check(); },
     async disposeProtection() { if (boundaryTask) await (await boundaryTask.catch(() => null))?.close(); boundaryTask = null; },
     get running() { return processes.size > 0; },
     async discover({ cwd: work = cwd } = {}) {
@@ -152,11 +152,10 @@ export function createClaudeAdapter({ command = 'claude', args = [], env = proce
       try {
         const models = session.info.models;
         if (!Array.isArray(models) || !models.length) throw error('configuration-unavailable', 'Claude Code returned no available models. Update Claude Code and refresh.');
-        const version = retainedDataDir ? null : await harnessVersion(); const account = accountKind(session.info.account);
-        const pdfRoute = (model) => claudePdfRoute({ harness: version, model, account, retainedDataProtection: Boolean(retainedDataDir) }, pdfEvidence);
-        return { cwd: work, harness: { userAgent: 'Claude Code', claudeHome: nativeHome, version, account },
-          models: models.map((model) => ({ id: model.value, displayName: model.displayName ?? model.value, resolvedModel: model.resolvedModel, pdf: pdfRoute(model.resolvedModel ?? model.value) })), items: [], errors: [],
-          ...(retainedDataDir ? { protection: { supported: false, reason: 'Retained-data protection for Claude is unproven. Use the verified Codex configuration until a Claude native gate is available.' } } : {}) };
+        const account = accountKind(session.info.account);
+        return { cwd: work, harness: { userAgent: 'Claude Code', claudeHome: nativeHome, account },
+          models: models.map((model) => ({ id: model.value, displayName: model.displayName ?? model.value, resolvedModel: model.resolvedModel, pdf: claudePdfRoute(model.resolvedModel ?? model.value, pdfEvidence) })), items: [], errors: [],
+          ...(retainedDataDir ? { protection: (await boundary()).snapshot } : {}) };
       } finally { await stop(session); }
     },
     subscribe(threadId, handler) {
@@ -174,7 +173,7 @@ export function createClaudeAdapter({ command = 'claude', args = [], env = proce
         if (threadId) {
           try { await readFile(historyPath(work, id)); } catch (cause) { if (cause.code === 'ENOENT') throw error('native-unavailable', 'This Claude session is missing. Start fresh context; retained replies remain available.'); throw cause; }
         }
-        session = await launch({ id, work, model, instructions: threadConfig.developerInstructions, resume: Boolean(threadId) });
+        session = await launch({ id, work, model, instructions: threadConfig.developerInstructions, permissionMode: threadConfig.permissionMode, resume: Boolean(threadId) });
         if (!session.info.models?.some((entry) => entry.value === model)) { await stop(session); throw error('model-unavailable', 'This Claude model is unavailable. Refresh models in Settings and select a current model.'); }
         session.instructions = threadConfig.developerInstructions; sessions.set(id, session);
       }

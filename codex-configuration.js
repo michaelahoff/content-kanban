@@ -8,7 +8,7 @@ import { CodexError } from './codex-adapter.js';
 export const cardInstructions = 'You are working in a Frameboard card workspace. Use Frameboard card tools for card changes. Tool availability does not grant authority to edit card fields, adopt images, change image roles, or move cards. Follow the authority frozen in each submission and request approval when required.';
 export const mandatoryBehavior = [
   'Your installed Codex manages sign-in and conversation history. A listed model is not proof of account access.',
-  'Codex uses workspace-write / on-request: workspace writes and sandboxed commands without network access can run automatically. Sandbox escapes require approval. Frameboard grants answer individual requests without writing native global rules. Retained originals, outputs, frozen history and authority metadata stay outside agent write authority, including under Full native access. Only verified public OpenAI HTTPS endpoints are reachable; unproven configurations are held. Card acceptance stays separate.',
+  'Codex uses workspace-write / on-request: workspace writes and sandboxed commands without network access can run automatically. Sandbox escapes require approval. Frameboard grants answer individual requests without writing native global rules. Retained originals, outputs, frozen history and authority metadata stay outside agent write authority, including under Full native access. Local and private network destinations are unreachable. Card acceptance stays separate.',
   'Selected Library text is sent in full and supported raster images as images. Other Library files, including PDFs, audio, video, fonts and archives, become independent read-only workspace copies that Codex can read only with its shell tool; Frameboard does not extract, render, transcribe or convert them, and Codex receives no audio, video or document input directly.',
   'Generated images remain in the conversation until you accept them into the card gallery. Choosing image roles requires separate acceptance.',
   'Codex 0.160.1 cannot enforce the required restrictions for an automatic transfer summary. You can write a summary or start without one.',
@@ -65,7 +65,6 @@ export function compileConfiguration(selection, discovery, dynamicTools = []) {
     if (['mcp', 'plugin', 'hook'].includes(item.kind)) reasons.push(`${item.name}: ${item.reason}`);
   }
   if (discovery.errors.length) reasons.push('Native discovery was incomplete; resolve its reported errors before submitting.');
-  if (!/\b0\.160\.1\b/.test(discovery.harness.userAgent)) reasons.push('Configuration isolation is verified only for Codex 0.160.1. Revalidate this installed version before submitting.');
   const nativeOptions = {
     developerInstructions: [cardInstructions, selection.instructions ?? ''].filter(Boolean).join('\n\n'),
     sandbox: 'workspace-write', approvalPolicy: 'on-request', approvalsReviewer: 'user',

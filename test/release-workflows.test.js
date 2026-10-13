@@ -248,8 +248,8 @@ test('active and archived projects with their whole asset history export under m
   assert.equal(codex.sends.length, 1, 'only the new work was sent');
 });
 
-test('with retained-data protection on, as shipped, a Claude Send and a Claude lane run with Library files are held before any Claude turn starts', async (t) => {
-  const home = await mkdtemp(path.join(tmpdir(), 'frameboard-claude-held-'));
+test('with retained-data protection on, as shipped, a Claude Send and a Claude lane run with Library files run inside the boundary', async (t) => {
+  const home = await mkdtemp(path.join(tmpdir(), 'frameboard-claude-protected-'));
   // The production adapter, protection left on: only the harness is the fixture.
   const claude = createClaudeAdapter({ command: process.execPath, args: [fileURLToPath(new URL('./support/fake-claude.js', import.meta.url))], env: { ...process.env, CLAUDE_CONFIG_DIR: home } });
   const f = await workflowFixture(t, { claudeAdapter: claude });
@@ -268,13 +268,11 @@ test('with retained-data protection on, as shipped, a Claude Send and a Claude l
   await f.ok('POST', `/api/cards/${laneCard.id}/lane-runs`, {});
 
   for (const cardId of [card.id, laneCard.id]) {
-    const chat = await waitFor(async () => { const value = await f.chat(cardId); return value.submissions[0]?.status === 'held' && value; });
-    const [submission] = chat.submissions;
-    assert.match(submission.reason, /Retained-data protection .*Claude.* unproven/, submission.reason);
-    assert.equal(submission.provider, 'claude');
-    assert.ok(chat.attempts.every((attempt) => attempt.turnId === null && !attempt.delivery?.some((entry) => entry.status === 'sent')), 'no Claude turn started');
+    const chat = await waitFor(async () => { const value = await f.chat(cardId); return value.attempts[0]?.turnId && value; });
+    assert.equal(chat.submissions[0].provider, 'claude');
+    assert.ok(chat.attempts[0].delivery.some((entry) => entry.status === 'sent'), 'the Library guide was delivered to Claude');
   }
   assert.equal((await f.chat(card.id)).submissions[0].id, manual.id);
-  // The fixture records every user turn it receives; none arrived.
-  assert.deepEqual(await readdir(path.join(home, 'projects')).catch((error) => { if (error.code === 'ENOENT') return []; throw error; }), []);
+  // The fixture keeps native history for each turn it receives.
+  assert.equal((await readdir(path.join(home, 'projects'))).length, 2);
 });

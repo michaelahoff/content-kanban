@@ -40,13 +40,17 @@ function resolveCommand(command, env) {
   }
   return command;
 }
-export async function createNativeBoundary({ dataDir, nativeHome, testPorts = [] }) {
+// nativeFiles are single native state files kept outside nativeHome, such as
+// Claude Code's ~/.claude.json, bound writable when they exist.
+export async function createNativeBoundary({ dataDir, nativeHome, nativeFiles = [], testPorts = [] }) {
   if (process.platform !== 'linux' || process.arch !== 'x64') throw held('This OS/architecture is unproven. Use Linux x64 with bubblewrap, a C compiler and Landlock ABI 10+.');
   dataDir = await realpath(dataDir);
   await mkdir(nativeHome, { recursive: true });
   nativeHome = await realpath(nativeHome);
   const workspaces = path.join(dataDir, 'workspaces');
   await mkdir(workspaces, { recursive: true });
+  const files = nativeFiles.filter(existsSync).map((file) => [realpathSync(file), path.resolve(file)]);
+  if (files.some(([file]) => file.startsWith(dataDir + path.sep))) throw held('Move native state outside the retained data directory; these authorities must be disjoint.');
   if (nativeHome === dataDir || nativeHome.startsWith(dataDir + path.sep) || dataDir.startsWith(nativeHome + path.sep)) throw held('Move native state outside the retained data directory; these authorities must be disjoint.');
   const build = await mkdtemp(path.join(tmpdir(), 'frameboard-guard-'));
   const guard = path.join(build, 'guard');
@@ -70,7 +74,7 @@ export async function createNativeBoundary({ dataDir, nativeHome, testPorts = []
           '--cap-drop', 'ALL', '--ro-bind', '/', '/', '--proc', '/proc', '--dev', '/dev',
           ...['/home', '/root', '/run', '/tmp', '/var/tmp'].filter(existsSync).flatMap((dir) => ['--tmpfs', dir]),
           ...readable.flatMap((dir) => ['--ro-bind', dir, dir]),
-          '--ro-bind', dataDir, dataDir, '--ro-bind', build, build, '--bind', nativeHome, nativeHome, '--bind', workspaces, workspaces,
+          '--ro-bind', dataDir, dataDir, '--ro-bind', build, build, '--bind', nativeHome, nativeHome, ...files.flatMap(([file, at]) => ['--bind', file, at]), '--bind', workspaces, workspaces,
           '--chdir', cwd ?? appRoot, '--', guard, ...guardArgs], { ...options, stdio: [...(options.stdio ?? ['pipe', 'pipe', 'pipe']), 'pipe'], cwd: appRoot, env: cleanEnv });
         attachNativeProxy(child.stdio[3], { testPorts });
         return child;

@@ -1,5 +1,4 @@
 import { maxImageBytes } from './image-files.js';
-import { fileFormats } from './public/library-format.js';
 
 // How a submission's inputs reach each native target, and the request limits
 // Frameboard knows. Pure: callers resolve and verify bytes first. Anything a
@@ -22,14 +21,6 @@ export const limits = {
 };
 const megabytes = (bytes) => `${Math.round(bytes / MiB)} MB`;
 
-// Routes with no evidence for the installed harnesses stay unavailable. A
-// Claude model's PDF route comes from its discovery (claude-pdf-gate.js).
-const claudeFileReason = (item, model) => ({
-  PDF: `Claude PDF delivery is not enabled here: ${model?.pdf?.reason ?? 'refresh models in Settings to check this setup.'} Claude chats have no file tools, so ${item.label} cannot be delivered. Remove it, or send it to Codex.`,
-  audio: `Claude card chats take no audio input and have no file tools, so ${item.label} cannot be delivered. Remove it, supply a transcript, or send it to Codex.`,
-  video: `Claude card chats take no video input and have no file tools, so ${item.label} cannot be delivered. Remove it, supply stills or a transcript, or send it to Codex.`,
-  'audio or video': `Claude card chats take no audio or video input and have no file tools, so ${item.label} cannot be delivered. Remove it, supply a transcript, or send it to Codex.`,
-})[fileFormats[item.format]?.media] ?? `Claude chats have no file tools, so ${item.label} cannot be delivered. Remove it, or send it to Codex.`;
 // Codex reads a workspace copy only with its shell tool, which the effective
 // configuration can turn off. A discovery that does not say leaves it on.
 export const hasShellTool = (discovery) => discovery?.tools?.shell !== false;
@@ -38,9 +29,9 @@ export const noShellTool = 'This Codex setup has its shell tool turned off (feat
 // items: [{ key, label, kind: 'text' | 'image' | 'file', format?, size }] in
 // delivery order. textBytes counts the prompt and card text sent with them.
 // A model that reports its input modalities is held to them; otherwise the
-// provider decides. A Claude model sends PDFs as native documents only when
-// its discovered `pdf` route is available. shellTool is false when the Codex setup cannot read a
-// workspace copy.
+// provider decides. Claude sends PDFs as native documents; every other file
+// is a workspace copy for the provider's tools. shellTool is false when the
+// Codex setup cannot read a workspace copy.
 // Every problem in one refusal. Each source is named with its identity too,
 // since a name can be reused.
 export const problemMessage = (problems) => `Not sent. ${problems.map((problem) => `${problem.label}${problem.key && problem.key !== problem.label ? ` (${problem.key})` : ''}: ${problem.reason}`).join(' ')}`;
@@ -57,10 +48,8 @@ export function planInputs(provider, items, { textBytes, model = null, shellTool
       else if (claude && item.size > limits.claudeImageBytes) refuse(item, `${item.label} is larger than ${megabytes(limits.claudeImageBytes)}, Claude's image limit.`);
       return { ...item, method: 'image' };
     }
-    if (claude && item.format === 'pdf' && model?.pdf?.available) return { ...item, method: 'document' };
-    if (claude && item.format === 'text') refuse(item, `${item.label} is too much text to send inline, and Claude chats have no file tools to read it. Remove it, or send it to Codex.`);
-    else if (claude) refuse(item, claudeFileReason(item, model), 'capability');
-    else if (!shellTool) refuse(item, `${noShellTool}, or remove ${item.label}.`, 'capability');
+    if (claude && item.format === 'pdf') return { ...item, method: 'document' };
+    if (!claude && !shellTool) refuse(item, `${noShellTool}, or remove ${item.label}.`, 'capability');
     return { ...item, method: 'copy' };
   });
   const images = inputs.filter((input) => input.method === 'image').length;
@@ -72,6 +61,6 @@ export function planInputs(provider, items, { textBytes, model = null, shellTool
   else if (text > limits.warnTextBytes) warnings.push(`This request has about ${Math.ceil(text / 4).toLocaleString('en-US')} tokens of text, which may exceed the model's context. Frameboard cannot check this model's limit, so the provider decides.`);
   // A PDF's pages and tokens cannot be counted without parsing it, which
   // Frameboard does not do; Claude decides, and may remove a PDF it rejects.
-  if (inputs.some((input) => input.method === 'document')) warnings.push(`Frameboard cannot count PDF pages or estimate their tokens. The documented Claude limit for this model is ${model.pdf.pages} pages per request, including PDFs from earlier messages in this conversation; Claude decides.`);
+  if (inputs.some((input) => input.method === 'document')) warnings.push(`Frameboard cannot count PDF pages or estimate their tokens. The documented Claude limit for this model is ${model?.pdf?.pages ?? 100} pages per request, including PDFs from earlier messages in this conversation; Claude decides.`);
   return { inputs, problems, warnings };
 }

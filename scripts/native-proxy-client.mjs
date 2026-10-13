@@ -15,8 +15,7 @@ function open(host, port, ready, data, close) {
 const proxy = http.createServer((req, res) => {
   let url;
   try { url = new URL(req.url); } catch { res.writeHead(400); res.end(); return; }
-  // Plain HTTP is exclusively for an explicitly injected native test peer.
-  // The host broker rejects all other non-HTTPS ports and private addresses.
+  // The host broker rejects ports other than HTTP(S) and private addresses.
   const id = open(url.hostname, Number(url.port || 80), () => {
     const headers = { ...req.headers, host: url.host, connection: 'close' };
     delete headers['proxy-connection']; delete headers['proxy-authorization'];

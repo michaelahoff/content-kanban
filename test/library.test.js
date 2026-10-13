@@ -43,10 +43,10 @@ test('delivery descriptions name the route and the recognized format without cla
   assert.equal(deliveryDescription({ method: 'text' }), 'full text inline');
   assert.equal(deliveryDescription({ method: 'image', format: 'png' }), 'native image');
   assert.equal(deliveryDescription({ method: 'document', format: 'pdf' }), 'PDF · native Claude document');
-  assert.equal(deliveryDescription({ method: 'copy', format: 'pdf' }), 'PDF · workspace copy for Codex tools');
-  assert.equal(deliveryDescription({ method: 'copy', format: 'matroska' }), 'Matroska video · workspace copy for Codex tools');
-  assert.equal(deliveryDescription({ method: 'copy', format: 'text' }), 'large text · workspace copy for Codex tools');
-  assert.equal(deliveryDescription({ method: 'copy', format: null }), 'workspace copy for Codex tools');
+  assert.equal(deliveryDescription({ method: 'copy', format: 'pdf' }), 'PDF · workspace copy for tools');
+  assert.equal(deliveryDescription({ method: 'copy', format: 'matroska' }), 'Matroska video · workspace copy for tools');
+  assert.equal(deliveryDescription({ method: 'copy', format: 'text' }), 'large text · workspace copy for tools');
+  assert.equal(deliveryDescription({ method: 'copy', format: null }), 'workspace copy for tools');
 });
 
 test('library filenames are labels, never paths', () => {

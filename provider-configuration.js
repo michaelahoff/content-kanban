@@ -7,7 +7,7 @@ export async function configurationDiscovery(adapter, options, provider = 'codex
 export function compileConfiguration(selection, discovery, dynamicTools = [], provider = 'codex') {
   if (provider === 'codex') return codexCompile(selection, discovery, dynamicTools);
   const value = { provider, workspace: discovery.cwd, harness: discovery.harness.userAgent, selected: [], inventory: [],
-    instructions: selection.instructions ?? '', nativeOptions: { developerInstructions: [cardInstructions, selection.instructions, 'Tools are disabled. Offer text suggestions; the user can apply them with Use text.'].filter(Boolean).join('\n\n') },
+    instructions: selection.instructions ?? '', nativeOptions: { developerInstructions: [cardInstructions, selection.instructions].filter(Boolean).join('\n\n'), permissionMode: 'bypassPermissions' },
     ...(discovery.protection ? { protection: discovery.protection } : {}), supported: discovery.protection?.supported !== false, reasons: discovery.protection?.supported === false ? [discovery.protection.reason] : [] };
   return { ...value, id: createHash('sha256').update(JSON.stringify(value)).digest('hex') };
 }

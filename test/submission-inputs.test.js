@@ -16,12 +16,11 @@ test('both providers receive text inline and supported rasters as native images'
   }
 });
 
-test('Codex reads other files from an independent copy; tool-disabled Claude refuses them by name', () => {
+test('both providers read other files from an independent copy with their tools', () => {
   assert.deepEqual(planInputs('codex', [video], { textBytes: 0 }).inputs.map((input) => input.method), ['copy']);
   const plan = planInputs('claude', [script, video], { textBytes: 0 });
-  assert.equal(plan.problems.length, 1);
-  assert.equal(plan.problems[0].key, 'asset:video');
-  assert.match(plan.problems[0].reason, /Claude/);
+  assert.deepEqual(plan.problems, []);
+  assert.deepEqual(plan.inputs.map((input) => input.method), ['text', 'copy']);
 });
 
 test('an unsupported card image stops Claude even when every Library file is usable', () => {
@@ -75,12 +74,10 @@ test('Claude refuses a request whose encoded images exceed its request size even
   assert.deepEqual(planInputs('claude', images.slice(0, 4), { textBytes: 0 }).problems, []);
 });
 
-test('text too large to inline names its size, not missing file tools', () => {
+test('text too large to inline becomes a workspace copy for either provider', () => {
   const transcript = { key: 'asset:transcript', label: 'transcript.txt', kind: 'file', format: 'text', size: 9 * MiB };
-  const plan = planInputs('claude', [transcript], { textBytes: 0 });
-  assert.equal(plan.problems[0].phase, 'limit');
-  assert.match(plan.problems[0].reason, /too much text/);
-  assert.deepEqual(planInputs('codex', [transcript], { textBytes: 0 }).inputs.map((input) => input.method), ['copy']);
+  for (const provider of ['claude', 'codex']) assert.deepEqual(planInputs(provider, [transcript], { textBytes: 0 }).inputs.map((input) => input.method), ['copy']);
+  assert.deepEqual(planInputs('claude', [transcript], { textBytes: 0 }).problems, []);
 });
 
 test('a Codex setup without its shell tool has no route for a file and refuses it by name, keeping text and images usable', () => {
@@ -110,19 +107,17 @@ test('PDFs, audio, video, archives and fonts are recognized by their signatures,
   assert.equal(fileFormat(at(257, 'ustar', 512)), 'tar');
 });
 
-test('Claude names the unproven PDF, audio and video routes; Codex gets a tool copy, never a modality input', () => {
+test('Claude gets a PDF as a document and audio and video as tool copies; Codex gets tool copies, never a modality input', () => {
   const pdf = { key: 'asset:brief', label: 'brief.pdf', kind: 'file', format: 'pdf', size: 1000 };
   const audio = { key: 'asset:vo', label: 'vo.wav', kind: 'file', format: 'wav', size: 1000 };
-  const film = { ...video, format: 'mp4' };
+  const film = { ...video, format: 'mp4', size: 1000 };
   const plan = planInputs('claude', [pdf, audio, film], { textBytes: 0 });
-  assert.deepEqual(plan.problems.map(({ key, phase }) => ({ key, phase })), [pdf, audio, film].map(({ key }) => ({ key, phase: 'capability' })));
-  assert.match(plan.problems[0].reason, /PDF/);
-  assert.match(plan.problems[1].reason, /audio/);
-  assert.match(plan.problems[2].reason, /video/);
+  assert.deepEqual(plan.problems, []);
+  assert.deepEqual(plan.inputs.map((input) => input.method), ['document', 'copy', 'copy']);
   assert.deepEqual(planInputs('codex', [pdf, audio, film], { textBytes: 0 }).inputs.map((input) => input.method), ['copy', 'copy', 'copy']);
 });
 
-test('Claude sends a PDF as a native document only where its route is enabled, counting it toward the request and warning that pages are not counted', () => {
+test('Claude sends a PDF as a native document, counting it toward the request and warning that pages are not counted', () => {
   const pdf = { key: 'asset:brief', label: 'brief.pdf', kind: 'file', format: 'pdf', size: 1000 };
   const enabled = { id: 'haiku', pdf: { available: true, pages: 100, checked: '2026-10-08' } };
   const plan = planInputs('claude', [script, pdf], { textBytes: 0, model: enabled });
@@ -131,12 +126,9 @@ test('Claude sends a PDF as a native document only where its route is enabled, c
   assert.equal(plan.warnings.length, 1);
   assert.match(plan.warnings[0], /100 pages/);
   assert.match(plan.warnings[0], /cannot count/);
-  const disabled = planInputs('claude', [script, pdf], { textBytes: 0, model: { id: 'opus', pdf: { available: false, reason: 'No passing PDF check is recorded for this setup.' } } });
-  assert.deepEqual(disabled.problems.map(({ key, phase }) => ({ key, phase })), [{ key: 'asset:brief', phase: 'capability' }]);
-  assert.ok(disabled.problems[0].reason.includes('No passing PDF check is recorded for this setup.'));
   const oversized = planInputs('claude', [{ ...pdf, size: 25 * MiB }], { textBytes: 0, model: enabled });
   assert.deepEqual(oversized.problems.map(({ key }) => key), [null], 'an encoded PDF counts toward the request size');
   assert.match(oversized.problems[0].reason, /32 MB/);
-  assert.deepEqual(planInputs('claude', [{ ...video, format: 'mp4' }], { textBytes: 0, model: enabled }).problems.map(({ phase }) => phase), ['capability'], 'the PDF route carries nothing else');
+  assert.deepEqual(planInputs('claude', [{ ...video, format: 'mp4' }], { textBytes: 0, model: enabled }).inputs.map((input) => input.method), ['copy'], 'the PDF route carries nothing else');
   assert.deepEqual(planInputs('codex', [pdf], { textBytes: 0, model: enabled }).inputs.map((input) => input.method), ['copy']);
 });
