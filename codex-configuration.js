@@ -11,7 +11,7 @@ export const mandatoryBehavior = [
   'Codex uses workspace-write / on-request: workspace writes and sandboxed commands without network access can run automatically. Sandbox escapes require approval. Frameboard grants answer individual requests without writing native global rules. Retained originals, outputs, frozen history and authority metadata stay outside agent write authority, including under Full native access. Local and private network destinations are unreachable. Card acceptance stays separate.',
   'Selected Library text is sent in full and supported raster images as images. Other Library files, including PDFs, audio, video, fonts and archives, become independent read-only workspace copies that Codex can read only with its shell tool; Frameboard does not extract, render, transcribe or convert them, and Codex receives no audio, video or document input directly.',
   'Generated images remain in the conversation until you accept them into the card gallery. Choosing image roles requires separate acceptance.',
-  'Codex 0.160.1 cannot enforce the required restrictions for an automatic transfer summary. You can write a summary or start without one.',
+  'Codex cannot enforce the required restrictions for an automatic transfer summary. You can write a summary or start without one.',
 ];
 const hash = (text) => createHash('sha256').update(text).digest('hex');
 const canonical = (value) => JSON.stringify(value, (_, v) => v && typeof v === 'object' && !Array.isArray(v) ? Object.fromEntries(Object.keys(v).sort().map((key) => [key, v[key]])) : v);

@@ -175,7 +175,7 @@ async function withClaude(t) {
   return { ...f, sent };
 }
 
-test('tool-disabled Claude receives a Codex-saved output’s actual text in fresh context; an unsupported gallery image still stops the whole union', async (t) => {
+test('Claude receives a Codex-saved output’s actual text in fresh context; an unsupported gallery image still stops the whole union', async (t) => {
   const f = await withClaude(t); const card = await f.card();
   const { output } = await savedDocument(f, card);
   await f.ok('POST', `/api/cards/${card.id}/chat/fresh`, { cancelQueued: true });

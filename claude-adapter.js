@@ -193,7 +193,7 @@ export function createClaudeAdapter({ command = 'claude', args = [], env = proce
           content.push({ type: 'image', source: { type: 'base64', media_type: `image/${format === 'jpg' ? 'jpeg' : format}`, data: bytes.toString('base64') } });
         }
         // Explicit PDF translation: the frozen copy's exact bytes as one base64
-        // document block, never a path for a tool-disabled model to guess at.
+        // document block, rather than a path.
         if (entry.type === 'localDocument') {
           const bytes = await readFile(entry.path);
           if (fileFormat(bytes) !== 'pdf') throw error('configuration-unavailable', 'This document is not a PDF, so Claude cannot receive it as one. Nothing was sent.');

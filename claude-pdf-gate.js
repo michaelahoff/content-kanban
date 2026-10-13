@@ -7,6 +7,7 @@ export const claudePdfEvidence = recorded;
 // The page limit for models without a recorded check.
 const defaultPages = 100;
 
+// Whether two recorded checks cover the same setup, for npm run test:claude-pdf.
 // setup: { harness, model, account: { apiProvider, subscriptionType }, retainedDataProtection }
 export const sameSetup = (a, b) => a.harness === b.harness && a.model === b.model && a.retainedDataProtection === b.retainedDataProtection
   && a.account?.apiProvider === b.account?.apiProvider && a.account?.subscriptionType === b.account?.subscriptionType;

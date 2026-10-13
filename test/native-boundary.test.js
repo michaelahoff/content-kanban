@@ -89,3 +89,19 @@ test('a harness installed under a masked home or temporary directory launches by
   assert.equal(result.code, 0, result.stderr);
   assert.match(result.stdout, /HARNESS_OK/);
 });
+
+test('a native state file outside the native home is a fresh per-launch copy, so a rewrite or truncation never reaches the real file', { skip: !enabled }, async (t) => {
+  const root = await mkdtemp(path.join(tmpdir(), 'frameboard-boundary-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const dataDir = path.join(root, 'data'); const home = path.join(root, 'native');
+  const workspace = path.join(dataDir, 'workspaces', 'card');
+  await mkdir(workspace, { recursive: true }); await mkdir(home);
+  const config = path.join(root, 'config.json');
+  await writeFile(config, '{"mcpServers":{}}');
+  const boundary = await createNativeBoundary({ dataDir, nativeHome: home, nativeFiles: [config] });
+  t.after(() => boundary.close());
+  const result = await boundary.run('/bin/sh', ['-c', `cat '${config}' && : > '${config}' && printf rewritten > '${config}' && cat '${config}'`], { cwd: workspace });
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(result.stdout, '{"mcpServers":{}}rewritten');
+  assert.equal(await readFile(config, 'utf8'), '{"mcpServers":{}}');
+});
