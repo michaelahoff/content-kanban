@@ -65,6 +65,19 @@ export function libraryPaths({ folders, assets }) {
   return { folders: folderPaths, assets: new Map(assets.map((asset) => [asset.id, pathOf(asset.folderId) + asset.filename])) };
 }
 
+// The chosen sources a move into folderId (null: the root) would relocate:
+// not those already there, and never a folder into itself or below.
+export function movableInto(listing, keys, folderId) {
+  const paths = libraryPaths(listing);
+  const target = (folderId && paths.folders.get(folderId)) || '';
+  return keys.map(parseSourceKey).filter((source) => {
+    const item = source && (source.kind === 'folder' ? listing.folders : listing.assets).find((entry) => entry.id === source.id);
+    if (!item) return false;
+    if (source.kind === 'asset') return item.folderId !== folderId;
+    return item.parentId !== folderId && !target.startsWith(paths.folders.get(item.id));
+  });
+}
+
 // Search matches whole paths, case-insensitively; folders come first.
 export function searchLibrary(listing, query) {
   const needle = query.toLocaleLowerCase().trim();

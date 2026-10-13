@@ -23,6 +23,23 @@
   .library-manage:hover { color: var(--text); }
   .library-manage .icon { width: 16px; height: 16px; }
   @media (hover: none) { .library-manage { opacity: 1; } }
+  /* Choosing tiles: a toggle on hover, always shown once anything is chosen. */
+  .library-item { user-select: none; }
+  .library-select { position: absolute; top: 14px; left: 14px; width: 24px; height: 24px; display: grid; place-items: center; border: 1.5px solid var(--text); border-radius: 50%; background: var(--overlay); color: transparent; opacity: 0; transition: opacity .15s; }
+  .library-select .icon { width: 14px; height: 14px; stroke-width: 2.4; }
+  .library-item:hover .library-select, .library-select:focus-visible, .library.selecting .library-select { opacity: 1; }
+  .library-select:hover { color: var(--muted); }
+  .library-item.selected .library-select { opacity: 1; border-color: var(--mark); background: var(--mark); color: var(--on-accent); }
+  @media (hover: none) { .library-select { opacity: 1; } }
+  .library-item.selected .library-asset { border-color: var(--mark); background: var(--mark-wash); }
+  .library-item.dragging { opacity: .45; }
+  .library-item.drop-target .library-asset, .library-crumb.drop-target { border-color: var(--mark); background: var(--mark-wash); color: var(--text); }
+  .library-item.drop-target .library-thumb.folder { color: var(--mark); }
+  .library-bar { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; min-height: 32px; }
+  .library-selection { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+  .library-selection strong { font-weight: 500; }
+  .library-selection-hint { color: var(--muted); margin-right: 4px; }
+  .library-drag-ghost { position: fixed; top: -100px; left: 0; padding: 6px 12px; border-radius: 999px; background: var(--mark); color: var(--on-accent); font: 500 13px/1.2 var(--body-font); }
   .library-thumb.folder { color: var(--muted); }
   .library-thumb.folder .icon { width: 34px; height: 34px; }
   .library-crumbs { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 13px; color: var(--muted); }
@@ -105,5 +122,6 @@
     .library-upload { flex-wrap: wrap; }
     .library-upload-name { flex-basis: 100%; }
     .library-upload-state { flex: 1 1 0; }
+    .library-selection-hint { display: none; }
   }
 }

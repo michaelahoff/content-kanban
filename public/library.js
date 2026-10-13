@@ -1,18 +1,20 @@
 // The project Library tab: organize files in nested folders, upload files and
 // folders or write documents, inspect and download their exact retained
 // versions, and resolve name collisions explicitly. Rename, move and removal
-// keep identities. Restoring an older version saves it as a new current one;
+// keep identities; several chosen files and folders move together, by
+// dragging them onto a folder or with Move to…. Restoring an older version saves it as a new current one;
 // a project copy is a separate file. Document drafts are kept as the user
 // types; only Save publishes.
 import { $, escape, icon, button, iconButton, toast, smallForm, id } from './ui.js';
 import { request, send as sendJSON } from './api.js';
-import { assetPreview, comparePaths, libraryFilename, libraryPaths, searchLibrary, folderHolders, nameConflict, splitExtension, sourceKey } from './library-format.js';
+import { assetPreview, comparePaths, libraryFilename, libraryPaths, searchLibrary, folderHolders, movableInto, nameConflict, parseSourceKey, splitExtension, sourceKey } from './library-format.js';
 import { project, state } from './state.js';
 
 const dialog = $('#library-dialog');
 const previewBytes = 64 * 1024;
-// folder is the open folder's ID; null is the Library root.
-const library = { projectId: null, folders: [], assets: [], drafts: [], folder: null, loaded: false, error: '', query: '', uploads: [] };
+// folder is the open folder's ID; null is the Library root. chosen holds
+// the source keys of the chosen tiles; anchor is where a Shift range starts.
+const library = { projectId: null, folders: [], assets: [], drafts: [], folder: null, loaded: false, error: '', query: '', uploads: [], chosen: new Set(), anchor: null };
 let inspected = null;
 // The open document editor: its draft as last kept on the server, plus local state.
 let editing = null;
@@ -41,13 +43,14 @@ const archived = () => Boolean(project()?.archivedAt);
 async function load() {
   const projectId = project()?.id;
   if (!projectId) return;
-  if (library.projectId !== projectId) Object.assign(library, { projectId, folders: [], assets: [], drafts: [], folder: null, loaded: false, error: '', query: '', uploads: [] });
+  if (library.projectId !== projectId) Object.assign(library, { projectId, folders: [], assets: [], drafts: [], folder: null, loaded: false, error: '', query: '', uploads: [], chosen: new Set(), anchor: null });
   try {
     const { folders, assets, drafts } = await request(base(projectId));
     if (library.projectId !== projectId) return;
     Object.assign(library, { folders, assets, drafts, loaded: true, error: '' });
     // The open folder was removed, perhaps in another tab.
     if (!folders.some((folder) => folder.id === library.folder)) library.folder = null;
+    for (const key of library.chosen) { const { kind, id: itemId } = parseSourceKey(key); if (!libraryItem(kind, itemId)) library.chosen.delete(key); }
   } catch (error) { library.error = error.message; }
 }
 
@@ -66,21 +69,35 @@ function thumbnail(asset) {
   if (preview?.kind === 'image') return `<div class="library-thumb"><img src="${contentURL(asset.current.id, true)}" alt="" loading="lazy" draggable="false"></div>`;
   return `<div class="library-thumb file"><span>${escape(extension(asset.filename))}</span></div>`;
 }
+// A tile's select toggle; once anything is chosen, a click on a tile chooses too.
+const selectToggle = (key, name) => archived() ? '' : `<button type="button" class="library-select" data-action="library-select" aria-pressed="${library.chosen.has(key)}" aria-label="Select ${escape(name)}" title="Select">${icon('check')}</button>`;
+// Live files and folders can be dragged onto a folder to move them.
+const tileAttributes = (key) => `data-select="${escape(key)}"${archived() ? '' : ' draggable="true"'}`;
+const tileClass = (key) => `library-item${library.chosen.has(key) ? ' selected' : ''}`;
 const manage = (kind, item, name) => archived() ? '' : `<button type="button" class="library-manage" data-action="library-manage" data-kind="${kind}" data-id="${escape(item.id)}" aria-label="Manage ${escape(name)}" title="Rename, move or remove">${icon('more')}</button>`;
 // While searching, a tile shows where it lives.
 function assetMarkup(asset, path) {
-  return `<li class="library-item"><button class="library-asset" data-action="library-inspect" data-id="${escape(asset.id)}" aria-label="Inspect ${escape(asset.filename)}">${thumbnail(asset)}
-    <span class="library-name">${escape(asset.filename)}</span><span class="library-meta">${path ? `${escape(path)} · ` : ''}v${asset.current.number} · ${formatSize(asset.current.size)}${asset.current.available ? '' : ' · <strong>Unavailable</strong>'}${draftFor(asset) ? ' · <em>Draft</em>' : ''}</span></button>${manage('asset', asset, asset.filename)}</li>`;
+  const key = sourceKey({ kind: 'asset', id: asset.id });
+  return `<li class="${tileClass(key)}" ${tileAttributes(key)}><button class="library-asset" data-action="library-inspect" data-id="${escape(asset.id)}" aria-label="Inspect ${escape(asset.filename)}">${thumbnail(asset)}
+    <span class="library-name">${escape(asset.filename)}</span><span class="library-meta">${path ? `${escape(path)} · ` : ''}v${asset.current.number} · ${formatSize(asset.current.size)}${asset.current.available ? '' : ' · <strong>Unavailable</strong>'}${draftFor(asset) ? ' · <em>Draft</em>' : ''}</span></button>${selectToggle(key, asset.filename)}${manage('asset', asset, asset.filename)}</li>`;
 }
 function folderMarkup(folder, paths, path) {
   const files = library.assets.filter((asset) => paths.assets.get(asset.id).startsWith(paths.folders.get(folder.id))).length;
-  return `<li class="library-item"><button class="library-asset library-folder" data-action="library-open-folder" data-id="${escape(folder.id)}" aria-label="Open folder ${escape(folder.name)}"><div class="library-thumb folder">${icon('folder')}</div>
-    <span class="library-name">${escape(folder.name)}</span><span class="library-meta">${path ? `${escape(path)} · ` : ''}${files} ${files === 1 ? 'file' : 'files'}</span></button>${manage('folder', folder, folder.name)}</li>`;
+  const key = sourceKey({ kind: 'folder', id: folder.id });
+  return `<li class="${tileClass(key)}" ${tileAttributes(key)} data-folder-drop="${escape(folder.id)}"><button class="library-asset library-folder" data-action="library-open-folder" data-id="${escape(folder.id)}" aria-label="Open folder ${escape(folder.name)}"><div class="library-thumb folder">${icon('folder')}</div>
+    <span class="library-name">${escape(folder.name)}</span><span class="library-meta">${path ? `${escape(path)} · ` : ''}${files} ${files === 1 ? 'file' : 'files'}</span></button>${selectToggle(key, folder.name)}${manage('folder', folder, folder.name)}</li>`;
 }
 function crumbs(paths) {
   const chain = [];
   for (let folder = library.folders.find((entry) => entry.id === library.folder); folder; folder = library.folders.find((entry) => entry.id === folder.parentId)) chain.unshift(folder);
-  return `<nav class="library-crumbs" aria-label="Folder">${button('library-open-folder', 'Library', null, 'library-crumb', 'data-id=""')}${chain.map((folder) => `<span aria-hidden="true">/</span>${button('library-open-folder', escape(folder.name), null, 'library-crumb', `data-id="${escape(folder.id)}" title="${escape(paths.folders.get(folder.id))}"`)}`).join('')}</nav>`;
+  // Dropping onto a crumb moves items up to that folder.
+  return `<nav class="library-crumbs" aria-label="Folder">${button('library-open-folder', 'Library', null, 'library-crumb', 'data-id="" data-folder-drop=""')}${chain.map((folder) => `<span aria-hidden="true">/</span>${button('library-open-folder', escape(folder.name), null, 'library-crumb', `data-id="${escape(folder.id)}" data-folder-drop="${escape(folder.id)}" title="${escape(paths.folders.get(folder.id))}"`)}`).join('')}</nav>`;
+}
+function selectionBar() {
+  const count = library.chosen.size;
+  if (!count || archived()) return '';
+  return `<div class="library-selection" role="status"><strong>${count} selected</strong><span class="library-selection-hint">Drag onto a folder to move</span>
+    ${button('library-move-selection', 'Move to…', 'folder', 'button small secondary')}${button('library-clear-selection', 'Clear', null, 'button small secondary')}</div>`;
 }
 // A new document's draft is not a Library file until its first Save.
 function draftMarkup(draft) {
@@ -108,6 +125,7 @@ function paint() {
   // A new document's draft is saved at the root, so it shows there and in search.
   const drafts = library.drafts.filter((draft) => !draft.assetId && (search ? draft.filename.toLocaleLowerCase().includes(search.toLocaleLowerCase()) : library.folder === null));
   const finished = library.uploads.length && library.uploads.every((entry) => !['waiting', 'uploading'].includes(entry.status));
+  container.classList.toggle('selecting', library.chosen.size > 0);
   container.innerHTML = `<div class="library-head"><p class="library-hint">${archived() ? 'This project is archived. Its files stay readable and downloadable.' : 'Upload any file or folder, or write a document. Frameboard keeps the exact original and every saved version.'}</p>
       <div class="library-tools"><label class="search">${icon('search')}<input id="library-search" type="search" placeholder="Find a file or folder…" aria-label="Find a file or folder" value="${escape(library.query)}"></label>
       ${button('library-removed', 'Removed files', null, 'button secondary')}
@@ -115,7 +133,7 @@ function paint() {
       <label class="button primary library-pick">${icon('upload')}Upload files<input id="library-files" type="file" multiple></label>`}</div></div>
     ${library.uploads.length ? `<section class="library-uploads" aria-label="Uploads"><div class="library-uploads-head"><h2>Uploads</h2>${finished ? button('library-clear-uploads', 'Clear', null, 'button small secondary') : ''}</div><ul>${library.uploads.map(uploadMarkup).join('')}</ul></section>` : ''}
     ${library.error ? `<p class="library-error" role="alert">${escape(library.error)}</p>` : ''}
-    ${search ? '' : crumbs(paths)}
+    ${search && !library.chosen.size ? '' : `<div class="library-bar">${search ? '<span></span>' : crumbs(paths)}${selectionBar()}</div>`}
     <div class="library-drop" data-library-drop>${!library.loaded && !library.error ? '<p class="library-empty">Loading files…</p>'
       : tiles.length || drafts.length ? `<ul class="library-grid">${drafts.map(draftMarkup).join('')}${tiles.join('')}</ul>`
         : `<div class="library-empty">${icon(search ? 'search' : 'upload')}<p>${search ? 'No matching files or folders' : library.folder ? 'This folder is empty' : 'No files yet'}</p><span>${search ? 'Try another search.' : archived() ? '' : 'Drop files or folders here, or choose Upload.'}</span></div>`}</div>`;
@@ -415,9 +433,114 @@ function remove(kind, itemId) {
   });
 }
 
+// --- Choosing and moving several items ---------------------------------------
+// A click on the select toggle, or with Ctrl, Cmd or Shift, or while anything
+// is chosen, chooses instead of opening. Shift adds the range from the last
+// tile toggled, in the order shown.
+function choose(key, range) {
+  const order = [...document.querySelectorAll('#library [data-select]')].map((node) => node.dataset.select);
+  const from = order.indexOf(library.anchor); const to = order.indexOf(key);
+  if (range && from !== -1 && to !== -1) order.slice(Math.min(from, to), Math.max(from, to) + 1).forEach((entry) => library.chosen.add(entry));
+  else { library.chosen[library.chosen.has(key) ? 'delete' : 'add'](key); library.anchor = key; }
+  paint();
+}
+const clearSelection = () => { library.chosen.clear(); library.anchor = null; };
+const itemName = ({ kind, id: itemId }) => { const item = libraryItem(kind, itemId); return kind === 'folder' ? item.name : item.filename; };
+// Each item moves on its own, so a taken name holds back only that item; the
+// server refuses it, never merges. Moved items leave the choice.
+async function moveInto(keys, folderId) {
+  const sources = movableInto(library, keys, folderId);
+  const where = libraryPaths(library).folders.get(folderId) || 'Library';
+  if (!sources.length) return toast(`Already in ${where}.`);
+  const refused = [];
+  for (const source of sources) {
+    const folder = source.kind === 'folder';
+    try { await sendJSON('PATCH', `${base()}/${folder ? 'folders' : 'assets'}/${encodeURIComponent(source.id)}`, folder ? { parentId: folderId } : { folderId }); library.chosen.delete(sourceKey(source)); }
+    catch (error) { refused.push(`${itemName(source)}: ${error.message}`); }
+  }
+  await reload();
+  const moved = sources.length - refused.length;
+  toast(refused.length ? `Moved ${moved} of ${sources.length} to ${where}. ${refused.join(' ')}` : `Moved ${moved} ${moved === 1 ? 'item' : 'items'} to ${where}.`);
+}
+// The keyboard way to move: every folder a chosen folder is not, or holds.
+function moveSelection() {
+  const keys = [...library.chosen]; const paths = libraryPaths(library);
+  const chosenFolders = keys.map(parseSourceKey).filter((source) => source.kind === 'folder').map((source) => paths.folders.get(source.id));
+  const targets = library.folders.filter((folder) => !chosenFolders.some((path) => paths.folders.get(folder.id).startsWith(path)))
+    .sort((a, b) => comparePaths(paths.folders.get(a.id), paths.folders.get(b.id)));
+  smallForm({
+    title: `Move ${keys.length} ${keys.length === 1 ? 'item' : 'items'}`, description: 'Moving keeps each item’s identity and every version.',
+    fields: `<label class="form-label" for="library-destination">Location</label><select class="form-input" id="library-destination" name="destination">
+      <option value="">Library</option>${targets.map((entry) => `<option value="${escape(entry.id)}">${escape(paths.folders.get(entry.id))}</option>`).join('')}</select>`,
+    submit: 'Move',
+    onSubmit: (data) => moveInto(keys, data.get('destination') || null),
+  });
+}
+
+// Dragging a chosen tile carries every chosen item; any other tile goes alone.
+// Folder tiles and the folder crumbs take the drop.
+const dragType = 'application/x-frameboard-library-items';
+let dragging = null;
+let verdicts = new Map();
+const dropZone = (event) => {
+  const zone = dragging && event.target.closest?.('#library [data-folder-drop]');
+  if (!zone) return null;
+  const folderId = zone.dataset.folderDrop || null;
+  if (!verdicts.has(folderId)) verdicts.set(folderId, movableInto(library, dragging, folderId).length > 0);
+  return verdicts.get(folderId) ? zone : null;
+};
+const clearDropZones = () => document.querySelectorAll('#library .drop-target').forEach((node) => node.classList.remove('drop-target'));
+document.addEventListener('dragstart', (event) => {
+  const tile = event.target.closest?.('#library [data-select]');
+  if (!tile || archived()) return;
+  dragging = library.chosen.has(tile.dataset.select) ? [...library.chosen] : [tile.dataset.select];
+  verdicts = new Map();
+  event.dataTransfer.setData(dragType, dragging.join('\n'));
+  event.dataTransfer.effectAllowed = 'move';
+  document.querySelectorAll('#library [data-select]').forEach((node) => node.classList.toggle('dragging', dragging.includes(node.dataset.select)));
+  if (dragging.length > 1) {
+    const ghost = document.createElement('div');
+    ghost.className = 'library-drag-ghost'; ghost.textContent = `${dragging.length} items`;
+    document.body.append(ghost);
+    event.dataTransfer.setDragImage(ghost, 16, 16);
+    setTimeout(() => ghost.remove());
+  }
+});
+for (const type of ['dragenter', 'dragover']) {
+  document.addEventListener(type, (event) => {
+    if (!dragging) return;
+    const zone = dropZone(event);
+    if (!zone?.classList.contains('drop-target')) clearDropZones();
+    if (!zone) return;
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+    zone.classList.add('drop-target');
+  });
+}
+document.addEventListener('drop', (event) => {
+  const zone = dropZone(event);
+  if (!zone) return;
+  event.preventDefault();
+  void moveInto(dragging, zone.dataset.folderDrop || null);
+});
+document.addEventListener('dragend', () => {
+  dragging = null;
+  clearDropZones();
+  document.querySelectorAll('#library .dragging').forEach((node) => node.classList.remove('dragging'));
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape' || !library.chosen.size || !$('#library') || document.querySelector('dialog[open]')) return;
+  clearSelection(); paint();
+});
+
 document.addEventListener('click', async (event) => {
   const target = event.target.closest('[data-action^="library-"]');
   if (!target) return;
+  const tile = target.closest('#library [data-select]');
+  if (tile && !archived() && target.dataset.action !== 'library-manage' && (target.dataset.action === 'library-select' || event.shiftKey || event.ctrlKey || event.metaKey || library.chosen.size)) {
+    event.preventDefault();
+    return choose(tile.dataset.select, event.shiftKey);
+  }
   const action = target.dataset.action;
   if (action === 'library-inspect') void inspect(target.dataset.id);
   if (action === 'library-close') dialog.close();
@@ -428,7 +551,9 @@ document.addEventListener('click', async (event) => {
   if (action === 'library-discard-draft') discardDraft();
   if (action === 'library-keep-mine') void keepMine();
   if (action === 'library-load-theirs') void loadTheirs();
-  if (action === 'library-open-folder') { library.folder = target.dataset.id || null; library.query = ''; paint(); }
+  if (action === 'library-open-folder') { library.folder = target.dataset.id || null; library.query = ''; clearSelection(); paint(); }
+  if (action === 'library-move-selection') moveSelection();
+  if (action === 'library-clear-selection') { clearSelection(); paint(); }
   if (action === 'library-new-folder') newFolder();
   if (action === 'library-manage') organize(target.dataset.kind, target.dataset.id);
   if (action === 'library-remove') remove(target.dataset.kind, target.dataset.id);
