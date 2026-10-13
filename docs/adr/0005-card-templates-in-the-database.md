@@ -15,7 +15,7 @@ Field keys are the identity of a field. A template edit can change a field's lab
 
 ## Why the form patches the Markdown instead of replacing it
 
-ADR 0003 keeps playbooks on disk so the user can edit them with any tool, including other agents, with comments and their own ordering. A form that serialized the whole settings block would destroy that on every click. Instead each control change goes through `withSetting(text, key, value)`, which rewrites only that key's lines and refuses if the result would change anything else, following the pattern `withAssets` set for the Library picker. A draft whose settings cannot be parsed offers only the raw editor, with the errors shown.
+ADR 0003 keeps playbooks on disk so the user can edit them with any tool, including other agents, with comments and their own ordering. A form that serialized the whole settings block would destroy that on every click. Instead each control change goes through `withSetting(text, key, value)`, which rewrites only that key's lines and refuses if the result would change anything else, following the pattern `withAssets` set for the Library picker. (A model picked while no provider is set writes `provider` and `model` together through `withSettings`, which applies `withSetting` once per key.) A draft whose settings cannot be parsed offers only the raw editor, with the errors shown.
 
 ## Considered options
 

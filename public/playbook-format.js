@@ -11,6 +11,7 @@ export const maxDocumentLength = 200000;
 export const runModes = ['on-enter', 'manual', 'off'];
 export const conversationModes = ['continue', 'fresh'];
 export const providers = ['codex', 'claude'];
+export const providerNames = { codex: 'Codex', claude: 'Claude' };
 export const knownKeys = ['lane', 'run', 'provider', 'model', 'context', 'may_edit', 'set', 'conversation', 'skills', 'assets'];
 export const skillName = /^[a-z0-9][a-z0-9_-]{0,79}$/i;
 const notesInPrompt = 20000;

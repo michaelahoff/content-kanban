@@ -7,7 +7,7 @@ import { $, escape, icon, toast, smallForm } from './ui.js';
 import { request } from './api.js';
 import { project, flow, flowOfLane, flowTemplate, loadPlaybooks, savePlaybook, deletePlaybook, previewLaneRun, checkPlaybookAssets, loadLibraryListing } from './state.js';
 import { renderBoard } from './board.js';
-import { parseDocument, playbookSettings, describeSettings, playbookTemplate, skillTemplate, setFields, skillName, withAssets, withBody } from './playbook-format.js';
+import { parseDocument, playbookSettings, describeSettings, playbookTemplate, skillTemplate, setFields, skillName, withAssets, withBody, providerNames } from './playbook-format.js';
 import { deliveryDescription, parseSourceKey, sourceKey } from './library-format.js';
 import { libraryChoices, libraryPickerFields } from './library.js';
 import { contextFields } from './chat-context.js';
@@ -23,14 +23,19 @@ let conflicts = new Set();
 let resolutions = new Map();
 // The provider catalog for model suggestions, loaded once per open; null until it arrives.
 let models = null;
-// Typed text (a set-row value or the model) not yet written to the draft,
-// and the footer as last rendered.
+// Typed text (a set-row value) not yet written to the draft, and the footer
+// as last rendered.
 let setTimer = null; let pending = null; let lastFooter = '';
-const typedActions = ['form-set-value', 'form-model'];
+const typedActions = ['form-set-value'];
 const modeKey = 'frameboard-playbook-mode';
 // Lane playbooks open as a form unless the user chose Markdown last time.
 const mode = () => { try { return localStorage.getItem(modeKey) === 'markdown' ? 'markdown' : 'form'; } catch { return 'form'; } };
 const setMode = (value) => { try { localStorage.setItem(modeKey, value); } catch { /* Optional display preference. */ } };
+// The form's help text stays hidden, so the sheet stays short, until Hints is
+// turned on; that choice is remembered too.
+const hintsKey = 'frameboard-playbook-hints';
+const hints = () => { try { return localStorage.getItem(hintsKey) === 'on'; } catch { return false; } };
+const setHints = (value) => { try { localStorage.setItem(hintsKey, value ? 'on' : 'off'); } catch { /* Optional display preference. */ } };
 const emptyTemplate = { id: '', name: '', title: { label: 'Card title', max: 500 }, fields: [], imageRoles: [] };
 // The flow whose playbook folder is open: the board's, or the given lane's.
 let editing = null;
@@ -83,15 +88,15 @@ export async function openPlaybooks({ laneId = null } = {}) {
 function render() {
   renderNav(); renderMain(); renderInspector(); renderFooter();
 }
-// Model suggestions come from the shared catalog; the form renders without
-// them until they arrive, then once more with them.
+// The model choices come from the shared catalog, as in the card chat; the
+// form renders without them until they arrive, then once more with them.
 async function loadModels() {
   models = null;
   try { models = (await request('/api/models')).providers ?? []; } catch { models = []; }
   if (dialog.open) refreshForm();
 }
-const enabledModels = () => (models ?? []).filter((entry) => entry.enabled)
-  .flatMap((entry) => (entry.discovery?.models ?? []).map((model) => ({ provider: entry.provider, id: model.id, displayName: model.displayName ?? model.id })));
+const enabledModels = () => (models === null ? null : models.filter((entry) => entry.enabled)
+  .flatMap((entry) => (entry.discovery?.models ?? []).map((model) => ({ provider: entry.provider, id: model.id, displayName: model.displayName ?? model.id }))));
 // Skills in the folder, saved or drafted, by name.
 const skillNames = () => [...new Set([...saved.keys(), ...drafts.keys()].filter((entry) => entry.startsWith('skills/')).map((entry) => entry.slice(7, -3)))].sort();
 
@@ -155,7 +160,8 @@ function renderMain() {
 // A textarea drops one newline right after its tag, so each gets a spare one.
 const textareaMarkup = (path) => `<label class="sr-only" for="playbook-text">${escape(path)}</label><textarea id="playbook-text" class="playbook-text" spellcheck="false" maxlength="200000">\n${escape(textOf(path))}</textarea>`;
 const skillBox = () => $('#playbook-skill-name', dialog);
-const modesMarkup = () => `<div class="playbook-modes" role="group" aria-label="Editing mode">${[['form', 'Form'], ['markdown', 'Markdown']].map(([value, label]) => `<button type="button" class="chip" data-playbook-action="mode" data-mode="${value}" aria-pressed="${mode() === value}">${label}</button>`).join('')}</div>`;
+const modesMarkup = () => `<div class="playbook-modes"><div role="group" aria-label="Editing mode">${[['form', 'Form'], ['markdown', 'Markdown']].map(([value, label]) => `<button type="button" class="chip" data-playbook-action="mode" data-mode="${value}" aria-pressed="${mode() === value}">${label}</button>`).join('')}</div>
+  ${mode() === 'form' ? `<button type="button" class="chip playbook-hints-toggle" id="playbook-hints" data-playbook-action="hints" aria-pressed="${hints()}">${icon('info')}Hints</button>` : ''}</div>`;
 // The form needs settings it can read; otherwise the errors and the Markdown.
 function formMarkup(path) {
   const parsed = parseDocument(textOf(path));
@@ -164,9 +170,8 @@ function formMarkup(path) {
 }
 function formContext(path) {
   const text = textOf(path); const parsed = parseDocument(text); const settings = playbookSettings(parsed, template());
-  const lane = selection.kind === 'lane' ? editing.lanes.find((item) => item.id === selection.laneId) : null;
-  return { text, template: template(), document: parsed, settings, kind: selection.kind, lane: lane ? { id: lane.id, name: lane.name } : null,
-    lanes: editing.lanes.map((item) => ({ id: item.id, name: item.name, taken: Boolean(laneDocument(item.id)) })), skillNames: skillNames(), models: enabledModels(), libraryMarkup: libraryMarkup(settings) };
+  return { text, template: template(), document: parsed, settings, kind: selection.kind,
+    lanes: editing.lanes.map((item) => ({ id: item.id, name: item.name, taken: Boolean(laneDocument(item.id)) })), skillNames: skillNames(), models: enabledModels(), libraryMarkup: libraryMarkup(settings), hints: hints() };
 }
 // Refreshes the form alone, e.g. when a Library check completes or the
 // instructions mention another skill, unless the user is working in it.
@@ -223,7 +228,7 @@ function renderInspector() {
     ${settings.warnings.length ? `<ul class="playbook-warnings">${settings.warnings.map((warning) => `<li>${escape(warning)}</li>`).join('')}</ul>` : ''}
     <dl class="playbook-facts">
       <dt>When</dt><dd>${!settings.instructions ? 'No instructions, so no agent runs' : settings.run === 'on-enter' ? 'Each time a card enters this lane' : settings.run === 'manual' ? 'When you choose Run playbook on a card' : 'Turned off'}</dd>
-      <dt>Agent</dt><dd>${settings.provider ? (settings.provider === 'claude' ? 'Claude' : 'Codex') : 'The card chat’s provider'}${settings.model ? ` · ${escape(settings.model)}` : ' · its selected or default model'}</dd>
+      <dt>Agent</dt><dd>${settings.provider ? providerNames[settings.provider] : 'The card chat’s provider'}${settings.model ? ` · ${escape(settings.model)}` : ' · its selected or default model'}</dd>
       <dt>Conversation</dt><dd>${settings.conversation === 'fresh' ? 'Starts fresh context each run' : 'Continues the card chat'}</dd>
       <dt>Sends</dt><dd>${escape([...settings.selections.fields.map(label), `All card photos (with ${roleWords} labels)`, ...(settings.assets.length ? [`then ${settings.assets.length} Library source${settings.assets.length === 1 ? '' : 's'} listed below`] : []), 'then the card\'s own Library files'].join(', '))}</dd>
       <dt>May edit</dt><dd>${escape(settings.mayEdit.map(label).join(', ') || 'Nothing directly; changes become proposals')}</dd>
@@ -372,7 +377,7 @@ function formChange(target, action, data) {
   if (typedActions.includes(action)) { renderNav(); renderInspector(); renderFooter(); setTimeout(refreshForm, 0); } else render();
   return true;
 }
-// Writes typed text (a set-row value or the model) now, instead of after the pause.
+// Writes typed text (a set-row value) now, instead of after the pause.
 function flushPending(target = pending) {
   clearTimeout(setTimer); setTimer = null; pending = null;
   if (!target?.isConnected) return;
@@ -399,7 +404,7 @@ dialog.addEventListener('input', (event) => {
   dialog.inspectTimer = setTimeout(() => { renderNav(); renderInspector(); renderFooter(); refreshForm(); }, 150);
   renderFooter();
 });
-// Selects, checkboxes and the model field write when their value is committed.
+// Selects and checkboxes write when their value is committed.
 dialog.addEventListener('change', (event) => {
   const target = event.target; const action = target.dataset.playbookAction;
   // Settings fixed in the Markdown fallback: the form takes over once the textarea is left.
@@ -416,10 +421,11 @@ dialog.addEventListener('click', async (event) => {
   const target = event.target.closest('[data-playbook-action]');
   if (!target) return;
   const action = target.dataset.playbookAction;
-  if (busy && !['select', 'copy-folder', 'close', 'mode'].includes(action)) return;
+  if (busy && !['select', 'copy-folder', 'close', 'mode', 'hints'].includes(action)) return;
   flushPending();
   try {
     if (action === 'mode') { setMode(target.dataset.mode); renderMain(); $('#playbook-text')?.focus(); return; }
+    if (action === 'hints') { setHints(!hints()); renderMain(); return; }
     // Form buttons; the form's inputs and selects are handled on change.
     if (action.startsWith('form-')) {
       if (target.tagName !== 'BUTTON') return;
