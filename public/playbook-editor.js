@@ -7,7 +7,7 @@ import { $, escape, icon, toast, smallForm } from './ui.js';
 import { request } from './api.js';
 import { project, flow, flowOfLane, flowTemplate, loadPlaybooks, savePlaybook, deletePlaybook, previewLaneRun, checkPlaybookAssets, loadLibraryListing } from './state.js';
 import { renderBoard } from './board.js';
-import { parseDocument, playbookSettings, describeSettings, playbookTemplate, skillTemplate, setFields, skillName, withAssets, withBody } from './playbook-format.js';
+import { parseDocument, playbookSettings, describeSettings, playbookTemplate, skillTemplate, setFields, skillName, withAssets, withBody, providerNames } from './playbook-format.js';
 import { deliveryDescription, parseSourceKey, sourceKey } from './library-format.js';
 import { libraryChoices } from './library.js';
 import { contextFields } from './chat-context.js';
@@ -170,8 +170,7 @@ function formMarkup(path) {
 }
 function formContext(path) {
   const text = textOf(path); const parsed = parseDocument(text); const settings = playbookSettings(parsed, template());
-  const lane = selection.kind === 'lane' ? editing.lanes.find((item) => item.id === selection.laneId) : null;
-  return { text, template: template(), document: parsed, settings, kind: selection.kind, lane: lane ? { id: lane.id, name: lane.name } : null,
+  return { text, template: template(), document: parsed, settings, kind: selection.kind,
     lanes: editing.lanes.map((item) => ({ id: item.id, name: item.name, taken: Boolean(laneDocument(item.id)) })), skillNames: skillNames(), models: enabledModels(), libraryMarkup: libraryMarkup(settings), hints: hints() };
 }
 // Refreshes the form alone, e.g. when a Library check completes or the
@@ -229,7 +228,7 @@ function renderInspector() {
     ${settings.warnings.length ? `<ul class="playbook-warnings">${settings.warnings.map((warning) => `<li>${escape(warning)}</li>`).join('')}</ul>` : ''}
     <dl class="playbook-facts">
       <dt>When</dt><dd>${!settings.instructions ? 'No instructions, so no agent runs' : settings.run === 'on-enter' ? 'Each time a card enters this lane' : settings.run === 'manual' ? 'When you choose Run playbook on a card' : 'Turned off'}</dd>
-      <dt>Agent</dt><dd>${settings.provider ? (settings.provider === 'claude' ? 'Claude' : 'Codex') : 'The card chat’s provider'}${settings.model ? ` · ${escape(settings.model)}` : ' · its selected or default model'}</dd>
+      <dt>Agent</dt><dd>${settings.provider ? providerNames[settings.provider] : 'The card chat’s provider'}${settings.model ? ` · ${escape(settings.model)}` : ' · its selected or default model'}</dd>
       <dt>Conversation</dt><dd>${settings.conversation === 'fresh' ? 'Starts fresh context each run' : 'Continues the card chat'}</dd>
       <dt>Sends</dt><dd>${escape([...settings.selections.fields.map(label), `All card photos (with ${roleWords} labels)`, ...(settings.assets.length ? [`then ${settings.assets.length} Library source${settings.assets.length === 1 ? '' : 's'} listed below`] : [])].join(', '))}</dd>
       <dt>May edit</dt><dd>${escape(settings.mayEdit.map(label).join(', ') || 'Nothing directly; changes become proposals')}</dd>

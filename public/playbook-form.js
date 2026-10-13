@@ -9,20 +9,20 @@
 // rest of the file stays byte for byte as it is.
 //
 // context = { text, template, document (parseDocument result), settings
-//   (playbookSettings result), kind: 'lane' | 'file', lane: { id, name } | null,
+//   (playbookSettings result), kind: 'lane' | 'file',
 //   lanes: [{ id, name, taken }], skillNames: [...], models: [{ provider, id,
 //   displayName }] or null until the catalog has loaded, libraryMarkup: HTML
 //   for the Library files block,
 //   hints: whether the help text under the rows is shown }.
-import { escape } from './ui.js';
+import { escape, icon } from './ui.js';
 import { contextFields, setFields, imageRoles, fieldKey } from './card-template.js';
-import { withSetting, withSettings, skillName, knownKeys } from './playbook-format.js';
+import { withSetting, withSettings, skillName, knownKeys, providers, providerNames } from './playbook-format.js';
 
 const listOf = (value) => (Array.isArray(value) ? value.map(String) : typeof value === 'string' && value.trim() ? value.split(',').map((item) => item.trim()) : []);
 const cleanSkill = (name) => String(name).replace(/^skills\//i, '').replace(/\.md$/i, '');
 // A playbook names an image role by its key, and the display image by "display".
 const roleWord = (role) => role.aliases[0] ?? role.key;
-const check = (id, action, label, { checked = false, disabled = false, attrs = '', note = '' } = {}) => `<label class="playbook-check"><input type="checkbox" id="${id}" data-playbook-action="${action}" ${attrs} ${checked ? 'checked' : ''} ${disabled ? 'disabled' : ''}>${label}${note ? ` <small>${note}</small>` : ''}</label>`;
+const check = (id, action, label, { checked = false, disabled = false, attrs = '', note = '' } = {}) => `<label class="playbook-check"><input type="checkbox" id="${id}" data-playbook-action="${action}" ${attrs} ${checked ? 'checked' : ''} ${disabled ? 'disabled' : ''}>${icon('check')}${label}${note ? ` <small>${note}</small>` : ''}</label>`;
 const option = (value, label, selected, disabled = false) => `<option value="${escape(value)}" ${selected ? 'selected' : ''} ${disabled ? 'disabled' : ''}>${escape(label)}</option>`;
 
 // A form row: the label column names one control (label for=) or a group of
@@ -60,15 +60,14 @@ function runRow({ settings }) {
 // provider's grouped by provider until one is chosen. A model the list lacks
 // (typed in Markdown, or from a provider now disabled) stays selected and is
 // marked unavailable; until the catalog arrives (models null) it is shown as is.
-const providerName = (provider) => (provider === 'claude' ? 'Claude' : 'Codex');
 function agentRow({ settings, models }) {
-  const providers = [option('', "Card chat's provider", !settings.provider), option('codex', 'Codex', settings.provider === 'codex'), option('claude', 'Claude', settings.provider === 'claude')];
-  const provider = `<select id="playbook-field-provider" class="form-input" data-playbook-action="form-provider" aria-label="Provider">${providers.join('')}</select>`;
+  const names = [option('', "Card chat's provider", !settings.provider), ...providers.map((name) => option(name, providerNames[name], settings.provider === name))];
+  const provider = `<select id="playbook-field-provider" class="form-input" data-playbook-action="form-provider" aria-label="Provider">${names.join('')}</select>`;
   const current = settings.model ?? '';
   const choices = (models ?? []).filter((model) => !settings.provider || model.provider === settings.provider);
   const options = (list) => list.map((model) => option(model.id, model.displayName ?? model.id, model.id === current)).join('');
   const grouped = settings.provider ? options(choices)
-    : ['codex', 'claude'].map((name) => { const own = choices.filter((model) => model.provider === name); return own.length ? `<optgroup label="${providerName(name)}">${options(own)}</optgroup>` : ''; }).join('');
+    : providers.map((name) => { const own = choices.filter((model) => model.provider === name); return own.length ? `<optgroup label="${providerNames[name]}">${options(own)}</optgroup>` : ''; }).join('');
   const unlisted = current && !choices.some((model) => model.id === current) ? option(current, models ? `${current} (unavailable)` : current, true, Boolean(models)) : '';
   const model = `<select id="playbook-field-model" class="form-input" data-playbook-action="form-model" aria-label="Model">${option('', "Card chat's model", !current)}${grouped}${unlisted}</select>`;
   return row('agent', 'Agent', `<div class="playbook-agent">${provider}${model}</div>`, { help: 'The provider and one of the models saved in Settings. Leave them as they are to use the card chat’s.' });
@@ -96,7 +95,7 @@ const setResolved = (template, entries) => entries.map(([name]) => fieldKey(setF
 function setRow({ template, document }) {
   const raw = document.data.set;
   if (raw !== undefined && raw !== '' && (!raw || typeof raw !== 'object' || Array.isArray(raw))) {
-    return row('set', 'On entry', '<p class="playbook-missing">set: needs one “field: value” line per field. Fix it in Markdown.</p>');
+    return row('set', 'Set on entry', '<p class="playbook-missing">set: needs one “field: value” line per field. Fix it in Markdown.</p>');
   }
   const fields = setFields(template);
   const entries = setEntries(document); const keys = setResolved(template, entries);
@@ -110,7 +109,7 @@ function setRow({ template, document }) {
   });
   const free = fields.some((field) => !keys.includes(field.key));
   const add = `<button type="button" class="button small secondary" data-playbook-action="form-set-add" ${free ? '' : 'disabled'}>Add field</button>`;
-  return row('set', 'On entry', `${rows.join('')}${add}`, { help: 'Values written to the card the moment it enters the lane. Undo last move reverses them.' });
+  return row('set', 'Set on entry', `${rows.join('')}${add}`, { help: 'Values written to the card the moment it enters the lane. Undo last move reverses them.' });
 }
 
 // skills: the explicit list, plus every skill the instructions mention by

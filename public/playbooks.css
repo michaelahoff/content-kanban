@@ -49,8 +49,7 @@
   .playbook-modes .chip { min-height: 30px; padding: 0 14px; font-size: 13px; }
   .playbook-modes .playbook-hints-toggle { gap: 5px; padding: 0 12px 0 10px; background: transparent; color: var(--muted); }
   .playbook-modes .playbook-hints-toggle .icon { width: 15px; height: 15px; }
-  .playbook-modes .playbook-hints-toggle:hover { background: var(--raised); color: var(--text); }
-  .playbook-modes .playbook-hints-toggle[aria-pressed="true"] { background: var(--raised); color: var(--text); }
+  .playbook-modes .playbook-hints-toggle:hover, .playbook-modes .playbook-hints-toggle[aria-pressed="true"] { background: var(--raised); color: var(--text); }
   .playbook-main .playbook-problems { flex-shrink: 0; margin: 16px 22px 0; }
   .playbook-main .playbook-problems p { margin-top: 6px; font-size: 13px; }
 
@@ -61,14 +60,13 @@
   .playbook-form { container: playbook-form / inline-size; display: grid; flex-shrink: 0; padding: 2px 22px 0; font-size: 13px; line-height: 1.5; color: var(--text); }
   .playbook-form .playbook-problems { margin: 14px 0 4px; }
   .playbook-row { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 4px 12px; align-items: start; padding: 9px 0; border-bottom: 1px solid var(--border); }
-  .playbook-row-label { padding-top: 5px; font-size: 12px; font-weight: 500; letter-spacing: .01em; color: var(--muted); overflow-wrap: anywhere; }
+  .playbook-row-label { padding-top: 5px; font-size: 12px; font-weight: 500; color: var(--muted); overflow-wrap: anywhere; }
   .playbook-row-control { display: grid; gap: 6px; min-width: 0; }
   .playbook-row-control > .playbook-check { justify-self: start; }
   .playbook-form .field-help { margin: 0; font-size: 12px; line-height: 1.5; }
   .playbook-form:not(.playbook-form-hints) .field-help { display: none; }
   .playbook-form .form-input { padding: 5px 10px; font-size: 13px; }
   .playbook-row-control > select.form-input, .playbook-row-control > input.form-input { max-width: 360px; }
-  .playbook-static { padding-top: 5px; overflow-wrap: anywhere; }
   .playbook-form code { font: 11px var(--mono-font); color: var(--muted); background: var(--raised); padding: 1px 4px; border-radius: 4px; }
   .playbook-inline { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; }
   /* Run mode: one joined segmented control. */
@@ -81,22 +79,22 @@
   .playbook-agent select.form-input { width: auto; min-width: 0; }
   #playbook-field-provider { flex: 0 1 170px; }
   #playbook-field-model { flex: 1 1 160px; }
-  /* Choice chips: a checkbox dressed as a pill, filled and ticked when on.
-     The box covers the pill, so the whole pill is its hit area. */
+  /* Choice chips: a checkbox dressed as a chip, filled and ticked when on.
+     The box covers the chip, so the whole chip is its hit area. */
   .playbook-choices { display: flex; flex-wrap: wrap; gap: 6px; }
-  .playbook-check { position: relative; display: inline-flex; align-items: center; gap: 5px; min-height: 26px; padding: 2px 10px; border-radius: 13px; background: var(--raised); font-size: 13px; font-weight: 500; line-height: 1.25; cursor: pointer; overflow-wrap: anywhere; transition: background .1s; }
+  .playbook-check { position: relative; display: inline-flex; align-items: center; gap: 5px; min-height: 26px; padding: 2px 10px; border-radius: 8px; background: var(--raised); font-size: 13px; font-weight: 500; line-height: 1.25; cursor: pointer; overflow-wrap: anywhere; transition: background .1s; }
   .playbook-check:hover { background: var(--raised-hover); }
   .playbook-check input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; appearance: none; cursor: inherit; }
-  .playbook-check::before { content: ''; display: none; flex-shrink: 0; width: 11px; height: 11px; background: currentColor; mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='3.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m5 12 4 4L19 6'/%3E%3C/svg%3E") center / contain no-repeat; }
+  .playbook-check .icon { display: none; flex-shrink: 0; width: 12px; height: 12px; stroke-width: 3; }
   .playbook-check:has(input:checked) { background: var(--text); color: var(--on-text); }
-  .playbook-check:has(input:checked)::before { display: block; }
+  .playbook-check:has(input:checked) .icon { display: block; }
   .playbook-check:has(input:focus-visible) { outline: 2px solid var(--blue); outline-offset: 2px; }
   .playbook-check:has(input:disabled) { color: var(--muted); cursor: default; }
   .playbook-check:has(input:disabled:checked) { background: var(--raised-hover); color: var(--muted); }
-  .playbook-check small { font-size: 11px; font-weight: 400; color: inherit; opacity: .75; }
+  .playbook-check small { font-size: 11px; font-weight: 400; color: inherit; }
   .playbook-check small::before { content: '· '; }
   .playbook-set-row { display: grid; grid-template-columns: minmax(130px, 180px) minmax(0, 1fr) auto; gap: 6px; align-items: start; }
-  .playbook-set-value { min-height: 30px; resize: vertical; font: 12px/1.6 var(--mono-font); field-sizing: content; }
+  .playbook-form .playbook-set-value { min-height: 30px; resize: vertical; font: 12px/1.6 var(--mono-font); field-sizing: content; }
   .playbook-set-row .text-button { padding: 5px 0; }
   .playbook-form .button.small { justify-self: start; min-height: 28px; padding: 0 12px; font-size: 13px; }
   .playbook-add-skill { display: flex; gap: 6px; max-width: 360px; }
@@ -109,7 +107,7 @@
   .playbook-library .field-help, .playbook-library .playbook-assets { margin: 0; }
   .playbook-library .playbook-assets { display: grid; gap: 4px; padding-left: 18px; }
   .playbook-library .playbook-assets small { color: var(--muted); }
-  .playbook-body-label { flex-shrink: 0; margin: 14px 22px 0; font-size: 12px; font-weight: 500; letter-spacing: .01em; color: var(--muted); }
+  .playbook-body-label { flex-shrink: 0; margin: 14px 22px 0; font-size: 12px; font-weight: 500; color: var(--muted); }
   .playbook-body { flex: none; min-height: 240px; padding-top: 10px; resize: vertical; field-sizing: content; }
   @container playbook-form (max-width: 480px) {
     /* A set row folds: the field picker and Remove on one line, the value under them. */
@@ -119,7 +117,7 @@
   }
   @container playbook-form (max-width: 320px) {
     .playbook-row { grid-template-columns: minmax(0, 1fr); }
-    .playbook-row-label, .playbook-static { padding-top: 0; }
+    .playbook-row-label { padding-top: 0; }
   }
 
   .playbook-inspector { padding: 22px; border-left: 1px solid var(--border); background: var(--well); overflow-y: auto; min-width: 0; font-size: 14px; line-height: 1.6; color: var(--text); }
