@@ -228,7 +228,7 @@ async function claudeFixture(t, extra = {}) {
   return { ...f, sent, claude };
 }
 
-test('tool-disabled Claude receives the actual Library text and image contents inline', async (t) => {
+test('Claude receives the actual Library text and image contents inline', async (t) => {
   const f = await claudeFixture(t); const card = await f.card();
   const script = await f.upload('script.md', Buffer.from('Claude script body'));
   const logo = await f.upload('logo.png', png);
@@ -242,21 +242,14 @@ test('tool-disabled Claude receives the actual Library text and image contents i
   assert.deepEqual(attempt.delivery.map(({ method, status }) => [method, status]), [['text', 'sent'], ['image', 'sent']]);
 });
 
-test('Claude refuses a tool-only file or an unsupported card image for the whole union, never a usable subset', async (t) => {
+test('Claude refuses an unsupported card image for the whole union, never a usable subset', async (t) => {
   const f = await claudeFixture(t);
   const script = await f.upload('script.md', Buffer.from('Usable text'));
-  const pdf = await f.upload('brief.pdf', Buffer.from('%PDF-1.7\n\u0000binary'));
-  const card = await f.card();
-  await f.select(card.id, 'Use them', [asset(script), asset(pdf)], { provider: 'claude', model: 'sonnet' });
-  let refused = await f.call('POST', `/api/cards/${card.id}/chat/submissions`, { id: randomUUID(), composerRevision: (await f.chat(card.id)).composer.revision });
-  assert.equal(refused.status, 409);
-  assert.deepEqual(refused.body.problems.map(({ key, phase }) => ({ key, phase })), [{ key: `asset:${pdf.asset.id}`, phase: 'capability' }]);
-  assert.match(refused.body.problems[0].reason, /PDF delivery is not enabled/);
   const avif = { id: '00000009-0000-4000-8000-000000000000.avif', name: 'portrait.avif' };
   await writeFile(path.join(f.dataDir, 'images', avif.id), Buffer.concat([Buffer.from([0, 0, 0, 28]), Buffer.from('ftypavif'), Buffer.alloc(20)]));
   const withImage = await f.card({ images: [avif], imageRoles: { original: avif.id } });
   await f.select(withImage.id, 'Use the script', [asset(script)], { provider: 'claude', model: 'sonnet' });
-  refused = await f.call('POST', `/api/cards/${withImage.id}/chat/submissions`, { id: randomUUID(), composerRevision: (await f.chat(withImage.id)).composer.revision });
+  const refused = await f.call('POST', `/api/cards/${withImage.id}/chat/submissions`, { id: randomUUID(), composerRevision: (await f.chat(withImage.id)).composer.revision });
   assert.equal(refused.status, 409);
   assert.deepEqual(refused.body.problems.map(({ key }) => key), [`image:${avif.id}`]);
   assert.equal((await f.chat(withImage.id)).submissions.length, 0);
@@ -267,7 +260,7 @@ const fixturePdfEvidence = [{ harness: '2.1.291', model: 'claude-fixture-sonnet'
 // Like real PDFs, a binary marker line follows the header, so it is not UTF-8 text.
 const briefPdf = Buffer.from('%PDF-1.7\n%\xe2\xe3\xcf\xd3\n1 0 obj\n<< /Type /Catalog >>\nendobj\n%%EOF\n', 'latin1');
 
-test('Claude receives a selected PDF as a native document where recorded evidence enables its route, freezing that representation and its delivery', async (t) => {
+test('Claude receives a selected PDF as a native document, freezing that representation and its delivery', async (t) => {
   const f = await claudeFixture(t, { pdfEvidence: fixturePdfEvidence }); const card = await f.card();
   const script = await f.upload('script.md', Buffer.from('Usable text'));
   const pdf = await f.upload('brief.pdf', briefPdf);
@@ -306,26 +299,6 @@ test('when Claude removes one of several PDFs without saying which, each PDF is 
   const delivery = (await f.chat(card.id)).attempts.at(-1).delivery;
   assert.deepEqual(delivery.map(({ filename, status }) => [filename, status]), [['brief.pdf', 'uncertain'], ['broken.pdf', 'uncertain']]);
   assert.match(delivery[0].reason, /did not say which/);
-});
-
-test('an attempt whose Claude PDF route is gone by delivery fails naming the PDF and sends nothing; Retry delivers the frozen PDF once it is back', async (t) => {
-  const evidence = [...fixturePdfEvidence];
-  const f = await claudeFixture(t, { pdfEvidence: evidence }); const card = await f.card();
-  const script = await f.upload('script.md', Buffer.from('Usable text'));
-  const pdf = await f.upload('brief.pdf', briefPdf);
-  const openThread = f.claude.openThread; let open; const gate = new Promise((resolve) => { open = resolve; });
-  f.claude.openThread = async (input) => { await gate; return openThread(input); };
-  const submission = await f.queue(card.id, await f.select(card.id, 'Summarize the brief', [asset(script), asset(pdf)], { provider: 'claude', model: 'sonnet' }));
-  evidence.length = 0; open();
-  const failed = await waitFor(async () => (await f.chat(card.id)).submissions.find((row) => row.id === submission.id && row.status === 'failed'));
-  assert.match(failed.reason, /brief\.pdf/);
-  assert.match(failed.reason, /No passing PDF check is recorded/);
-  assert.deepEqual((await f.chat(card.id)).attempts.at(-1).delivery.map(({ filename, status }) => [filename, status]), [['script.md', 'not-sent'], ['brief.pdf', 'failed']]);
-  evidence.push(...fixturePdfEvidence);
-  await f.ok('POST', `/api/cards/${card.id}/chat/retry`, { submissionId: submission.id });
-  await waitFor(async () => (await f.chat(card.id)).submissions[0]?.status === 'completed');
-  const content = await f.sent(card);
-  assert.deepEqual(Buffer.from(content[1].source.data, 'base64'), briefPdf, 'the first turn Claude received is the retried whole submission');
 });
 
 test('export and restore keep manual Library selections and frozen submissions with their expanded folder membership, and refuse a frozen reference to a missing version', async (t) => {
@@ -571,12 +544,12 @@ test('the preview follows live folder membership until Send freezes it', async (
   assert.deepEqual((await f.chat(card.id)).submissions.find((row) => row.id === submission.id).context.library.map((file) => file.libraryPath), ['Scripts/a.md', 'Scripts/b.md'], 'the queued membership and labels stay frozen');
 });
 
-test('Send reports every unresolved, damaged and unsupported folder member at once and delivers no subset', async (t) => {
+test('Send reports every unresolved and damaged folder member at once and delivers no subset', async (t) => {
   const f = await claudeFixture(t); const card = await f.card();
   const library = `/api/projects/${f.projectId}/library`;
   const media = await f.ok('POST', `${library}/folders`, { name: 'Media' });
-  const pdf = await f.upload('brief.pdf', Buffer.from('%PDF-1.7\n\u0000binary'), { folder: media.id });
-  const zip = await f.upload('fonts.zip', Buffer.from([0x50, 0x4b, 3, 4, 0, 0, 0, 0]), { folder: media.id });
+  await f.upload('brief.pdf', Buffer.from('%PDF-1.7\n\u0000binary'), { folder: media.id });
+  await f.upload('fonts.zip', Buffer.from([0x50, 0x4b, 3, 4, 0, 0, 0, 0]), { folder: media.id });
   const damaged = await f.upload('notes.md', Buffer.from('Notes'), { folder: media.id });
   await f.upload('usable.md', Buffer.from('Usable'), { folder: media.id });
   const gone = await f.upload('old.md', Buffer.from('Old'));
@@ -586,7 +559,7 @@ test('Send reports every unresolved, damaged and unsupported folder member at on
   const refused = await f.call('POST', `/api/cards/${card.id}/chat/submissions`, { id: randomUUID(), composerRevision: (await f.chat(card.id)).composer.revision });
   assert.equal(refused.status, 409);
   assert.deepEqual(refused.body.problems.map(({ key, phase }) => [key, phase]).sort(), [
-    [`asset:${gone.asset.id}`, 'resolve'], [`asset:${damaged.asset.id}`, 'integrity'], [`asset:${pdf.asset.id}`, 'capability'], [`asset:${zip.asset.id}`, 'capability']].sort());
+    [`asset:${gone.asset.id}`, 'resolve'], [`asset:${damaged.asset.id}`, 'integrity']].sort());
   assert.equal((await f.chat(card.id)).submissions.length, 0, 'nothing is queued, so no usable subset is sent');
 });
 
@@ -672,7 +645,7 @@ test('a tampered, replaced or deleted workspace copy is rebuilt from the frozen 
   assert.equal((await f.ok('POST', `/api/projects/${f.projectId}/library/versions/${archive.version.id}/verify`, {})).hash, sha256(bytes), 'the retained original is untouched');
 });
 
-test('text that is not valid UTF-8 is never decoded lossily: Codex reads an exact copy and Claude refuses it', async (t) => {
+test('text that is not valid UTF-8 is never decoded lossily: either provider reads an exact copy', async (t) => {
   const f = await claudeFixture(t);
   const latin1 = Buffer.from('Caf\xe9 au lait, na\xefve r\xe9sum\xe9\n', 'latin1');
   const script = await f.upload('notes-latin1.txt', latin1);
@@ -684,10 +657,8 @@ test('text that is not valid UTF-8 is never decoded lossily: Codex reads an exac
   assert.ok(!send.input[0].text.includes('�'));
   assert.deepEqual(await readFile(path.join(f.dataDir, 'workspaces', card.id, submission.context.library[0].path)), latin1);
   const other = await f.card();
-  const composer = await f.select(other.id, 'Use the notes', [asset(script)], { provider: 'claude', model: 'sonnet' });
-  const refused = await f.call('POST', `/api/cards/${other.id}/chat/submissions`, { id: randomUUID(), composerRevision: composer.revision });
-  assert.equal(refused.status, 409);
-  assert.deepEqual(refused.body.problems.map(({ key, phase }) => ({ key, phase })), [{ key: `asset:${script.asset.id}`, phase: 'capability' }]);
+  const claudeSubmission = await f.queue(other.id, await f.select(other.id, 'Use the notes', [asset(script)], { provider: 'claude', model: 'sonnet' }));
+  assert.deepEqual(claudeSubmission.context.library.map(({ method, format }) => [method, format]), [['copy', null]]);
 });
 
 test('a UTF-8 script that happens to begin like a media or font signature is still sent as full text', async (t) => {

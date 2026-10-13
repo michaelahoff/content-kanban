@@ -194,15 +194,12 @@ export function createChatService({ store, adapter, adapters = { codex: adapter 
       return { texts, nativeInputs, delivery };
     },
     // Immediately before sending, each frozen route must still exist on the
-    // actual target: a workspace copy needs Codex's shell tool, and a PDF needs
-    // the Claude model's evidence-backed route. Without it the attempt stops,
-    // naming each such file, rather than sending a path or a subset.
+    // actual target: a Codex workspace copy needs its shell tool. Without it the
+    // attempt stops, naming each such file, rather than sending a path or a subset.
     assertRoutes(submission, discovery, delivery) {
       const library = [...submission.context.library ?? [], ...submission.context.savedOutputs ?? []];
-      const pdf = discovery.models?.find((model) => model.id === submission.model)?.pdf;
-      const [method, reason] = submission.provider === 'codex' ? ['copy', hasShellTool(discovery) ? null : `${noShellTool}, then Retry.`]
-        : ['document', pdf?.available ? null : `Claude PDF delivery is not enabled here: ${pdf?.reason ?? 'this Claude setup reported no PDF route.'} Use the checked setup, then Retry.`];
-      const stranded = reason ? library.filter((file) => file.method === method) : [];
+      const reason = submission.provider === 'codex' && !hasShellTool(discovery) ? `${noShellTool}, then Retry.` : null;
+      const stranded = reason ? library.filter((file) => file.method === 'copy') : [];
       if (!stranded.length) return;
       const names = new Set(stranded.map((file) => file.versionId));
       throw Object.assign(new Error(`${stranded.map((file) => file.filename).join(', ')} could not be delivered. ${reason}`), { kind: 'input-unavailable',

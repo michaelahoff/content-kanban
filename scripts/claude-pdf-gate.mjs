@@ -1,6 +1,5 @@
-// The live Claude PDF gate (#66). Runs the installed Claude Code through
-// Frameboard's own adapter, tools disabled and outside retained-data
-// protection (Claude has no protected configuration yet), on the signed-in
+// The live Claude PDF check (#66). Runs the installed Claude Code through
+// Frameboard's own adapter, outside retained-data protection, on the signed-in
 // account. For each model it checks two things:
 //
 // - comprehension: a two-page PDF whose codes exist only as rendered page

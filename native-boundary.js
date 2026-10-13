@@ -2,7 +2,8 @@
 // native sandbox has been relaxed by a permission approval or Full grant.
 import { spawn } from 'node:child_process';
 import { lstat, realpath, readdir, mkdir, mkdtemp, rm } from 'node:fs/promises';
-import { accessSync, constants, existsSync, realpathSync } from 'node:fs';
+import { accessSync, constants, copyFileSync, existsSync, realpathSync, rmSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -40,7 +41,11 @@ function resolveCommand(command, env) {
   }
   return command;
 }
-export async function createNativeBoundary({ dataDir, nativeHome, testPorts = [] }) {
+// nativeFiles are single native state files kept outside nativeHome, such as
+// Claude Code's ~/.claude.json. Each launch gets its own fresh copy: a bound
+// file cannot be replaced atomically, so an in-place rewrite interrupted by a
+// stop would truncate the user's real file. Changes to the copy are discarded.
+export async function createNativeBoundary({ dataDir, nativeHome, nativeFiles = [], testPorts = [] }) {
   if (process.platform !== 'linux' || process.arch !== 'x64') throw held('This OS/architecture is unproven. Use Linux x64 with bubblewrap, a C compiler and Landlock ABI 10+.');
   dataDir = await realpath(dataDir);
   await mkdir(nativeHome, { recursive: true });
@@ -61,6 +66,10 @@ export async function createNativeBoundary({ dataDir, nativeHome, testPorts = []
       },
       launch(command, args, { cwd, env = process.env, ...options } = {}) {
         const executable = resolveCommand(command, env);
+        const copies = nativeFiles.filter(existsSync).map((file) => {
+          const copy = path.join(build, `native-${randomUUID()}`); copyFileSync(file, copy);
+          return [copy, path.resolve(file)];
+        });
         const guardArgs = [process.execPath, path.join(appRoot, 'scripts/native-proxy-client.mjs'), executable, ...args];
         // Credentials come from native sign-in, never the application's env.
         const cleanEnv = Object.fromEntries(['PATH', 'HOME', 'USER', 'LANG', 'LC_ALL', 'TERM', 'CODEX_HOME', 'CLAUDE_CONFIG_DIR', 'SSL_CERT_FILE', 'SSL_CERT_DIR'].filter((key) => env[key] !== undefined).map((key) => [key, env[key]]));
@@ -70,9 +79,10 @@ export async function createNativeBoundary({ dataDir, nativeHome, testPorts = []
           '--cap-drop', 'ALL', '--ro-bind', '/', '/', '--proc', '/proc', '--dev', '/dev',
           ...['/home', '/root', '/run', '/tmp', '/var/tmp'].filter(existsSync).flatMap((dir) => ['--tmpfs', dir]),
           ...readable.flatMap((dir) => ['--ro-bind', dir, dir]),
-          '--ro-bind', dataDir, dataDir, '--ro-bind', build, build, '--bind', nativeHome, nativeHome, '--bind', workspaces, workspaces,
+          '--ro-bind', dataDir, dataDir, '--ro-bind', build, build, '--bind', nativeHome, nativeHome, ...copies.flatMap(([copy, at]) => ['--bind', copy, at]), '--bind', workspaces, workspaces,
           '--chdir', cwd ?? appRoot, '--', guard, ...guardArgs], { ...options, stdio: [...(options.stdio ?? ['pipe', 'pipe', 'pipe']), 'pipe'], cwd: appRoot, env: cleanEnv });
         attachNativeProxy(child.stdio[3], { testPorts });
+        child.once('close', () => { for (const [copy] of copies) rmSync(copy, { force: true }); });
         return child;
       },
       async run(command, args, options = {}) {

@@ -248,7 +248,7 @@ test('an archived or recovered lane reply registers nothing, and its text can st
   assert.equal((await content(f, card.id, saved.body.id)).text, 'Recovered');
 });
 
-test('tool-disabled Claude saves an inline document through its lane result, recorded as produced by Claude', async (t) => {
+test('Claude saves an inline document through its lane result, recorded as produced by Claude', async (t) => {
   const home = await mkdtemp(path.join(tmpdir(), 'frameboard-claude-'));
   t.after(() => rm(home, { recursive: true, force: true }));
   const env = { ...process.env, CLAUDE_CONFIG_DIR: home, FAKE_CLAUDE_LANE_RESULT: JSON.stringify({ notes: 'Brief written.', outputs: [{ filename: 'brief.md', text: '# Thumbnail brief', sources: [] }] }) };

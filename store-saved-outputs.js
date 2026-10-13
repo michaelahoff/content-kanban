@@ -72,11 +72,11 @@ export function createSavedOutputStore({ all, get, run, transaction, retainedCar
       laneRunId: frozen.lane?.runId ?? null, native: { turnId: a.turn_id, itemId }, supplied: suppliedInputs(frozen), derivation: declaredDerivation(frozen, sources) };
   }
   // Only a provider that could write in its workspace can have produced a
-  // workspace file. Tool-disabled Claude cannot claim one by naming a path.
+  // workspace file: sandboxed Codex, or Claude with its tools. Earlier
+  // tool-disabled Claude responses cannot claim one by naming a path.
   function assertWritesFiles(attemptId, name) {
-    const frozen = frozenFor(attemptId);
-    if (frozen.provider === 'claude') fail(400, `Claude ran with its tools turned off, so it cannot have written ${name}. Put a document's exact text in “text” instead.`);
-    if (frozen.configuration?.nativeOptions?.sandbox !== 'workspace-write') fail(400, `This response could not write in its workspace, so ${name} cannot be its output.`);
+    const options = frozenFor(attemptId).configuration?.nativeOptions;
+    if (options?.sandbox !== 'workspace-write' && options?.permissionMode !== 'bypassPermissions') fail(400, `This response could not write in its workspace, so ${name} cannot be its output. Put a document's exact text in “text” instead.`);
   }
   // A live attempt may register outputs only while it still holds authority:
   // not after Stop, archive or a workspace restore, nor once it has ended.

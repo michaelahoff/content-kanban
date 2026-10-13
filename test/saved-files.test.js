@@ -117,7 +117,7 @@ test('unusable paths are reported as not saved and register nothing, while the r
   assert.match(run.reason, /missing\.png was not saved\. missing\.png does not exist in the card workspace\./);
 });
 
-test('tool-disabled Claude cannot save a binary or general file by naming a path; its inline document still saves', async (t) => {
+test('Claude with its tools saves a workspace file it names and an inline document', async (t) => {
   const home = await mkdtemp(path.join(tmpdir(), 'frameboard-claude-'));
   t.after(() => rm(home, { recursive: true, force: true }));
   const env = { ...process.env, CLAUDE_CONFIG_DIR: home, FAKE_CLAUDE_LANE_RESULT: JSON.stringify({ outputs: [
@@ -129,20 +129,11 @@ test('tool-disabled Claude cannot save a binary or general file by naming a path
   const workspace = await f.ok('GET', '/api/workspace');
   await setPlaybook(f.ok, workspace.projects[0].flowId, workspace.flows[0].stages[0], { run: 'manual', provider: 'claude', model: 'sonnet' }, 'Brief.');
   const card = await f.card({ title: 'Claude card' });
-  // Even a file that really is in the workspace was not written by Claude.
   await workspaceFile(f, card.id, 'render.png', png);
   await f.ok('POST', `/api/cards/${card.id}/lane-runs`, {});
-  const [run] = await waitFor(async () => { const value = await runs(f, card.id); return value[0].status === 'completed' && value; });
+  await waitFor(async () => { const value = await runs(f, card.id); return value[0].status === 'completed' && value; });
   const chat = await f.chat(card.id);
-  assert.deepEqual(chat.savedOutputs.map((output) => [output.filename, output.status, output.provider]), [['brief.md', 'saved', 'claude']]);
-  assert.match(run.result.outputs[0].error, /Claude ran with its tools turned off/);
-  assert.match(run.reason, /render\.png was not saved/);
-
-  // Nor can the user save a workspace file as Claude's output.
-  const refused = await f.call('POST', `/api/cards/${card.id}/chat/saved-outputs`, { operation: 'claude-file', attempt: chat.attempts[0].id, path: 'render.png' });
-  assert.equal(refused.status, 400);
-  assert.match(refused.body.error, /Claude/);
-  assert.equal((await f.chat(card.id)).savedOutputs.length, 1);
+  assert.deepEqual(chat.savedOutputs.map((output) => [output.filename, output.status, output.provider]).sort(), [['brief.md', 'saved', 'claude'], ['render.png', 'saved', 'claude']]);
 });
 
 const saveFile = (f, cardId, body) => f.call('POST', `/api/cards/${cardId}/chat/saved-outputs`, body);

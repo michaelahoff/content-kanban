@@ -1,5 +1,7 @@
 // The only bridge out of the native network namespace. The peer receives an
 // already-connected pipe, never a host socket path or application credential.
+// Any public HTTP(S) host is reachable, so native tools and providers work;
+// local and private addresses, including Frameboard's own API, are not.
 import net from 'node:net';
 import { lookup } from 'node:dns/promises';
 
@@ -20,7 +22,7 @@ export function attachNativeProxy(pipe, { testPorts = [] } = {}) {
     if (message.type === 'open') {
       if (sockets.has(id) || sockets.size >= 64) throw new Error('Too many proxy streams.');
       const test = message.host === '127.0.0.1' && testPorts.includes(message.port);
-      if (!test && (message.port !== 443 || !['api.openai.com', 'chatgpt.com', 'auth.openai.com'].includes(message.host))) throw new Error('Only the verified OpenAI HTTPS endpoints are available.');
+      if (!test && ![80, 443].includes(message.port)) throw new Error('Only HTTP and HTTPS ports are available.');
       const addresses = test ? [{ address: '127.0.0.1' }] : await lookup(message.host, { family: 4, all: true });
       if (!addresses.length || !test && addresses.some(({ address }) => !publicIPv4(address))) throw new Error('Local and private network destinations are unavailable.');
       if (pipe.destroyed) return;

@@ -6,7 +6,7 @@ let providers = [];
 function renderProviders() {
   $('#providers').innerHTML = providers.map((provider) => `<section class="provider-option" aria-label="${names[provider.provider]} settings">
     <label class="provider-toggle"><input type="checkbox" data-provider="${provider.provider}" ${provider.enabled ? 'checked' : ''}><strong>${names[provider.provider]}</strong><span data-enabled-label="${provider.provider}">${provider.enabled ? 'Enabled' : 'Disabled'}</span></label>
-    <p>${provider.provider === 'codex' ? 'Uses your installed Codex harness and sign-in for card chats.' : 'Uses your installed Claude Code and sign-in. Supports text and image references. Apply suggestions using Use text; native tools are disabled.'}</p>
+    <p>${provider.provider === 'codex' ? 'Uses your installed Codex harness and sign-in for card chats.' : 'Uses your installed Claude Code, sign-in and full setup, including its tools, MCP servers and skills. Tools run without permission prompts inside Frameboard\'s retained-data boundary.'}</p>
     ${provider.provider === 'codex' ? '<a href="/codex.html" class="button secondary">Codex configuration</a>' : '<form id="claude-guidance"><label for="claude-instructions">Claude instructions</label><textarea id="claude-instructions" rows="4" maxlength="50000" placeholder="Guidance for all Claude card chats">' + escape(provider.selection.instructions) + '</textarea><button class="button secondary" type="submit">Save instructions</button></form>'}
   </section>`).join('');
 }

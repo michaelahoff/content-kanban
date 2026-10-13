@@ -22,14 +22,11 @@ test('Claude discovery initializes without inference, strips account details, an
 });
 const pro = { apiProvider: 'firstParty', subscriptionType: 'Claude Pro' };
 const sonnetEvidence = [{ harness: '2.1.291', model: 'claude-fixture-sonnet', account: pro, retainedDataProtection: false, pages: 600, checked: '2026-10-08' }];
-test('Claude discovery reports its harness version, account kind and each model\'s recorded PDF route, keeping no account identity', async (t) => {
+test('Claude discovery reports its account kind and a PDF route for every model, keeping no account identity', async (t) => {
   const { adapter } = await fixture(t, { pdfEvidence: sonnetEvidence });
   const discovery = await adapter.discover();
-  assert.equal(discovery.harness.version, '2.1.291');
   assert.deepEqual(discovery.harness.account, pro);
-  assert.deepEqual(discovery.models.map((model) => [model.id, model.pdf.available]), [['sonnet', true], ['opus', false]]);
-  assert.equal(discovery.models[0].pdf.pages, 600);
-  assert.match(discovery.models[1].pdf.reason, /No passing PDF check is recorded for Claude Code 2\.1\.291 with claude-fixture-opus on a Claude Pro account/);
+  assert.deepEqual(discovery.models.map((model) => [model.id, model.pdf.available, model.pdf.pages]), [['sonnet', true, 600], ['opus', true, 100]]);
   assert.ok(!JSON.stringify(discovery).includes('fixture@example.com'));
 });
 test('Claude transport streams exact text/image input, resumes its native history, and stops without replay', async (t) => {

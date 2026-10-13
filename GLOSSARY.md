@@ -112,11 +112,11 @@ The Library selection saved on one card, edited in its card editor. Every lane r
 _Avoid_: Card attachments, card assets
 
 **Workspace copy**:
-An independent read-only copy of a frozen asset version in a card workspace, the route for files a target cannot take as text or an image. It is rebuilt from the retained original before each delivery, so edits to it never reach the original. It is usable only by a target with a tool that can read it (Codex with its shell tool); delivering one claims nothing about whether the format was interpreted. A Claude PDF route sends a copy's verified bytes as a native document instead.
+An independent read-only copy of a frozen asset version in a card workspace, the route for files a target cannot take as text or an image. It is rebuilt from the retained original before each delivery, so edits to it never reach the original. It is usable only by a target with a tool that can read it (Codex with its shell tool, or Claude with its tools); delivering one claims nothing about whether the format was interpreted. A Claude PDF route sends a copy's verified bytes as a native document instead.
 _Avoid_: Attachment, file upload
 
 **Claude PDF route**:
-Sending a selected PDF's exact bytes to Claude as a native document rather than a path. It exists only for a setup (Claude Code version, model, account kind and retained-data protection state) with a recorded passing live PDF check, and Claude may still remove a PDF it cannot process, which stops the attempt.
+Sending a selected PDF's exact bytes to Claude as a native document rather than a path. Claude may still remove a PDF it cannot process, which stops the attempt.
 _Avoid_: PDF support, PDF attachment
 
 **Project asset**:

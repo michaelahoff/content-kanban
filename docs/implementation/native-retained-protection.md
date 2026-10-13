@@ -34,5 +34,5 @@ A signed-in ChatGPT probe through the protected adapter, with apps, plugins and 
 
 - Native state is writable. A command approved for escalation or Full access can change native configuration that unconfined Codex reads outside Frameboard.
 - One writable bind covers all card workspaces, so an agent can change another card's notes and reference copies. Retained data is unaffected.
-- Reads are not confined. Agents can read retained data and send it to the verified endpoints.
-- Full-access commands reach only the verified OpenAI endpoints. Remote MCP servers on other hosts are unavailable.
+- Reads are not confined. Agents can read retained data and send it to any public HTTP(S) host.
+- Native processes reach any public host on ports 80 and 443 ([ADR 0007](../adr/0007-drop-version-gates-and-claude-lockdown.md)). Local and private addresses, SSH and other ports are unavailable.
