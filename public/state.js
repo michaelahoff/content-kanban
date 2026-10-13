@@ -1,7 +1,7 @@
 // The browser's copy of the workspace. Changes apply here immediately and are
 // queued for the server; card text is saved after a short pause in typing.
 import { request, send, enqueue, onSyncChange, syncState, retry } from './api.js';
-import { emptyFields, emptyImageRoles, editorFields, normalizeCard } from './card-template.js';
+import { emptyFields, emptyImageRoles, editorFields, normalizeCard, cardContentKeys } from './card-template.js';
 import { id, showEdited } from './ui.js';
 
 // `templates` holds the workspace's card template definitions by ID.
@@ -32,8 +32,6 @@ export function onCardPromptChange(listener) {
 }
 function contentValues(card) { return { ...card.fields, title: card.title }; }
 function editableValues(card) { return { ...contentValues(card), images: card.images, imageRoles: card.imageRoles, library: card.library ?? [] }; }
-// Card content saved beside its template fields rather than in them.
-const cardKeys = ['title', 'images', 'imageRoles', 'library'];
 function rememberSaved(card) { savedValues.set(card.id, structuredClone(editableValues(card))); }
 function changesFor(card) {
   const before = savedValues.get(card.id) ?? {};
@@ -210,7 +208,7 @@ function queueCardSave(cardId) {
         for (const [key, value] of Object.entries(acknowledged)) {
           if (failed.has(key)) continue;
           if (JSON.stringify(local[key]) === JSON.stringify(changes[key] ?? previous[key])) {
-            if (cardKeys.includes(key)) card[key] = value; else card.fields[key] = value;
+            if (cardContentKeys.includes(key)) card[key] = value; else card.fields[key] = value;
             if (JSON.stringify(local[key]) !== JSON.stringify(value)) fieldListeners.forEach((listener) => listener(card, [key]));
           }
           previous[key] = structuredClone(value);
@@ -261,7 +259,7 @@ export function refreshSavedCard(saved) {
     if (Object.hasOwn(localChanges, key)) continue;
     const before = editableValues(card)[key];
     if (JSON.stringify(before) !== JSON.stringify(value)) {
-      if (cardKeys.includes(key)) card[key] = value; else card.fields[key] = value;
+      if (cardContentKeys.includes(key)) card[key] = value; else card.fields[key] = value;
       changed.push(key);
     }
     baseline[key] = structuredClone(value); card.fieldVersions[key] = saved.fieldVersions[key];

@@ -6,7 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { rename, rm } from 'node:fs/promises';
 import path from 'node:path';
-import { emptyFields, emptyImageRoles, normalizeCard, youtubeVideoTemplate } from './public/card-template.js';
+import { emptyFields, emptyImageRoles, normalizeCard, youtubeVideoTemplate, cardContentKeys } from './public/card-template.js';
 import { templatesMigration, templatesTable, projectTemplateColumn, createTemplateStore } from './store-templates.js';
 import { readLegacyBoard } from './legacy-board.js';
 import { createPlaybooks } from './playbooks.js';
@@ -19,7 +19,7 @@ import { createRetainedStorage } from './retained-storage.js';
 import { createLibrary, deliverableVersions } from './library.js';
 import { savedOutputsMigration, createSavedOutputStore } from './store-saved-outputs.js';
 import { libraryDraftsMigration, createDraftStore } from './store-drafts.js';
-import { sourceKey } from './public/library-format.js';
+import { uniqueSources } from './public/library-format.js';
 
 export const imageIdPattern = /^[a-f0-9-]{36}\.(png|jpg|webp|gif|avif)$/;
 
@@ -338,8 +338,6 @@ const isText = (value, max) => typeof value === 'string' && value.length <= max;
 const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const checkName = (value, max, message) => check(isText(value, max) && value.trim(), message);
 
-// Card content saved beside its template fields rather than in them.
-const cardKeys = ['title', 'images', 'imageRoles', 'library'];
 const flowFrom = (row) => ({ id: row.id, projectId: row.project_id, name: row.name, position: row.position });
 const stageFrom = (row) => ({
   id: row.id, flowId: row.flow_id, name: row.name, color: row.color, position: row.position, instructions: row.instructions,
@@ -402,14 +400,10 @@ function cardContent(template, input, current, validateMembership = true) {
     // Shape only, as for a chat selection: a removed or foreign source may
     // stay listed, and a lane run refuses it by name until it is removed.
     check(Array.isArray(input.library) && input.library.length <= 200, 'A card can list up to 200 Library files and folders.');
-    const seen = new Set();
-    next.library = [];
     for (const source of input.library) {
       check(isObject(source) && ['asset', 'folder'].includes(source.kind) && typeof source.id === 'string' && idPattern.test(source.id), 'Invalid Library file.');
-      if (seen.has(sourceKey(source))) continue;
-      seen.add(sourceKey(source));
-      next.library.push({ kind: source.kind, id: source.id });
     }
+    next.library = uniqueSources(input.library.map(({ kind, id }) => ({ kind, id })));
   }
   for (const [role, imageId] of validateMembership ? Object.entries(next.imageRoles) : []) {
     check(imageId === null || next.images.some((image) => image.id === imageId), role === 'cover' ? 'The display image must belong to the card.' : 'Flagged images must belong to the card.');
@@ -1136,7 +1130,7 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
         // image being added in this same save.
         const requested = { fields: {} };
         for (const [key, value] of Object.entries(input.changes)) {
-          if (cardKeys.includes(key)) requested[key] = value; else requested.fields[key] = value;
+          if (cardContentKeys.includes(key)) requested[key] = value; else requested.fields[key] = value;
         }
         cardContent(templates.forCard(card), requested, card, false);
         const patch = {}; const fields = {};
@@ -1144,7 +1138,7 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
           check(Object.hasOwn(card.fieldVersions, key) && Number.isInteger(input.baseVersions[key]), 'Unknown field or missing field version.');
           if (key === 'imageRoles') check(Number.isInteger(input.baseVersions.images), 'Image role edits need the gallery base version.');
           if (input.baseVersions[key] !== card.fieldVersions[key] || key === 'imageRoles' && input.baseVersions.images !== card.fieldVersions.images) { conflicts.push(key); continue; }
-          if (cardKeys.includes(key)) patch[key] = value; else fields[key] = value;
+          if (cardContentKeys.includes(key)) patch[key] = value; else fields[key] = value;
         }
         if (conflicts.some((key) => ['images', 'imageRoles'].includes(key))) {
           // Gallery membership and roles cannot be partially combined with a

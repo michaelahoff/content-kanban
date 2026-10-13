@@ -3,8 +3,8 @@
 // card like its gallery; each run sends their current versions.
 import { $, escape, icon, button, smallForm, toast } from './ui.js';
 import { locateCard, cardChanged, flushCards, loadLibraryListing } from './state.js';
-import { libraryChoices } from './library.js';
-import { libraryPaths, parseSourceKey, sourceKey } from './library-format.js';
+import { libraryChoices, libraryPickerFields } from './library.js';
+import { libraryPaths, parseSourceKey, sourceKey, uniqueSources } from './library-format.js';
 
 // The open card's project listing; null until it loads.
 let listing = null; let listingProject = null;
@@ -71,12 +71,9 @@ async function pickSources() {
   if (listing?.error) throw new Error(listing.error);
   const available = libraryChoices(listing, new Set((found.card.library ?? []).map(sourceKey)));
   smallForm({ title: 'Add Library files', description: available.length ? 'Chosen files and folders join the end of this card\'s list. Every lane run sends their current versions; a folder sends every file in it.' : 'Everything in the Library is already on this card, or the Library is empty.',
-    fields: `<div class="chat-library-picker">${available.map((entry) => `<label><input type="checkbox" name="source" value="${escape(sourceKey(entry.source))}">${escape(entry.label)} <small>${escape(entry.detail)}</small></label>`).join('')}</div>`,
-    submit: 'Add', onSubmit: async (data) => setSources(cardId, (current) => {
-      // The card may have changed while the picker was open.
-      const keys = new Set(current.map(sourceKey));
-      return [...current, ...data.getAll('source').map(parseSourceKey).filter((source) => source && !keys.has(sourceKey(source)) && keys.add(sourceKey(source)))];
-    }) });
+    fields: libraryPickerFields(available),
+    // The card may have changed while the picker was open; a source already listed keeps its place.
+    submit: 'Add', onSubmit: async (data) => setSources(cardId, (current) => uniqueSources([...current, ...data.getAll('source').map(parseSourceKey).filter(Boolean)])) });
 }
 
 // Library changes in this or another tab rename, add or remove what is shown.

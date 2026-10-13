@@ -188,7 +188,7 @@ test('an empty selection adds no Library inputs and keeps every gallery photo, t
   assert.ok(!sent.includes('LIBRARY VOICE'));
 });
 
-test('a card\'s Library files save with the card, versioned like its gallery, by shape only', async (t) => {
+test('a card\'s Library files save with the card, versioned and leased like its gallery, by shape only', async (t) => {
   const f = await laneFixture(t);
   const script = await f.upload('script.md', Buffer.from('Script'));
   const thumbs = await f.folder('Thumbnails');
@@ -201,6 +201,7 @@ test('a card\'s Library files save with the card, versioned like its gallery, by
   assert.equal(saved.fieldVersions.library, card.fieldVersions.library + 1);
   assert.equal(saved.fieldVersions.title, card.fieldVersions.title, 'other fields keep their versions');
 
+  await f.ok('PUT', `/api/cards/${card.id}/draft-lease`, { owner: 'tab', fields: ['library', 'intro'], sequence: 1 });
   const stale = await f.ok('PATCH', `/api/cards/${card.id}`, { changes: { library: [] }, baseVersions: card.fieldVersions });
   assert.deepEqual(stale.conflicts, ['library'], 'a save based on an older list does not overwrite a newer one');
   assert.deepEqual((await f.ok('GET', `/api/cards/${card.id}`)).card.library, saved.library);

@@ -9,7 +9,7 @@ import { project, flow, flowOfLane, flowTemplate, loadPlaybooks, savePlaybook, d
 import { renderBoard } from './board.js';
 import { parseDocument, playbookSettings, describeSettings, playbookTemplate, skillTemplate, setFields, skillName, withAssets, withBody } from './playbook-format.js';
 import { deliveryDescription, parseSourceKey, sourceKey } from './library-format.js';
-import { libraryChoices } from './library.js';
+import { libraryChoices, libraryPickerFields } from './library.js';
 import { contextFields } from './chat-context.js';
 import { imageRoles } from './card-template.js';
 import { renderSettingsForm, applySettingsChange } from './playbook-form.js';
@@ -284,7 +284,7 @@ async function pickAssets() {
   resolutions = new Map();
   const available = libraryChoices(listing, new Set(draftAssets(path).map(sourceKey)));
   smallForm({ title: 'Add Library files', description: available.length ? 'Chosen files and folders join the end of this playbook\'s assets: list. Each run sends their current versions.' : 'Everything in the Library is already selected, or the Library is empty.',
-    fields: `<div class="chat-library-picker">${available.map((entry) => `<label><input type="checkbox" name="source" value="${escape(sourceKey(entry.source))}">${escape(entry.label)} <small>${escape(entry.detail)}</small></label>`).join('')}</div>`,
+    fields: libraryPickerFields(available),
     submit: 'Add', onSubmit: async (data) => {
       // The draft may have changed while the picker was open.
       const current = draftAssets(path); const keys = new Set(current.map(sourceKey));
