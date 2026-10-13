@@ -135,7 +135,7 @@ test('native Claude transport completes card submissions and keeps follow-up con
   assert.equal(snapshot.submissions.length, 2); assert.equal(snapshot.attempts.length, 2);
 });
 
-test('a Claude lane run reports through its result block without native tools', async (t) => {
+test('a Claude lane run reports through its result block', async (t) => {
   const { options } = await fixture(t);
   const { fixture: appFixture } = await import('./support/chat-fixture.js');
   const { setPlaybook } = await import('./support/playbooks.js');
@@ -162,4 +162,23 @@ test('a Claude lane run reports through its result block without native tools', 
   assert.deepEqual(sent.map((entry) => entry.type), ['text', 'image', 'image', 'image', 'image']);
   for (const image of sent.filter((entry) => entry.type === 'image')) assert.deepEqual(Buffer.from(image.source.data, 'base64'), png);
   assert.match((await f.ok('GET', `/api/cards/${card.id}/notes`)).text, /Fixture notes/);
+});
+
+test('Claude card chats get the Frameboard card tools over stdio MCP, with the same edit authority as Codex', async (t) => {
+  const { options } = await fixture(t);
+  const { fixture: appFixture } = await import('./support/chat-fixture.js');
+  const f = await appFixture(t, { claudeAdapter: { ...createClaudeAdapter(options), protectRetainedData: undefined } });
+  const settings = await f.ok('GET', '/api/providers/claude');
+  await f.ok('PUT', '/api/providers/claude', { revision: settings.revision, selection: { ...settings.selection, enabled: true } });
+  const card = await f.card({ title: 'Original', fields: { intro: 'Saved intro' } });
+  const call = { fields: { title: 'Claude title', intro: 'Claude intro' }, baseVersions: card.fieldVersions };
+  await f.queue(card.id, await f.compose(card.id, `Rewrite the title.\ntool:edit_fields ${JSON.stringify(call)}`, 'sonnet', { provider: 'claude', authority: { fields: ['title'] } }));
+  const reply = await waitFor(async () => (await f.chat(card.id)).items.find((item) => item.text?.startsWith('Tool reply')));
+  const result = JSON.parse(reply.text.slice('Tool reply '.length));
+  assert.deepEqual(result.tools, ['read_card', 'edit_fields', 'propose_changes', 'propose_move', 'register_image']);
+  assert.equal(result.isError, false);
+  const saved = (await f.ok('GET', `/api/cards/${card.id}`)).card;
+  assert.equal(saved.title, 'Claude title', 'an authorized field is edited');
+  assert.equal(saved.fields.intro, 'Saved intro', 'an unauthorized field is not');
+  assert.deepEqual((await f.chat(card.id)).proposals[0].payload.fields, { intro: 'Claude intro' }, 'it becomes a proposal instead');
 });

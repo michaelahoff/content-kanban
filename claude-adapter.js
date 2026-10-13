@@ -1,7 +1,9 @@
 // Native Claude Code stream-json transport. Initialization lists models without
 // sending a prompt. Card chats keep native sessions with the user's full Claude
 // Code setup and tools, inside the retained-data boundary, and send text,
-// image and PDF document inputs.
+// image and PDF document inputs. Frameboard card tools reach Claude as the
+// in-process `frameboard` MCP server, carried over the same stdio stream, so
+// the boundary needs no socket for them.
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
@@ -39,8 +41,25 @@ export function createClaudeAdapter({ command = 'claude', args = [], env = proce
     return boundaryTask;
   };
   const historyPath = (work, id) => path.join(nativeHome, 'projects', work.replace(/[^a-zA-Z0-9]/g, '-'), `${id}.jsonl`);
+  // Card tool calls are routed like Codex dynamic tools: to the subscriber
+  // that owns the session's current turn, keyed by Claude's tool-use ID.
+  async function cardToolCall(session, name, input, callId) {
+    const handler = [...listeners.get(session.id) ?? []].find((entry) => entry.onToolCall && (!entry.acceptsRequest || entry.acceptsRequest({ turnId: session.turnId })));
+    if (!session.turnId || !handler) return { content: [{ type: 'text', text: 'Frameboard card tools are available only during a card chat turn.' }], isError: true };
+    const result = await handler.onToolCall({ turnId: session.turnId, callId, tool: name, arguments: input ?? {} });
+    return { content: (result.contentItems ?? []).map((item) => ({ type: 'text', text: item.text ?? '' })), isError: !result.success };
+  }
+  async function cardToolServer(session, rpc) {
+    if (rpc.method === 'initialize') return { protocolVersion: rpc.params?.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: 'frameboard', version: '1.0.0' } };
+    if (rpc.method === 'tools/list') return { tools: session.tools.map(({ name, description, inputSchema }) => ({ name, description, inputSchema })) };
+    if (rpc.method === 'tools/call') {
+      if (!session.tools.some((tool) => tool.name === rpc.params?.name)) return { content: [{ type: 'text', text: `Unknown Frameboard tool ${rpc.params?.name}.` }], isError: true };
+      return cardToolCall(session, rpc.params.name, rpc.params.arguments, rpc.params._meta?.['claudecode/toolUseId'] ?? `${session.turnId}:${rpc.id}`);
+    }
+    return {};
+  }
   const emit = (session, event) => { for (const handler of listeners.get(session.id) ?? []) handler.onEvent?.({ threadId: session.id, turnId: session.turnId, ...event }); };
-  async function launch({ id, work = cwd, model, instructions = '', permissionMode = null, resume = false } = {}) {
+  async function launch({ id, work = cwd, model, instructions = '', permissionMode = null, tools = [], resume = false } = {}) {
     const guard = await boundary(); await guard?.check();
     const child = (guard ? guard.launch.bind(guard) : spawn)(command, [...args, '-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--include-partial-messages',
       // The boundary is the protection, as for Codex Full access: Claude runs
@@ -49,7 +68,7 @@ export function createClaudeAdapter({ command = 'claude', args = [], env = proce
       ...(model ? ['--model', model] : []), ...(instructions ? ['--append-system-prompt', instructions] : [])],
     { cwd: work, env, stdio: ['pipe', 'pipe', 'pipe'] });
     // A new session has no native history file until its first turn.
-    const session = { id, work, child, turnId: null, ended: false, turnless: !resume, buffer: '', items: new Map(), controls: new Map(), streamed: new Map(), completed: new Map() };
+    const session = { id, work, child, tools, turnId: null, ended: false, turnless: !resume, buffer: '', items: new Map(), controls: new Map(), streamed: new Map(), completed: new Map() };
     processes.add(session);
     let resolveInit; let rejectInit;
     const ready = new Promise((resolve, reject) => { resolveInit = resolve; rejectInit = reject; });
@@ -85,6 +104,11 @@ export function createClaudeAdapter({ command = 'claude', args = [], env = proce
           if (message.response.subtype === 'error') pending.reject(error('configuration-unavailable', message.response.error));
           else pending.resolve(message.response.response);
         }
+      } else if (message.type === 'control_request' && message.request?.subtype === 'mcp_message') {
+        const rpc = message.request.message ?? {};
+        const reply = (result) => { if (!session.ended) write({ type: 'control_response', response: { subtype: 'success', request_id: message.request_id, response: { mcp_response: { jsonrpc: '2.0', id: rpc.id ?? 0, result } } } }); };
+        (message.request.server_name === 'frameboard' ? cardToolServer(session, rpc) : Promise.resolve({}))
+          .then(reply, (cause) => reply({ content: [{ type: 'text', text: cause.message }], isError: true }));
       } else if (message.type === 'control_request') {
         // Permissions are bypassed, so a tool request is allowed as asked.
         write({ type: 'control_response', response: { subtype: 'success', request_id: message.request_id, response: message.request?.subtype === 'can_use_tool' ? { behavior: 'allow', updatedInput: message.request.input ?? {} } : {} } });
@@ -132,7 +156,7 @@ export function createClaudeAdapter({ command = 'claude', args = [], env = proce
         try { receive(JSON.parse(line)); } catch { rejectInit(error('protocol', 'Claude returned an invalid stream message.')); child.kill(); }
       }
     });
-    write({ type: 'control_request', request_id: 'initialize', request: { subtype: 'initialize' } });
+    write({ type: 'control_request', request_id: 'initialize', request: { subtype: 'initialize', ...(tools.length ? { sdkMcpServers: ['frameboard'] } : {}) } });
     try { session.info = await ready; return session; } catch (cause) { child.kill(); throw cause; }
   }
   async function stop(session) {
@@ -168,12 +192,13 @@ export function createClaudeAdapter({ command = 'claude', args = [], env = proce
       const id = threadId ?? randomUUID();
       let session = sessions.get(id);
       if (session?.turnId) throw error('busy', 'Claude already has an active turn.');
-      if (session && !session.ended && (session.work !== work || session.instructions !== threadConfig.developerInstructions)) throw error('fresh-context-required', 'Start fresh context before changing Claude guidance.');
+      const tools = threadConfig.dynamicTools ?? [];
+      if (session && !session.ended && (session.work !== work || session.instructions !== threadConfig.developerInstructions || JSON.stringify(session.tools) !== JSON.stringify(tools))) throw error('fresh-context-required', 'Start fresh context before changing Claude guidance.');
       if (!session || session.ended) {
         if (threadId) {
           try { await readFile(historyPath(work, id)); } catch (cause) { if (cause.code === 'ENOENT') throw error('native-unavailable', 'This Claude session is missing. Start fresh context; retained replies remain available.'); throw cause; }
         }
-        session = await launch({ id, work, model, instructions: threadConfig.developerInstructions, permissionMode: threadConfig.permissionMode, resume: Boolean(threadId) });
+        session = await launch({ id, work, model, instructions: threadConfig.developerInstructions, permissionMode: threadConfig.permissionMode, tools, resume: Boolean(threadId) });
         if (!session.info.models?.some((entry) => entry.value === model)) { await stop(session); throw error('model-unavailable', 'This Claude model is unavailable. Refresh models in Settings and select a current model.'); }
         session.instructions = threadConfig.developerInstructions; sessions.set(id, session);
       }
