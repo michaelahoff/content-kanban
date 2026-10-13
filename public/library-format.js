@@ -65,6 +65,24 @@ export function libraryPaths({ folders, assets }) {
   return { folders: folderPaths, assets: new Map(assets.map((asset) => [asset.id, pathOf(asset.folderId) + asset.filename])) };
 }
 
+// The chosen sources a move into folderId (null: the root) would relocate:
+// not those already there, nor those inside a chosen folder (they move with
+// it), and never a folder into itself or below.
+export function movableInto(listing, keys, folderId) {
+  const paths = libraryPaths(listing);
+  const target = (folderId && paths.folders.get(folderId)) || '';
+  const sources = keys.map(parseSourceKey).filter(Boolean);
+  const moving = sources.filter((source) => source.kind === 'folder').map((source) => paths.folders.get(source.id)).filter(Boolean);
+  return sources.filter((source) => {
+    const item = (source.kind === 'folder' ? listing.folders : listing.assets).find((entry) => entry.id === source.id);
+    if (!item) return false;
+    const path = (source.kind === 'folder' ? paths.folders : paths.assets).get(item.id);
+    if (moving.some((folderPath) => folderPath !== path && path.startsWith(folderPath))) return false;
+    if (source.kind === 'asset') return item.folderId !== folderId;
+    return item.parentId !== folderId && !target.startsWith(path);
+  });
+}
+
 // Search matches whole paths, case-insensitively; folders come first.
 export function searchLibrary(listing, query) {
   const needle = query.toLocaleLowerCase().trim();

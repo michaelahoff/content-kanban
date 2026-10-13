@@ -89,7 +89,7 @@ these so every stylesheet follows the choice.
 
 Where it goes, and nowhere else: the primary button, the brand mark, the active
 tab underline, links, focused field edges, the drop indicator and drop targets,
-and the display-image selection. Status colors (green, amber, danger, and
+the display-image selection, and chosen Library tiles. Status colors (green, amber, danger, and
 `--info` for "working") stay semantic and never change with the accent.
 
 ## Type

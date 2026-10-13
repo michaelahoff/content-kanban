@@ -1209,6 +1209,68 @@ These values apply when a card enters this lane.
   await click('#small-form [data-action="library-remove"]');
   await waitFor(`document.querySelector('#form-heading')?.textContent === 'Remove mark.png?'`);
   await click('[data-action="close-form"]');
+  await waitFor(`!document.querySelector('#form-dialog').open`);
+
+  // Choose several tiles, then drag them onto a folder together; a lone tile
+  // dragged onto a crumb moves up alone; Move to… is the keyboard way.
+  const tile = (name) => `.library-item:has(> .library-asset[aria-label="Inspect ${name}"])`;
+  const chosenNames = () => evaluate(`[...document.querySelectorAll('.library-item.chosen .library-name')].map(node => node.textContent)`);
+  await click(`${tile('mark.png')} .library-choose`);
+  await waitFor(`document.querySelector('.library-chosen strong')?.textContent === '1 chosen'`);
+  await click('.library-asset[aria-label="Inspect opaque.bin"]');
+  assert.deepEqual(await chosenNames(), ['mark.png', 'opaque.bin'], 'while anything is chosen, a click chooses instead of opening');
+  assert.equal(await evaluate(`document.querySelector('#library-dialog').open`), false);
+  await fill('#library-search', 'mark');
+  await waitFor(`document.querySelector('.library-chosen strong')?.textContent === '1 chosen'`);
+  await fill('#library-search', '');
+  assert.deepEqual(await chosenNames(), ['mark.png'], 'a search drops hidden tiles from the choice, so a move never carries them');
+  await evaluate(`document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))`);
+  await waitFor(`!document.querySelector('.library-chosen')`);
+  await evaluate(`document.querySelector('.library-asset[aria-label="Inspect mark.png"]').dispatchEvent(new MouseEvent('click', { bubbles: true, ctrlKey: true }))`);
+  const order = await evaluate(`[...document.querySelectorAll('#library .library-item[data-tile] .library-name')].map(node => node.textContent)`);
+  await evaluate(`document.querySelector('.library-asset[aria-label="Inspect opaque.bin"]').dispatchEvent(new MouseEvent('click', { bubbles: true, shiftKey: true }))`);
+  const [from, to] = [order.indexOf('mark.png'), order.indexOf('opaque.bin')].sort((a, b) => a - b);
+  assert.deepEqual(await chosenNames(), order.slice(from, to + 1), 'Shift chooses the range shown between the two tiles');
+  await click('[data-action="library-clear-chosen"]');
+  await waitFor(`!document.querySelector('.library-chosen')`);
+  for (const name of ['mark.png', 'opaque.bin']) await click(`${tile(name)} .library-choose`);
+  await waitFor(`document.querySelector('.library-chosen strong')?.textContent === '2 chosen'`);
+  const dragTile = async (fromSelector, toSelector, carried) => {
+    const points = await evaluate(`(() => {
+      const a = document.querySelector(${JSON.stringify(fromSelector)}).getBoundingClientRect(); const b = document.querySelector(${JSON.stringify(toSelector)}).getBoundingClientRect();
+      return { x1: a.left + a.width / 2, y1: a.top + a.height / 2, x2: b.left + b.width / 2, y2: b.top + b.height / 2 };
+    })()`);
+    interceptedDrag = null;
+    await send('Input.setInterceptDrags', { enabled: true });
+    try {
+      await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: points.x1, y: points.y1 });
+      await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: points.x1, y: points.y1, button: 'left', clickCount: 1 });
+      for (let step = 1; step <= 5; step++) await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: points.x1 + (points.x2 - points.x1) * step / 5, y: points.y1 + (points.y2 - points.y1) * step / 5, button: 'left', buttons: 1 });
+      for (let attempt = 0; attempt < 30 && !interceptedDrag; attempt++) await pause(20);
+      assert.ok(interceptedDrag, 'Dragging a Library tile starts a native drag');
+      assert.equal(interceptedDrag.items.find((item) => item.mimeType === 'application/x-frameboard-library-items')?.data.split('\n').length, carried);
+      for (const type of ['dragEnter', 'dragOver']) await send('Input.dispatchDragEvent', { type, x: points.x2, y: points.y2, data: interceptedDrag });
+      assert.ok(await evaluate(`document.querySelector(${JSON.stringify(toSelector)}).matches('.drop-target')`), 'The folder under the pointer shows it takes the drop');
+      await send('Input.dispatchDragEvent', { type: 'drop', x: points.x2, y: points.y2, data: interceptedDrag });
+      await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: points.x2, y: points.y2, button: 'left', clickCount: 1 });
+    } finally { await send('Input.setInterceptDrags', { enabled: false }); }
+  };
+  await snapshot('library-chosen');
+  await dragTile(tile('mark.png'), '.library-item[data-folder-drop]:has(> .library-folder[aria-label="Open folder Thumbnails"])', 2);
+  await waitFor(`document.querySelector('#toast').textContent === 'Moved 2 items to Thumbnails/.' && !document.querySelector('.library-chosen')`);
+  assert.ok(!(await libraryNames()).some((name) => ['mark.png', 'opaque.bin'].includes(name)));
+  await click('.library-folder[aria-label="Open folder Thumbnails"]');
+  await waitFor(`!!document.querySelector('.library-asset[aria-label="Inspect mark.png"]') && !!document.querySelector('.library-asset[aria-label="Inspect opaque.bin"]')`);
+  await click(`${tile('mark.png')} .library-choose`);
+  await dragTile(tile('opaque.bin'), '.library-crumb[data-id=""]', 1);
+  await waitFor(`document.querySelector('#toast').textContent === 'Moved 1 item to Library.'`);
+  assert.deepEqual(await chosenNames(), ['mark.png'], 'an unchosen tile is dragged alone and the choice stays');
+  await click('[data-action="library-move-chosen"]');
+  await waitFor(`document.querySelector('#form-heading')?.textContent === 'Move 1 item'`);
+  await click('#small-form [type="submit"]');
+  await waitFor(`document.querySelector('#toast').textContent === 'Moved 1 item to Library.' && !document.querySelector('.library-asset[aria-label="Inspect mark.png"]')`);
+  await click('.library-crumb[data-id=""]');
+  await waitFor(`!!document.querySelector('.library-asset[aria-label="Inspect mark.png"]') && !!document.querySelector('.library-asset[aria-label="Inspect opaque.bin"]')`);
 
   await click('.library-manage[aria-label="Manage Thumbnails"]');
   await waitFor(`document.querySelector('#form-heading')?.textContent === 'Organize Thumbnails'`);

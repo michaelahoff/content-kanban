@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { assetPreview, availableFilename, deliveryDescription, selectionPaths, selectionSummary, parseSourceKey, libraryFilename, previewType, libraryPaths, searchLibrary, folderHolders } from '../public/library-format.js';
+import { assetPreview, availableFilename, deliveryDescription, selectionPaths, selectionSummary, parseSourceKey, libraryFilename, previewType, libraryPaths, searchLibrary, folderHolders, movableInto, sourceKey } from '../public/library-format.js';
 import { mkdtemp, rm, writeFile, chmod, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -70,6 +70,22 @@ test('Library paths, search and folder-local name holders, as the browser comput
   assert.deepEqual(searchLibrary(listing, 'episode').map((entry) => entry.path), ['Scripts/Episode.md']);
   assert.deepEqual(folderHolders(listing, 'thumbs'), [{ kind: 'folder', id: 'refs', filename: 'References' }]);
   assert.deepEqual(folderHolders(listing, null).map((entry) => entry.filename), ['Thumbnails', 'Scripts', 'logo.png']);
+});
+
+test('a multi-item move skips what is already there and never puts a folder inside itself', () => {
+  const listing = {
+    folders: [{ id: 'thumbs', name: 'Thumbnails', parentId: null }, { id: 'refs', name: 'References', parentId: 'thumbs' }, { id: 'scripts', name: 'Scripts', parentId: null }],
+    assets: [{ id: 'a', filename: 'logo.png', folderId: null }, { id: 'b', filename: 'logo.png', folderId: 'refs' }],
+  };
+  const moving = (keys, folderId) => movableInto(listing, keys, folderId).map(sourceKey);
+  assert.deepEqual(moving(['asset:a', 'asset:b', 'folder:scripts'], 'thumbs'), ['asset:a', 'asset:b', 'folder:scripts']);
+  assert.deepEqual(moving(['asset:a', 'asset:b'], null), ['asset:b'], 'asset:a is already at the root');
+  assert.deepEqual(moving(['folder:thumbs', 'asset:a'], 'refs'), ['asset:a'], 'Thumbnails cannot move into its own subfolder');
+  assert.deepEqual(moving(['folder:refs', 'asset:gone', 'bogus'], 'refs'), [], 'a folder cannot move into itself; unknown sources are skipped');
+  assert.deepEqual(moving(['folder:thumbs', 'asset:b', 'folder:refs'], 'scripts'), ['folder:thumbs'], 'what a chosen folder holds moves with it, not out of it');
+  // Thumbnails/ is not a prefix of a sibling named Thumbnails2/.
+  listing.folders.push({ id: 'thumbs2', name: 'Thumbnails2', parentId: null });
+  assert.deepEqual(moving(['folder:thumbs'], 'thumbs2'), ['folder:thumbs']);
 });
 
 async function fixture(t) {
