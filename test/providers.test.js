@@ -59,7 +59,7 @@ test('Claude has its own catalog and native binding; switching providers retains
   assert.equal(f.codex.sends.length, 0);
   let snapshot = await f.chat(card.id);
   assert.equal(snapshot.submissions[0].provider, 'claude'); assert.equal(snapshot.conversations[0].binding.provider, 'claude');
-  assert.equal(claude.threads.get(claude.sends[0].threadId).config.dynamicTools, undefined);
+  assert.deepEqual(claude.threads.get(claude.sends[0].threadId).config.dynamicTools.map((tool) => tool.name), ['read_card', 'edit_fields', 'propose_changes', 'propose_move', 'register_image']);
   claude.finish(claude.sends[0], 'completed', 'Claude reply retained');
   await waitFor(async () => (await f.chat(card.id)).submissions[0].status === 'completed');
   await f.queue(card.id, await f.compose(card.id, 'Claude followup', 'opus', { provider: 'claude' }));
