@@ -25,9 +25,11 @@ async function toolReply(prompt, uuid) {
   if (!name) return null;
   if (!frameboardServer) return 'Tool reply {"error":"no frameboard server"}';
   await mcp({ id: 0, method: 'initialize', params: { protocolVersion: '2025-06-18' } });
+  await mcp({ method: 'notifications/initialized' });
+  const unknown = await mcp({ id: 9, method: 'resources/list' });
   const listed = await mcp({ id: 1, method: 'tools/list' });
   const called = await mcp({ id: 2, method: 'tools/call', params: { name, arguments: JSON.parse(args), _meta: { 'claudecode/toolUseId': `toolu-${uuid}` } } });
-  return `Tool reply ${JSON.stringify({ tools: listed.result.tools.map((tool) => tool.name), isError: called.result.isError, text: called.result.content[0]?.text })}`;
+  return `Tool reply ${JSON.stringify({ tools: listed.result.tools.map((tool) => tool.name), unknownMethod: unknown.error?.code, isError: called.result.isError, text: called.result.content[0]?.text })}`;
 }
 let queue = Promise.resolve();
 readline.createInterface({ input: process.stdin }).on('line', (line) => {

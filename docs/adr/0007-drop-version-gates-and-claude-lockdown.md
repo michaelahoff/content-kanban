@@ -19,4 +19,5 @@ Amends [ADR 0002](0002-opt-in-inherited-codex-setup.md) and [ADR 0004](0004-nati
 - Card chats can reach whatever public services the native setups and their tools can. Retained data stays read-only and card acceptance rules are unchanged.
 - Claude tool calls are not individually approved.
 - Home is still masked inside the boundary, so tools installed only under home (for example `~/.local/bin`) and SSH are unavailable to both providers.
+- Claude still has no Frameboard card tools; it edits card fields through lane results.
 - Prompts held before this change keep their frozen reasons. Cancel and resend them.

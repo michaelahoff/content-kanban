@@ -164,7 +164,7 @@ test('a Claude lane run reports through its result block', async (t) => {
   assert.match((await f.ok('GET', `/api/cards/${card.id}/notes`)).text, /Fixture notes/);
 });
 
-test('Claude card chats get the Frameboard card tools over stdio MCP, with the same edit authority as Codex', async (t) => {
+test('Claude card chats get the Frameboard card tools from an SDK-hosted MCP server, with the same edit authority as Codex', async (t) => {
   const { options } = await fixture(t);
   const { fixture: appFixture } = await import('./support/chat-fixture.js');
   const f = await appFixture(t, { claudeAdapter: { ...createClaudeAdapter(options), protectRetainedData: undefined } });
@@ -176,9 +176,15 @@ test('Claude card chats get the Frameboard card tools over stdio MCP, with the s
   const reply = await waitFor(async () => (await f.chat(card.id)).items.find((item) => item.text?.startsWith('Tool reply')));
   const result = JSON.parse(reply.text.slice('Tool reply '.length));
   assert.deepEqual(result.tools, ['read_card', 'edit_fields', 'propose_changes', 'propose_move', 'register_image']);
+  assert.equal(result.unknownMethod, -32601, 'an unsupported MCP method is a JSON-RPC error, not an empty result');
   assert.equal(result.isError, false);
+  const activity = (await f.chat(card.id)).items.find((item) => item.kind === 'dynamicToolCall');
+  assert.equal(activity.data.tool, 'edit_fields', 'the call appears in the transcript activity like a Codex card-tool call');
   const saved = (await f.ok('GET', `/api/cards/${card.id}`)).card;
   assert.equal(saved.title, 'Claude title', 'an authorized field is edited');
   assert.equal(saved.fields.intro, 'Saved intro', 'an unauthorized field is not');
   assert.deepEqual((await f.chat(card.id)).proposals[0].payload.fields, { intro: 'Claude intro' }, 'it becomes a proposal instead');
+  await f.queue(card.id, await f.compose(card.id, 'tool:delete_card {}', 'sonnet', { provider: 'claude' }));
+  const refused = await waitFor(async () => (await f.chat(card.id)).items.filter((item) => item.text?.startsWith('Tool reply'))[1]);
+  assert.equal(JSON.parse(refused.text.slice('Tool reply '.length)).isError, true, 'a tool Frameboard does not offer is refused');
 });

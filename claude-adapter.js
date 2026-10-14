@@ -2,7 +2,7 @@
 // sending a prompt. Card chats keep native sessions with the user's full Claude
 // Code setup and tools, inside the retained-data boundary, and send text,
 // image and PDF document inputs. Frameboard card tools reach Claude as the
-// in-process `frameboard` MCP server, carried over the same stdio stream, so
+// SDK-hosted `frameboard` MCP server, carried over the same stdio stream, so
 // the boundary needs no socket for them.
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -46,7 +46,11 @@ export function createClaudeAdapter({ command = 'claude', args = [], env = proce
   async function cardToolCall(session, name, input, callId) {
     const handler = [...listeners.get(session.id) ?? []].find((entry) => entry.onToolCall && (!entry.acceptsRequest || entry.acceptsRequest({ turnId: session.turnId })));
     if (!session.turnId || !handler) return { content: [{ type: 'text', text: 'Frameboard card tools are available only during a card chat turn.' }], isError: true };
+    // Shown like a Codex card-tool call in the transcript's activity.
+    const item = { id: `tool:${callId}`, type: 'dynamicToolCall', tool: name };
+    emit(session, { type: 'item-started', item });
     const result = await handler.onToolCall({ turnId: session.turnId, callId, tool: name, arguments: input ?? {} });
+    emit(session, { type: 'item-completed', item: { ...item, status: result.success ? 'completed' : 'failed' } });
     return { content: (result.contentItems ?? []).map((item) => ({ type: 'text', text: item.text ?? '' })), isError: !result.success };
   }
   async function cardToolServer(session, rpc) {
@@ -56,7 +60,9 @@ export function createClaudeAdapter({ command = 'claude', args = [], env = proce
       if (!session.tools.some((tool) => tool.name === rpc.params?.name)) return { content: [{ type: 'text', text: `Unknown Frameboard tool ${rpc.params?.name}.` }], isError: true };
       return cardToolCall(session, rpc.params.name, rpc.params.arguments, rpc.params._meta?.['claudecode/toolUseId'] ?? `${session.turnId}:${rpc.id}`);
     }
-    return {};
+    // Notifications and ping get an empty result; other requests are unknown.
+    if (rpc.id === undefined || rpc.method === 'ping' || rpc.method?.startsWith('notifications/')) return {};
+    throw Object.assign(new Error(`Method not found: ${rpc.method}`), { rpcCode: -32601 });
   }
   const emit = (session, event) => { for (const handler of listeners.get(session.id) ?? []) handler.onEvent?.({ threadId: session.id, turnId: session.turnId, ...event }); };
   async function launch({ id, work = cwd, model, instructions = '', permissionMode = null, tools = [], resume = false } = {}) {
@@ -106,9 +112,12 @@ export function createClaudeAdapter({ command = 'claude', args = [], env = proce
         }
       } else if (message.type === 'control_request' && message.request?.subtype === 'mcp_message') {
         const rpc = message.request.message ?? {};
-        const reply = (result) => { if (!session.ended) write({ type: 'control_response', response: { subtype: 'success', request_id: message.request_id, response: { mcp_response: { jsonrpc: '2.0', id: rpc.id ?? 0, result } } } }); };
-        (message.request.server_name === 'frameboard' ? cardToolServer(session, rpc) : Promise.resolve({}))
-          .then(reply, (cause) => reply({ content: [{ type: 'text', text: cause.message }], isError: true }));
+        const reply = (body) => {
+          try { write({ type: 'control_response', response: { subtype: 'success', request_id: message.request_id, response: { mcp_response: { jsonrpc: '2.0', id: rpc.id ?? 0, ...body } } } }); }
+          catch { /* Claude Code exited; it no longer waits for this reply. */ }
+        };
+        (message.request.server_name === 'frameboard' ? cardToolServer(session, rpc) : Promise.reject(Object.assign(new Error(`Unknown MCP server ${message.request.server_name}.`), { rpcCode: -32601 })))
+          .then((result) => reply({ result }), (cause) => reply(cause.rpcCode ? { error: { code: cause.rpcCode, message: cause.message } } : { result: { content: [{ type: 'text', text: cause.message }], isError: true } }));
       } else if (message.type === 'control_request') {
         // Permissions are bypassed, so a tool request is allowed as asked.
         write({ type: 'control_response', response: { subtype: 'success', request_id: message.request_id, response: message.request?.subtype === 'can_use_tool' ? { behavior: 'allow', updatedInput: message.request.input ?? {} } : {} } });
@@ -193,7 +202,7 @@ export function createClaudeAdapter({ command = 'claude', args = [], env = proce
       let session = sessions.get(id);
       if (session?.turnId) throw error('busy', 'Claude already has an active turn.');
       const tools = threadConfig.dynamicTools ?? [];
-      if (session && !session.ended && (session.work !== work || session.instructions !== threadConfig.developerInstructions || JSON.stringify(session.tools) !== JSON.stringify(tools))) throw error('fresh-context-required', 'Start fresh context before changing Claude guidance.');
+      if (session && !session.ended && (session.work !== work || session.instructions !== threadConfig.developerInstructions || JSON.stringify(session.tools) !== JSON.stringify(tools))) throw error('fresh-context-required', 'Start fresh context before changing Claude guidance or tools.');
       if (!session || session.ended) {
         if (threadId) {
           try { await readFile(historyPath(work, id)); } catch (cause) { if (cause.code === 'ENOENT') throw error('native-unavailable', 'This Claude session is missing. Start fresh context; retained replies remain available.'); throw cause; }
