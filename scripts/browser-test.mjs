@@ -159,14 +159,19 @@ try {
       assert.equal(line.beforeId, beforeId, `The insertion gap opens before the target ${kind}`);
       assert.equal(line.animations, line.reduced ? 0 : 2, 'The gap slides open and the line grows, as for cards');
       await evaluate(`Promise.all(document.querySelector('.drop-indicator').getAnimations({ subtree: true }).map(animation => animation.finished.catch(() => {})))`);
-      const width = await evaluate(`document.querySelector('.drop-indicator').getBoundingClientRect()[${JSON.stringify(across ? 'width' : 'height')}]`);
-      assert.ok(width >= 26, 'The insertion line gets its own gap');
+      const gap = await evaluate(`document.querySelector('.drop-indicator').getBoundingClientRect()[${JSON.stringify(across ? 'width' : 'height')}]`);
+      assert.ok(gap >= 26, 'The insertion line gets its own gap');
       await snapshot(`${kind}-reorder`);
       await send('Input.dispatchDragEvent', { type: 'drop', x: points.x2, y: points.y2, data: interceptedDrag });
       await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: points.x2, y: points.y2, button: 'left', clickCount: 1 });
       assert.equal(await evaluate(`document.querySelectorAll('.drop-indicator, .dragging').length`), 0, 'The line clears after dropping');
       await evaluate(`Promise.all(document.getAnimations().map(animation => animation.finished.catch(() => {})))`);
     } finally { await send('Input.setInterceptDrags', { enabled: false }); }
+  };
+  // Presses Alt and an arrow key on the focused element, as a keyboard user moves a lane or flow.
+  const altArrow = async (key) => {
+    const codes = { ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40 };
+    for (const type of ['rawKeyDown', 'keyUp']) await send('Input.dispatchKeyEvent', { type, key, code: key, modifiers: 1, windowsVirtualKeyCode: codes[key] });
   };
   // The editor doesn't show Prompt; it is set through Set prompt, lane commands, or card state.
   const openCardPrompt = () => evaluate(`(async () => (await import('/state.js')).locateCard().card.fields.prompt)()`);
@@ -535,6 +540,18 @@ These values apply when a card enters this lane.
   await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
   await saved();
   assert.equal(await evaluate(`document.querySelector('#board [data-lane]').dataset.lane`), addedLane, 'The dropped lane shows first');
+  // With the lane focused, Alt+→ and Alt+← move it one place and keep it focused.
+  const pageURL = await evaluate('location.href');
+  await evaluate(`document.querySelector('[data-lane="${addedLane}"]').focus()`);
+  await altArrow('ArrowRight');
+  await saved();
+  assert.equal((await state()).projects[0].lanes[1].id, addedLane, 'Alt+→ moves the focused lane right');
+  assert.equal(await evaluate(`document.activeElement.dataset.lane`), addedLane, 'The moved lane keeps focus');
+  await altArrow('ArrowLeft');
+  await altArrow('ArrowLeft');
+  await saved();
+  assert.equal((await state()).projects[0].lanes[0].id, addedLane, 'Alt+← moves it back and stops at the first place');
+  assert.equal(await evaluate('location.href'), pageURL, 'Alt+← moves the lane instead of going back in history');
   assert.equal((await state()).projects[0].lanes[0].name, 'Archived');
   assert.equal((await state()).projects[0].lanes[0].color, 'purple');
   // The prompt updates while the card editor stays open, and later edits save.
@@ -565,6 +582,12 @@ These values apply when a card enters this lane.
   await click('#card-dialog [data-action="close-card"]');
   await waitFor(`!document.querySelector('#card-dialog').open`); // Closing animates before the board settles.
   await saved();
+  // A lane drag whose heading is redrawn mid-drag never reports dragend; the next card drag still moves the card.
+  await evaluate(`(async () => {
+    const { renderBoard } = await import('/board.js');
+    document.querySelector('[data-lane-handle]').dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: new DataTransfer() }));
+    renderBoard();
+  })()`);
   await drag(`[data-card="${entryCardId}"] h3`, `[data-lane="${addedLane}"]`, entryCardId);
   await saved();
   assert.equal((await state()).projects[0].lanes[0].cards[0].fields.prompt, entryPrompt, 'Dragging into the lane also replaces the prompt');
@@ -959,8 +982,10 @@ These values apply when a card enters this lane.
     await saved();
     assert.deepEqual((await api('GET', '/api/workspace')).flows.filter((entry) => entry.projectId === projectId).map((entry) => entry.id), [shortsFlow.id, mainFlow.id]);
     assert.deepEqual(await evaluate(`[...document.querySelector('[data-flow="${shortsFlow.id}"]').parentElement.querySelectorAll('[data-flow]')].map(node => node.dataset.flow)`), [shortsFlow.id, mainFlow.id]);
-    await dragReorder('flow', mainFlow.id, shortsFlow.id);
+    await evaluate(`document.querySelector('[data-flow="${mainFlow.id}"] .flow-link').focus()`);
+    await altArrow('ArrowUp');
     await saved();
+    assert.equal(await evaluate(`document.activeElement.closest('[data-flow]')?.dataset.flow`), mainFlow.id, 'The moved flow keeps focus');
     assert.deepEqual((await api('GET', '/api/workspace')).flows.filter((entry) => entry.projectId === projectId).map((entry) => entry.id), [mainFlow.id, shortsFlow.id]);
     // Flow settings rename the flow; deleting it leaves the first flow.
     await click(`[data-action="edit-flow"][data-id="${shortsFlow.id}"]`);

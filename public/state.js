@@ -88,6 +88,13 @@ export function locateCard(targetId = state.cardId) {
   }
   return null;
 }
+export function locateFlow(flowId) {
+  for (const p of state.projects) {
+    const f = p.flows.find((item) => item.id === flowId);
+    if (f) return { flow: f, project: p };
+  }
+  return null;
+}
 export function cardCount(p) { return p.loaded ? lanesOf(p).reduce((sum, lane) => sum + lane.cards.length, 0) : p.cardCount; }
 export const flowCardCount = (f) => f.lanes.reduce((sum, lane) => sum + lane.cards.length, 0);
 // Card template definitions come with the workspace. A card keeps the template

@@ -2,7 +2,7 @@
 import { $, escape, iconButton, imageURL, toast, wordCount, confirmDelete, smallForm, setTheme, setAccent } from './ui.js';
 import { retry, request } from './api.js';
 import { fieldInputId } from './card-template.js';
-import { state, project, flow, flowCardCount, forgetFlow, locateCard, cardCount, loadWorkspace, loadCards, loadTemplates, templateOf, flowTemplate, cardChanged, flushCards, createCard, moveCard, deleteCard, updateLane, updateFlow, deleteLane, deleteFlow, deleteProject, archiveProject, unarchiveProject, saveStatus, hasUnsavedWork, onStatusChange, useSavedCard, undoLastMove, loadPlaybooks, applyStages, restoreFlowSelection } from './state.js';
+import { state, project, flow, flowCardCount, forgetFlow, locateCard, locateFlow, cardCount, loadWorkspace, loadCards, loadTemplates, templateOf, flowTemplate, cardChanged, flushCards, createCard, moveCard, deleteCard, updateLane, updateFlow, deleteLane, deleteFlow, deleteProject, archiveProject, unarchiveProject, saveStatus, hasUnsavedWork, onStatusChange, useSavedCard, undoLastMove, loadPlaybooks, applyStages, restoreFlowSelection } from './state.js';
 import { view, selectProject, renderApp, renderBoard, renderStatus, editProject, editFlow, editLane, editProjectPrompt, toggleCards, showTab, showFlow } from './board.js';
 import { dropLibraryItems, libraryActivity, hasLibraryUploads } from './library.js';
 import { openCard, closeCard, cardPanelOpen, renderImages, copyText, copyTrifecta, fetchYoutube, addImages, originalVideoMarkup, videoLinkMarkup } from './editor.js';
@@ -27,10 +27,23 @@ function insertionLine(tag = 'div') {
   return node;
 }
 const dropIndicator = insertionLine();
-const indicators = { lane: insertionLine(), flow: insertionLine('li') };
-indicators.lane.classList.add('upright');
-// A lane dragged by its heading, or a flow dragged in the sidebar, to a new
-// place among its siblings: { kind: 'lane' | 'flow', id, target }.
+// Lanes reorder across the board and flows down their project's list in the
+// sidebar, by dragging or with Alt and the arrow keys. `move` saves the new
+// place and redraws.
+const reorderKinds = {
+  lane: { across: true, indicator: insertionLine(), keys: { ArrowLeft: -1, ArrowRight: 1 }, move(id, position) {
+    const f = flow();
+    updateLane(f, f.lanes.find((lane) => lane.id === id), { position });
+    renderBoard();
+  } },
+  flow: { across: false, indicator: insertionLine('li'), keys: { ArrowUp: -1, ArrowDown: 1 }, move(id, position) {
+    const { project: p, flow: f } = locateFlow(id);
+    updateFlow(p, f, { position });
+    renderApp();
+  } },
+};
+reorderKinds.lane.indicator.classList.add('upright');
+// The lane or flow being dragged: { kind: 'lane' | 'flow', id, target }.
 let reorder = null;
 
 function makeCard(laneId) {
@@ -56,12 +69,16 @@ async function flowActivity(entry) {
     const { stages, ...rest } = created;
     p.flows.push({ ...rest, lanes: stages.map((stage) => ({ ...stage, cards: [] })) });
   } else if (entry.type === 'updated' && existing) {
+    const shown = `${existing.name} ${existing.templateId} ${p.flows.indexOf(existing)}`;
     if (entry.data.name) existing.name = entry.data.name;
     if (entry.data.templateId) existing.templateId = entry.data.templateId;
     if (Number.isInteger(entry.data.position) && p.flows.indexOf(existing) !== entry.data.position) {
       p.flows.splice(p.flows.indexOf(existing), 1);
       p.flows.splice(Math.min(entry.data.position, p.flows.length), 0, existing);
     }
+    // This tab's own change comes back already applied; redrawing would
+    // only take focus from the flow just moved with the keyboard.
+    if (`${existing.name} ${existing.templateId} ${p.flows.indexOf(existing)}` === shown) return;
   } else if (entry.type === 'deleted' && existing) {
     forgetFlow(p, existing);
     if (state.cardId && !locateCard()) closeCard();
@@ -289,6 +306,9 @@ document.addEventListener('paste', (event) => {
   if (targetId) addImages(files, targetId);
 });
 document.addEventListener('dragstart', (event) => {
+  // A drag whose element was redrawn away never reports dragend; start clean.
+  draggedId = null;
+  reorder = null;
   const handle = event.target.closest?.('[data-lane-handle], [draggable="true"][data-flow]');
   if (handle) {
     const kind = handle.dataset.laneHandle ? 'lane' : 'flow';
@@ -309,7 +329,7 @@ document.addEventListener('dragstart', (event) => {
   card.classList.add('dragging');
 });
 function clearDropTarget() {
-  for (const indicator of [dropIndicator, ...Object.values(indicators)]) {
+  for (const indicator of [dropIndicator, ...Object.values(reorderKinds).map((kind) => kind.indicator)]) {
     indicator.getAnimations({ subtree: true }).forEach((animation) => animation.cancel());
     indicator.remove();
   }
@@ -384,58 +404,71 @@ function slide(kind, previous) {
     ], { duration: 200, easing: 'cubic-bezier(.22, 1, .36, 1)' });
   }
 }
-// Where a dragged lane or flow would land among its siblings: before the
-// first whose middle is past the pointer (across for lanes, down for flows).
-// `same` marks a drop that would leave it where it is.
 const reorderNode = () => document.querySelector(`[data-${reorder.kind}="${reorder.id}"]`);
+// The pointer's place along the line a lane or flow moves on, and where a
+// rectangle starts and ends on it.
+const along = (event) => (reorderKinds[reorder.kind].across ? event.clientX : event.clientY);
+const span = (rect) => (reorderKinds[reorder.kind].across ? [rect.left, rect.right] : [rect.top, rect.bottom]);
+// Where a dragged lane or flow would land among its siblings: before the
+// first whose middle is past the pointer. `same` marks a drop that would
+// leave it where it is.
 function reorderTarget(point) {
   const list = reorderNode().parentElement;
   const items = [...list.querySelectorAll(`:scope > [data-${reorder.kind}]`)];
   const others = items.filter((node) => node.dataset[reorder.kind] !== reorder.id);
-  const across = reorder.kind === 'lane';
-  const before = others.find((node) => {
-    const rect = node.getBoundingClientRect();
-    return across ? point <= rect.left + rect.width / 2 : point <= rect.top + rect.height / 2;
-  }) || null;
+  const before = others.find((node) => { const [start, end] = span(node.getBoundingClientRect()); return point <= (start + end) / 2; }) || null;
   const position = before ? others.indexOf(before) : others.length;
-  let end = items.at(-1).nextElementSibling;
-  if (end === indicators[reorder.kind]) end = end.nextElementSibling;
-  return { list, before: before || end, position, same: position === items.indexOf(reorderNode()) };
+  // Past the last sibling the line goes before whatever follows the list
+  // (Add a lane, Add a new flow).
+  let after = items.at(-1).nextElementSibling;
+  if (after === reorderKinds[reorder.kind].indicator) after = after.nextElementSibling;
+  return { list, before: before || after, position, same: position === items.indexOf(reorderNode()) };
 }
 // Lanes reorder within the board, flows within their project's list.
 const overReorderList = (event) => !!reorderNode()?.parentElement.contains(event.target);
 function showReorderTarget(point) {
-  const indicator = indicators[reorder.kind];
-  const upright = reorder.kind === 'lane';
+  const { indicator, across } = reorderKinds[reorder.kind];
   // Keep the slot stable when the pointer is inside the gap it just opened.
-  const rect = indicator.getBoundingClientRect();
-  if (indicator.isConnected && (upright ? point >= rect.left && point <= rect.right : point >= rect.top && point <= rect.bottom)) return;
+  const [start, end] = span(indicator.getBoundingClientRect());
+  if (indicator.isConnected && point >= start && point <= end) return;
   const target = reorderTarget(point);
   if (indicator.isConnected && reorder.target?.position === target.position) return;
   clearDropTarget();
   reorder.target = target;
-  openSlot(indicator, target.list, target.before, upright);
+  openSlot(indicator, target.list, target.before, across);
 }
 function dropReorder(event) {
   const { kind, id } = reorder;
-  const target = !overReorderList(event) ? null : reorder.target ?? reorderTarget(kind === 'lane' ? event.clientX : event.clientY);
+  const target = !overReorderList(event) ? null : reorder.target ?? reorderTarget(along(event));
   const previous = positions(kind, id);
   clearDrag();
   reorder = null;
   if (!target) return;
   event.preventDefault();
   if (target.same) return;
-  if (kind === 'lane') {
-    const f = flow();
-    updateLane(f, f.lanes.find((lane) => lane.id === id), { position: target.position });
-    renderBoard();
-  } else {
-    const p = state.projects.find((item) => item.flows.some((f) => f.id === id));
-    updateFlow(p, p.flows.find((f) => f.id === id), { position: target.position });
-    renderApp();
-  }
+  reorderKinds[kind].move(id, target.position);
   slide(kind, previous);
 }
+// Alt with an arrow key moves the focused lane left or right, or the focused
+// flow up or down, one place.
+document.addEventListener('keydown', (event) => {
+  if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || cardPanelOpen() || formDialog.open || imageDialog.open) return;
+  const lane = event.target.matches?.('#board > [data-lane]') && $('[data-lane-handle]', event.target) ? event.target : null;
+  const node = lane || event.target.closest?.('.flow-link')?.closest('[draggable="true"][data-flow]');
+  if (!node) return;
+  const kind = lane ? 'lane' : 'flow';
+  const step = reorderKinds[kind].keys[event.key];
+  if (!step) return;
+  event.preventDefault();
+  const id = node.dataset[kind];
+  const siblings = [...node.parentElement.querySelectorAll(`:scope > [data-${kind}]`)];
+  const position = siblings.indexOf(node) + step;
+  if (position < 0 || position >= siblings.length) return;
+  const previous = positions(kind);
+  reorderKinds[kind].move(id, position);
+  slide(kind, previous);
+  document.querySelector(kind === 'lane' ? `#board > [data-lane="${id}"]` : `[data-flow="${id}"] .flow-link`)?.focus();
+});
 document.addEventListener('dragend', () => { draggedId = null; reorder = null; clearDrag(); });
 // A card dropped on another flow of its project in the sidebar moves to that
 // flow's first lane.
@@ -460,7 +493,7 @@ document.addEventListener('dragover', (event) => {
   if (reorder) {
     if (!overReorderList(event)) { clearDropTarget(); return; }
     event.preventDefault();
-    showReorderTarget(reorder.kind === 'lane' ? event.clientX : event.clientY);
+    showReorderTarget(along(event));
     event.dataTransfer.dropEffect = 'move';
     return;
   }
