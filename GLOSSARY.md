@@ -23,11 +23,23 @@ A reviewed transfer summary waiting to accompany the first manual prompt to the 
 The boundary in a retained conversation identifying the messages on which a transfer summary was based. A summary is stale when newer source messages exist beyond that boundary.
 
 **Flow**:
-A board of lanes inside a project, with the card template for its new cards, its flow map, lane playbooks and skills. A project holds one or more flows and they share its Library. A card can move to a lane of any flow in its project; approve and send back stay within the card's flow. A flow's documents are self-contained so that a flow can later be exported on its own.
+A set of lanes inside a project, with the card template for its new cards, its flow map, lane playbooks and skills, shown either as a board of columns or as a graph flow. A project holds one or more flows and they share its Library. A card can move to a lane of any flow in its project; approve and send back stay within the card's flow. A flow's documents are self-contained so that a flow can later be exported on its own.
 _Avoid_: Pipeline, workflow, board (for the data)
 
+**Graph flow**:
+A flow shown as nodes placed on a canvas and joined by routes instead of as columns. Each node is one of its lanes, with the same cards, playbook and lane runs. A board can be turned into a graph (a single line of routes) and a graph into a board, which removes its routes and layout.
+_Avoid_: Workflow graph, diagram
+
+**Route**:
+A named way out of a lane to another lane of its flow, written in the lane's playbook under `routes:`, and drawn as an arrow in a graph flow. A lane run's agent chooses a route by name in its lane result, and the user can follow one from the card.
+_Avoid_: Edge, transition, link
+
+**Advance**:
+A lane playbook setting saying what happens when its agent chooses a route: `review` (the default) makes the move a proposal; `auto` moves the card at once and starts the next lane's run. Automatic moves pause for review after twelve in a row.
+_Avoid_: Auto-move, autopilot
+
 **Lane**:
-One stage of a flow, shown as a column of cards. The database and code call it a stage.
+One stage of a flow, shown as a column of cards, or as a node in a graph flow. The database and code call it a stage.
 _Avoid_: Column, step
 
 **Card template**:
@@ -62,7 +74,7 @@ One execution of a lane playbook's instructions for one card, triggered by movin
 _Avoid_: Lane graph run
 
 **Lane result**:
-The block at the end of a lane run's reply that lists field changes, hand-off notes, an optional proposed move and any finished documents or workspace files to keep as saved outputs. Fields the playbook may edit apply; everything else becomes a card proposal.
+The block at the end of a lane run's reply that lists field changes, hand-off notes, an optional proposed move or chosen route, and any finished documents or workspace files to keep as saved outputs. Fields the playbook may edit apply; everything else becomes a card proposal. A chosen route is followed or proposed as the playbook's advance says.
 
 **Hand-off notes**:
 A card's `notes.md`, read by every lane run and added to by each one, so work carries across lanes and providers.

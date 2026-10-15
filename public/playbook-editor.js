@@ -106,7 +106,7 @@ function renderNav() {
   const draftSkills = [...drafts.keys()].filter((path) => path.startsWith('skills/') && !saved.has(path));
   $('.playbook-nav', dialog).innerHTML = `<span class="playbook-nav-heading">Flow</span>
     ${item('data-playbook-action="select" data-kind="map"', 'Flow map', 'MAP.md', selection.kind === 'map', dirty('MAP.md'))}
-    <span class="playbook-nav-heading">Lanes</span>
+    <span class="playbook-nav-heading">${editing.kind === 'graph' ? 'Nodes' : 'Lanes'}</span>
     ${editing.lanes.map((lane) => {
       const document = laneDocument(lane.id);
       const settings = document && settingsOf(document.path);
@@ -171,7 +171,7 @@ function formMarkup(path) {
 function formContext(path) {
   const text = textOf(path); const parsed = parseDocument(text); const settings = playbookSettings(parsed, template());
   return { text, template: template(), document: parsed, settings, kind: selection.kind,
-    lanes: editing.lanes.map((item) => ({ id: item.id, name: item.name, taken: Boolean(laneDocument(item.id)) })), skillNames: skillNames(), models: enabledModels(), libraryMarkup: libraryMarkup(settings), hints: hints() };
+    lanes: editing.lanes.map((item) => ({ id: item.id, name: item.name, taken: Boolean(laneDocument(item.id)) })), skillNames: skillNames(), models: enabledModels(), libraryMarkup: libraryMarkup(settings), hints: hints(), graph: editing.kind === 'graph' };
 }
 // Refreshes the form alone, e.g. when a Library check completes or the
 // instructions mention another skill, unless the user is working in it.

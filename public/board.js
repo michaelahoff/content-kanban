@@ -2,8 +2,13 @@
 // cards, and the project, flow and lane forms.
 import { $, escape, icon, button, iconButton, imageURL, palette, smallForm, nameField, themeSwitchMarkup, accentSwitchMarkup } from './ui.js';
 import { state, project, flow, locateCard, cardCount, flowCardCount, searchText, saveStatus, createProject, renameProject, createFlow, updateFlow, selectFlow, addLane, updateLane, latestMoveCard } from './state.js';
+// A graph flow shows its lanes as nodes joined by routes (graph.js); the
+// forms call them nodes there.
+const isGraph = (f) => f?.kind === 'graph';
+const flowIcon = (f) => (isGraph(f) ? 'graph' : 'board');
 import { activityMarkup } from './chat.js';
 import { renderLibrary } from './library.js';
+import { renderGraph, nodeForm } from './graph.js';
 
 const app = $('#app');
 export const view = { query: '', pasteLaneId: null, cardsCollapsed: false, tab: 'board' };
@@ -66,7 +71,7 @@ const flowCount = (p, f) => (p.loaded ? flowCardCount(f) : f.cardCount ?? '');
 // shared by every flow in the project.
 const tabs = (p) => {
   const f = flow(p);
-  return `<div class="project-tabs" role="tablist" aria-label="Project views"><button type="button" role="tab" class="board-tab ${view.tab === 'board' ? 'active' : ''}" data-action="show-board" aria-selected="${view.tab === 'board'}">${icon('board')} ${escape(f?.name ?? 'Board')} ${f ? `<span data-flow-count="${f.id}">${flowCount(p, f)}</span>` : ''}</button><button type="button" role="tab" class="board-tab ${view.tab === 'library' ? 'active' : ''}" data-action="show-library" aria-selected="${view.tab === 'library'}">${icon('upload')} Library</button></div>`;
+  return `<div class="project-tabs" role="tablist" aria-label="Project views"><button type="button" role="tab" class="board-tab ${view.tab === 'board' ? 'active' : ''}" data-action="show-board" aria-selected="${view.tab === 'board'}">${icon(flowIcon(f))} ${escape(f?.name ?? 'Board')} ${f ? `<span data-flow-count="${f.id}">${flowCount(p, f)}</span>` : ''}</button><button type="button" role="tab" class="board-tab ${view.tab === 'library' ? 'active' : ''}" data-action="show-library" aria-selected="${view.tab === 'library'}">${icon('upload')} Library</button></div>`;
 };
 const searchBox = () => `<label class="search">${icon('search')}<input id="search" type="search" placeholder="Find a card…" aria-label="Find a card" value="${escape(view.query)}"></label>`;
 const projectView = (p, tools) => view.tab === 'library'
@@ -79,7 +84,7 @@ function projectLink(item) {
   const current = item.id === state.projectId;
   const shown = current ? flow(item) : null;
   const draggable = !item.archivedAt && item.flows.length > 1 ? 'draggable="true"' : '';
-  const flowRow = (f) => `<li class="flow-row ${f === shown ? 'active' : ''}" data-flow="${f.id}" ${draggable}><button type="button" class="flow-link" ${draggable} ${draggable ? 'aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"' : ''} data-action="show-flow" data-project-id="${item.id}" data-id="${f.id}" data-flow-drop="${f.id}" ${f === shown ? 'aria-current="page"' : ''}><span>${escape(f.name)}</span><span class="flow-count" data-flow-count="${f.id}">${flowCount(item, f)}</span></button>${item.archivedAt ? '' : iconButton('edit-flow', `${f.name} flow settings`, 'more', `data-project-id="${item.id}" data-id="${f.id}"`)}</li>`;
+  const flowRow = (f) => `<li class="flow-row ${f === shown ? 'active' : ''}" data-flow="${f.id}" ${draggable}><button type="button" class="flow-link" ${draggable} ${draggable ? 'aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"' : ''} data-action="show-flow" data-project-id="${item.id}" data-id="${f.id}" data-flow-drop="${f.id}" ${f === shown ? 'aria-current="page"' : ''}><span>${escape(f.name)}</span>${isGraph(f) ? `<span class="flow-kind" title="Graph flow">${icon('graph')}<span class="sr-only">graph</span></span>` : ''}<span class="flow-count" data-flow-count="${f.id}">${flowCount(item, f)}</span></button>${item.archivedAt ? '' : iconButton('edit-flow', `${f.name} flow settings`, 'more', `data-project-id="${item.id}" data-id="${f.id}"`)}</li>`;
   const add = item.archivedAt ? '' : `<li><button type="button" class="add-flow-link" data-action="add-flow" data-project-id="${item.id}">${icon('plus')}<span>Add a new flow</span></button></li>`;
   return `<div class="project-group"><button class="project-link ${current ? 'active' : ''}" data-action="switch-project" data-id="${item.id}">${icon('board')}<span>${escape(item.name)}</span><span class="project-count">${cardCount(item)}</span></button>
     <ul class="flow-list" aria-label="${escape(item.name)} flows">${item.flows.map(flowRow).join('')}${add}</ul></div>`;
@@ -104,7 +109,7 @@ export function renderApp() {
     <main class="main">
       <div class="topbar"><div class="breadcrumbs">${iconButton('toggle-sidebar', 'Toggle projects', 'menu')}</div><div class="workspace-chat-activity"><button class="button small secondary" data-action="workspace-chat-activity">Chat activity</button><div id="chat-activity-list" hidden></div></div><div class="save-status" data-save-status></div></div>
       <div id="save-error" class="error-banner" role="alert" hidden></div>
-      ${p?.archivedAt ? archivedHeader(p) : p ? `<header class="board-header"><div><div class="heading-row"><h1>${escape(p.name)}</h1>${iconButton('edit-project', 'Project settings', 'more')}</div></div><div class="header-actions">${button('open-playbooks', 'Playbooks', 'playbook', 'button secondary')}${button('add-lane', 'Add lane', 'plus', 'button secondary')}${button('add-card', 'New card', 'plus', 'button primary', flow(p)?.lanes.length ? '' : 'disabled')}</div></header>
+      ${p?.archivedAt ? archivedHeader(p) : p ? `<header class="board-header"><div><div class="heading-row"><h1>${escape(p.name)}</h1>${iconButton('edit-project', 'Project settings', 'more')}</div></div><div class="header-actions">${button('open-playbooks', 'Playbooks', 'playbook', 'button secondary')}${button('add-lane', isGraph(flow(p)) ? 'Add node' : 'Add lane', 'plus', 'button secondary')}${button('add-card', 'New card', 'plus', 'button primary', flow(p)?.lanes.length ? '' : 'disabled')}</div></header>
       ${projectView(p, `${button('undo-move', 'Undo last move', 'undo', 'button small secondary', 'data-undo-move="board" disabled')}${button('toggle-cards', view.cardsCollapsed ? 'Expand cards' : 'Collapse cards', null, 'button small secondary', `aria-pressed="${view.cardsCollapsed}" aria-controls="board"`)}<span class="paste-hint">${icon('image')} Paste an image to start a card</span>${searchBox()}`)}` : `<div class="no-projects"><span class="empty-symbol">${icon('board')}</span><h1>No projects yet</h1><p>Create a project to start a board.</p>${button('add-project', 'Create a project', 'plus', 'button primary')}</div>`}
     </main>`;
   renderBoard();
@@ -142,6 +147,13 @@ export function renderBoard() {
     toggle.textContent = view.cardsCollapsed ? 'Expand cards' : 'Collapse cards';
     toggle.setAttribute('aria-pressed', String(view.cardsCollapsed));
   }
+  container.classList.toggle('graph-board', isGraph(f));
+  if (isGraph(f)) {
+    renderGraph(container, p, f, { search, collapsed: view.cardsCollapsed });
+    renderCounts();
+    renderStatus();
+    return;
+  }
   if (p.archivedAt) {
     container.innerHTML = f.lanes.map((lane) => {
       const cards = lane.cards.filter((card) => searchText(card).toLocaleLowerCase().includes(search));
@@ -165,14 +177,19 @@ export function renderBoard() {
   renderCounts();
   renderStatus();
 }
+// Board or graph, chosen when a flow is made; Flow settings converts later.
+const kindField = (kind = 'board') => `<fieldset class="kind-field"><legend class="form-label">Show this flow as</legend>${[
+  ['board', 'Board', 'Lanes in columns. Cards move from left to right.'],
+  ['graph', 'Graph', 'Nodes joined by named routes. Agents choose the route, and a flow can branch and loop.'],
+].map(([value, label, help]) => `<label class="kind-option"><input type="radio" name="kind" value="${value}" ${kind === value ? 'checked' : ''}><span>${icon(value === 'graph' ? 'graph' : 'board')}<strong>${label}</strong><small>${help}</small></span></label>`).join('')}</fieldset>`;
 const templateField = (selectedId, label, help) => `<label class="form-label" for="flow-template">${label}</label><select class="form-input" id="flow-template" name="templateId">${state.templates.map((template, index) => `<option value="${escape(template.id)}" ${(selectedId ? template.id === selectedId : index === 0) ? 'selected' : ''}>${escape(template.name)}</option>`).join('')}</select><p class="field-help">${help}</p>${button('manage-templates', 'Manage templates…', null, 'text-button')}`;
 // A new project starts with one flow; its card template is chosen here.
 // Each flow's template is changed in that flow's settings.
 export function editProject(isNew = false) {
   const p = project();
-  smallForm({ title: isNew ? 'New project' : 'Project settings', fields: nameField(isNew ? '' : p.name) + (isNew ? templateField(null, 'Card template for new cards', 'The project starts with one flow that uses this template. Add more flows, each with its own template, with Add a new flow in the sidebar.') : ''), submit: isNew ? 'Create project' : 'Save changes', extra: isNew ? '' : `${button('archive-project', 'Archive project', null, 'text-button')}${button('delete-project', 'Delete project', 'trash', 'text-button danger')}`, onSubmit: async (data) => {
+  smallForm({ title: isNew ? 'New project' : 'Project settings', fields: nameField(isNew ? '' : p.name) + (isNew ? templateField(null, 'Card template for new cards', 'The project starts with one flow that uses this template. Add more flows, each with its own template, with Add a new flow in the sidebar.') + kindField() : ''), submit: isNew ? 'Create project' : 'Save changes', extra: isNew ? '' : `${button('archive-project', 'Archive project', null, 'text-button')}${button('delete-project', 'Delete project', 'trash', 'text-button danger')}`, onSubmit: async (data) => {
     if (isNew) {
-      const next = await createProject(data.get('name').trim(), data.get('templateId') || undefined);
+      const next = await createProject(data.get('name').trim(), data.get('templateId') || undefined, data.get('kind') || 'board');
       selectProject(next.id);
     } else renameProject(p, data.get('name').trim());
     renderApp();
@@ -187,13 +204,14 @@ export function editFlow(isNew = false) {
   smallForm({
     title: isNew ? 'New flow' : 'Flow settings',
     description: isNew ? `A flow is its own board of lanes in “${p.name}”, with its own playbooks, skills and flow map. Every flow shares the project Library, and cards can move between flows.` : '',
-    fields: nameField(f?.name ?? '', 'Flow name', 100) + templateField(f?.templateId, 'Card template for new cards', 'Existing cards keep the template they were created with.'),
+    fields: nameField(f?.name ?? '', 'Flow name', 100) + templateField(f?.templateId, 'Card template for new cards', 'Existing cards keep the template they were created with.')
+      + (isNew ? kindField() : `<div class="lane-command-settings"><span class="form-label">Shown as a ${isGraph(f) ? 'graph' : 'board'}</span><p class="field-help">${isGraph(f) ? 'Turning it into a board puts its nodes in route order and removes every route, the advance settings and the layout.' : 'Turning it into a graph keeps every lane, card and playbook, and joins the lanes in a single line of routes you can rewire.'}</p>${button('convert-flow', isGraph(f) ? 'Turn into a board…' : 'Turn into a graph…', isGraph(f) ? 'board' : 'graph', 'button secondary', `data-id="${f.id}"`)}</div>`),
     submit: isNew ? 'Create flow' : 'Save changes',
     extra: f && p.flows.length > 1 ? button('delete-flow', 'Delete flow', 'trash', 'text-button danger', `data-id="${f.id}"`) : '',
     onSubmit: async (data) => {
       const values = { name: data.get('name').trim(), templateId: data.get('templateId') || undefined };
       if (isNew) {
-        const created = await createFlow(p, values.name, values.templateId);
+        const created = await createFlow(p, values.name, values.templateId, data.get('kind') || 'board');
         selectFlow(p, created.id);
         view.tab = 'board';
       } else updateFlow(p, f, values);
@@ -204,6 +222,7 @@ export function editFlow(isNew = false) {
 export function editLane(laneId) {
   const f = flow();
   const lane = f.lanes.find((item) => item.id === laneId);
+  if (isGraph(f)) return lane ? editNode(f, lane) : nodeForm();
   const fields = nameField(lane?.name, 'Lane name', 100)
     + `<fieldset class="color-field"><legend>Lane color</legend>${palette.map((color) => `<label class="color-option ${color}" title="${color}"><input type="radio" name="color" value="${color}" ${color === (lane?.color || palette[f.lanes.length % palette.length]) ? 'checked' : ''}><span>${icon('check')}<span class="sr-only">${color}</span></span></label>`).join('')}</fieldset>`
     + (lane ? `<div class="lane-command-settings"><span class="form-label">When a card enters this lane</span><p class="field-help">${escape(lane.playbook ? `${lane.playbook.summary}. Defined in ${lane.playbook.path}.` : 'Nothing happens yet. Write a lane playbook to set fields or have an agent work on each card.')}</p>${button('edit-playbook', lane.playbook ? 'Open playbook' : 'Write a playbook', 'playbook', 'button secondary', `data-id="${laneId}"`)}</div>` : '<p class="field-help lane-command-settings">After adding this lane, open its playbook to decide what happens when a card enters it.</p>');
@@ -214,5 +233,18 @@ export function editLane(laneId) {
     renderBoard();
     // Enable the new-card action when adding the first lane.
     $('.header-actions [data-action="add-card"]').disabled = !f.lanes.length;
+  } });
+}
+// A node of a graph flow: its name, color and whether new cards start in it.
+// Routes are edited on the canvas, everything else in its playbook.
+function editNode(f, lane) {
+  const first = f.lanes[0] === lane;
+  const fields = `<label class="form-label" for="name-input">Node name</label><input class="form-input" id="name-input" name="name" value="${escape(lane.name)}" maxlength="100" required autocomplete="off">`
+    + `<fieldset class="color-field"><legend>Node color</legend>${palette.map((color) => `<label class="color-option ${color}" title="${color}"><input type="radio" name="color" value="${color}" ${color === lane.color ? 'checked' : ''}><span>${icon('check')}<span class="sr-only">${color}</span></span></label>`).join('')}</fieldset>`
+    + `<label class="playbook-check node-start"><input type="checkbox" name="start" ${first ? 'checked disabled' : ''}>${icon('check')}New cards start here</label><p class="field-help">${first ? 'This is the start node. Make another node the start to change it.' : 'New cards, and cards dropped on this flow in the sidebar, go to the start node.'}</p>`
+    + `<div class="lane-command-settings"><span class="form-label">When a card enters this node</span><p class="field-help">${escape(lane.playbook ? `${lane.playbook.summary}. Defined in ${lane.playbook.path}.` : 'Nothing happens yet. Open its playbook to set fields or have an agent work on each card.')}</p>${button('edit-playbook', 'Open playbook', 'playbook', 'button secondary', `data-id="${lane.id}"`)}</div>`;
+  smallForm({ title: 'Edit node', fields, submit: 'Save changes', extra: button('delete-lane', 'Delete node', 'trash', 'text-button danger', `data-id="${lane.id}"`), onSubmit: (data) => {
+    updateLane(f, lane, { name: data.get('name').trim(), color: data.get('color'), position: data.get('start') ? 0 : f.lanes.indexOf(lane) });
+    renderBoard();
   } });
 }
