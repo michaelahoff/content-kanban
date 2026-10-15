@@ -387,7 +387,7 @@ export function addLane(f, { name, color }) {
   f.lanes.push(lane);
   enqueue(() => send('POST', `${url('flows', f.id)}/stages`, { id: lane.id, name, color }));
 }
-export function updateLane(f, lane, { name, color, position }) {
+export function updateLane(f, lane, { name = lane.name, color = lane.color, position = f.lanes.indexOf(lane) }) {
   Object.assign(lane, { name, color });
   f.lanes.splice(f.lanes.indexOf(lane), 1);
   f.lanes.splice(position, 0, lane);

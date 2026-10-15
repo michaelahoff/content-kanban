@@ -74,11 +74,12 @@ const projectView = (p, tools) => view.tab === 'library'
   : `<div class="board-toolbar">${tabs(p)}<div class="board-tools">${tools}</div></div><div id="board" class="board" aria-label="${escape(p.name)}: ${escape(flow(p)?.name ?? '')} flow"></div>`;
 // Each project in the sidebar lists its flows beneath it, ending with Add a
 // new flow. A card dragged onto another flow of its project moves to that
-// flow's first lane.
+// flow's first lane; a flow dragged up or down the list changes its place.
 function projectLink(item) {
   const current = item.id === state.projectId;
   const shown = current ? flow(item) : null;
-  const flowRow = (f) => `<li class="flow-row ${f === shown ? 'active' : ''}"><button type="button" class="flow-link" data-action="show-flow" data-project-id="${item.id}" data-id="${f.id}" data-flow-drop="${f.id}" ${f === shown ? 'aria-current="page"' : ''}><span>${escape(f.name)}</span><span class="flow-count" data-flow-count="${f.id}">${flowCount(item, f)}</span></button>${item.archivedAt ? '' : iconButton('edit-flow', `${f.name} flow settings`, 'more', `data-project-id="${item.id}" data-id="${f.id}"`)}</li>`;
+  const draggable = !item.archivedAt && item.flows.length > 1 ? 'draggable="true"' : '';
+  const flowRow = (f) => `<li class="flow-row ${f === shown ? 'active' : ''}" data-flow="${f.id}" ${draggable}><button type="button" class="flow-link" ${draggable} data-action="show-flow" data-project-id="${item.id}" data-id="${f.id}" data-flow-drop="${f.id}" ${f === shown ? 'aria-current="page"' : ''}><span>${escape(f.name)}</span><span class="flow-count" data-flow-count="${f.id}">${flowCount(item, f)}</span></button>${item.archivedAt ? '' : iconButton('edit-flow', `${f.name} flow settings`, 'more', `data-project-id="${item.id}" data-id="${f.id}"`)}</li>`;
   const add = item.archivedAt ? '' : `<li><button type="button" class="add-flow-link" data-action="add-flow" data-project-id="${item.id}">${icon('plus')}<span>Add a new flow</span></button></li>`;
   return `<div class="project-group"><button class="project-link ${current ? 'active' : ''}" data-action="switch-project" data-id="${item.id}">${icon('board')}<span>${escape(item.name)}</span><span class="project-count">${cardCount(item)}</span></button>
     <ul class="flow-list" aria-label="${escape(item.name)} flows">${item.flows.map(flowRow).join('')}${add}</ul></div>`;
@@ -154,7 +155,7 @@ export function renderBoard() {
   container.innerHTML = f.lanes.map((lane) => {
     const cards = lane.cards.filter((card) => searchText(card).toLocaleLowerCase().includes(search));
     return `<section class="lane" data-lane="${lane.id}" tabindex="0" aria-label="${escape(lane.name)} lane; paste images here">
-      <div class="lane-heading"><span class="lane-dot ${lane.color}"></span><h2>${escape(lane.name)}</h2><span class="lane-count">${search ? `${cards.length}/` : ''}${lane.cards.length}</span>${lane.playbook?.hasInstructions && lane.playbook.run === 'on-enter' && !lane.playbook.errors.length ? `<span class="lane-playbook-badge" title="${escape(lane.playbook.summary)}">Auto</span>` : lane.playbook?.errors.length ? '<span class="lane-playbook-badge error" title="This lane playbook has errors">!</span>' : ''}<div class="lane-actions">${iconButton('edit-playbook', `${lane.name} playbook`, 'playbook', `data-id="${lane.id}"`)}${iconButton('edit-lane', `Edit ${lane.name} lane`, 'more', `data-id="${lane.id}"`)}${iconButton('add-card', `Add card to ${lane.name}`, 'plus', `data-lane-id="${lane.id}"`)}</div></div>
+      <div class="lane-heading" draggable="true" data-lane-handle="${lane.id}"><span class="lane-dot ${lane.color}"></span><h2>${escape(lane.name)}</h2><span class="lane-count">${search ? `${cards.length}/` : ''}${lane.cards.length}</span>${lane.playbook?.hasInstructions && lane.playbook.run === 'on-enter' && !lane.playbook.errors.length ? `<span class="lane-playbook-badge" title="${escape(lane.playbook.summary)}">Auto</span>` : lane.playbook?.errors.length ? '<span class="lane-playbook-badge error" title="This lane playbook has errors">!</span>' : ''}<div class="lane-actions">${iconButton('edit-playbook', `${lane.name} playbook`, 'playbook', `data-id="${lane.id}"`)}${iconButton('edit-lane', `Edit ${lane.name} lane`, 'more', `data-id="${lane.id}"`)}${iconButton('add-card', `Add card to ${lane.name}`, 'plus', `data-lane-id="${lane.id}"`)}</div></div>
       <div class="lane-cards">${cards.map((card) => cardMarkup(card)).join('')}${!cards.length ? `<div class="empty-lane">${icon(search ? 'search' : 'image')}<p>${search ? 'No matching cards' : 'No cards yet'}</p><span>${search ? 'Try another search.' : 'Add a card or paste an image here.'}</span></div>` : ''}</div>
       ${button('add-card', 'Add card', 'plus', 'lane-add', `data-lane-id="${lane.id}"`)}
     </section>`;
@@ -175,16 +176,16 @@ export function editProject(isNew = false) {
     renderApp();
   } });
 }
-// A flow's name, the card template its new cards use, and its place among the
-// project's flows. Deleting is offered while the project has another flow.
+// A flow's name and the card template its new cards use; flows are
+// reordered by dragging them in the sidebar. Deleting is offered while the
+// project has another flow.
 export function editFlow(isNew = false) {
   const p = project();
   const f = isNew ? null : flow(p);
-  const position = f && p.flows.length > 1 ? `<label class="form-label" for="flow-position">Position</label><select class="form-input" id="flow-position" name="position">${p.flows.map((item, index) => `<option value="${index}" ${item === f ? 'selected' : ''}>${index + 1}${index === 0 ? ' · First flow' : index === p.flows.length - 1 ? ' · Last flow' : ''}</option>`).join('')}</select>` : '';
   smallForm({
     title: isNew ? 'New flow' : 'Flow settings',
     description: isNew ? `A flow is its own board of lanes in “${p.name}”, with its own playbooks, skills and flow map. Every flow shares the project Library, and cards can move between flows.` : '',
-    fields: nameField(f?.name ?? '', 'Flow name', 100) + templateField(f?.templateId, 'Card template for new cards', 'Existing cards keep the template they were created with.') + position,
+    fields: nameField(f?.name ?? '', 'Flow name', 100) + templateField(f?.templateId, 'Card template for new cards', 'Existing cards keep the template they were created with.'),
     submit: isNew ? 'Create flow' : 'Save changes',
     extra: f && p.flows.length > 1 ? button('delete-flow', 'Delete flow', 'trash', 'text-button danger', `data-id="${f.id}"`) : '',
     onSubmit: async (data) => {
@@ -193,7 +194,7 @@ export function editFlow(isNew = false) {
         const created = await createFlow(p, values.name, values.templateId);
         selectFlow(p, created.id);
         view.tab = 'board';
-      } else updateFlow(p, f, { ...values, ...(position ? { position: Number(data.get('position')) } : {}) });
+      } else updateFlow(p, f, values);
       renderApp();
     },
   });
@@ -203,11 +204,10 @@ export function editLane(laneId) {
   const lane = f.lanes.find((item) => item.id === laneId);
   const fields = nameField(lane?.name, 'Lane name', 100)
     + `<fieldset class="color-field"><legend>Lane color</legend>${palette.map((color) => `<label class="color-option ${color}" title="${color}"><input type="radio" name="color" value="${color}" ${color === (lane?.color || palette[f.lanes.length % palette.length]) ? 'checked' : ''}><span>${icon('check')}<span class="sr-only">${color}</span></span></label>`).join('')}</fieldset>`
-    + (lane ? `<label class="form-label" for="lane-position">Position</label><select class="form-input" id="lane-position" name="position">${f.lanes.map((item, index) => `<option value="${index}" ${item.id === laneId ? 'selected' : ''}>${index + 1}${index === 0 ? ' · First lane' : index === f.lanes.length - 1 ? ' · Last lane' : ''}</option>`).join('')}</select>` : '')
     + (lane ? `<div class="lane-command-settings"><span class="form-label">When a card enters this lane</span><p class="field-help">${escape(lane.playbook ? `${lane.playbook.summary}. Defined in ${lane.playbook.path}.` : 'Nothing happens yet. Write a lane playbook to set fields or have an agent work on each card.')}</p>${button('edit-playbook', lane.playbook ? 'Open playbook' : 'Write a playbook', 'playbook', 'button secondary', `data-id="${laneId}"`)}</div>` : '<p class="field-help lane-command-settings">After adding this lane, open its playbook to decide what happens when a card enters it.</p>');
   smallForm({ title: lane ? 'Edit lane' : 'Add a lane', fields, submit: lane ? 'Save changes' : 'Add lane', extra: lane ? button('delete-lane', 'Delete lane', 'trash', 'text-button danger', `data-id="${laneId}"`) : '', onSubmit: (data) => {
     const values = { name: data.get('name').trim(), color: data.get('color') };
-    if (lane) updateLane(f, lane, { ...values, position: Number(data.get('position')) });
+    if (lane) updateLane(f, lane, values);
     else addLane(f, values);
     renderBoard();
     // Enable the new-card action when adding the first lane.

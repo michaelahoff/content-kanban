@@ -201,7 +201,7 @@
   .project-link:hover { background: var(--raised); }
   .project-link.active { font-weight: 500; }
   /* A project's flows, nested under it. The current flow carries the highlight. */
-  .flow-list { display: grid; gap: 1px; margin: 0 0 8px 21px; padding: 0 0 0 10px; list-style: none; border-left: 1px solid var(--border); }
+  .flow-list { display: flex; flex-direction: column; gap: 1px; margin: 0 0 8px 21px; padding: 0 0 0 10px; list-style: none; border-left: 1px solid var(--border); }
   .flow-row { display: flex; align-items: center; border-radius: 8px; }
   .flow-row:hover { background: var(--raised); }
   .flow-row.active { background: var(--raised); }
@@ -267,6 +267,8 @@
   .lane:focus { outline-offset: 2px; }
   .lane.drag-over { background: var(--mark-wash); border-color: var(--mark); }
   .lane-heading { display: flex; align-items: center; gap: 8px; min-height: 36px; margin-bottom: 10px; padding-left: 4px; }
+  .lane-heading[draggable="true"] { cursor: grab; user-select: none; }
+  .lane-heading[draggable="true"]:active { cursor: grabbing; }
   .lane-heading::before { counter-increment: lane; content: counter(lane); min-width: 12px; color: var(--muted); font-size: 14px; font-weight: 500; font-variant-numeric: tabular-nums; }
   .lane-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--lane-color); flex-shrink: 0; }
   .lane-heading h2 { font-size: 16px; font-weight: 700; line-height: 1.3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -297,9 +299,11 @@
   .card-body { padding: 10px 4px 2px; }
   .card h3 { font-size: 16px; font-weight: 500; line-height: 22px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
   .card-body .chat-activity { margin-top: 4px; font-size: 12px; }
-  .card.dragging { opacity: .35; }
+  .card.dragging, .lane.dragging, .flow-row.dragging { opacity: .35; }
   .drop-indicator { display: flex; align-items: center; flex: 0 0 26px; gap: 0; padding-inline: 2px; pointer-events: none; }
   .drop-indicator span { height: 2px; flex: 1; background: var(--brand-red); }
+  .drop-indicator.upright { flex-direction: column; padding: 2px 0; }
+  .drop-indicator.upright span { width: 2px; height: auto; }
   .drop-indicator::before, .drop-indicator::after { content: ''; width: 9px; height: 9px; flex-shrink: 0; border-radius: 50%; background: var(--brand-red); }
   .cards-collapsed .lane-cards { gap: 6px; }
   .cards-collapsed .card { padding: 2px 4px; border-radius: 12px; }
