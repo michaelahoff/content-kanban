@@ -424,7 +424,6 @@
   .dialog-description { color: var(--muted); font-size: 14px; line-height: 1.6; margin: -4px 0 20px; overflow-wrap: anywhere; }
   .form-label { display: block; margin-bottom: 8px; font-size: 14px; font-weight: 500; color: var(--text); }
   .form-input { width: 100%; border: 1px solid var(--field-border); border-radius: 8px; padding: 9px 12px; background: var(--field); font-size: 14px; }
-  .prompt-input { min-height: 180px; resize: vertical; font-size: 15px; line-height: 1.65; }
   .field-help { font-size: 13px; line-height: 1.55; color: var(--muted); margin: 8px 0 14px; }
   .small-dialog-footer { display: flex; justify-content: space-between; align-items: center; gap: 15px; margin-top: 26px; }
   .small-dialog-footer > div { display: flex; gap: 8px; margin-left: auto; }

@@ -5,7 +5,7 @@
 // stored by, so keys lock once a saved template has cards.
 import { $, escape, icon, toast, smallForm } from './ui.js';
 import { state, loadTemplates, createTemplate, updateTemplate, deleteTemplate } from './state.js';
-import { renderApp } from './board.js';
+import { renderBoard } from './board.js';
 import { validateTemplate, fieldKeyFrom, youtubeVideoTemplate, controls, maxFields, maxImageRoles, maxFieldLength } from './card-template.js';
 
 const dialog = $('#template-dialog');
@@ -77,7 +77,7 @@ const helpMarkup = `<h3>What a template is</h3>
   <h4>Keys and labels</h4>
   <p>Every field has a key, such as <code>script</code>, that card values, lane playbooks and chats refer to. Labels, controls and limits can change at any time; a key is permanent once cards use the template.</p>
   <h4>Hidden fields</h4>
-  <p>A field hidden from the editor stays out of search, chats and lane results, but a lane playbook can still fill it with <code>set:</code>. The shared prompt works this way.</p>
+  <p>A field hidden from the editor stays out of search, chats and lane results, but a lane playbook can still fill it with <code>set:</code>. The YouTube video template's Prompt works this way.</p>
   <h4>Image roles</h4>
   <p>Roles label a card's images for agents, such as Original or Inspiration. Every card also has a display image, which playbooks call <code>display</code>.</p>
   <h4>Removing things</h4>
@@ -237,8 +237,7 @@ async function save() {
       draft = typed;
     }
     render();
-    // The header's Set prompt button follows the project's template, so the whole app redraws.
-    renderApp();
+    renderBoard();
     toast('Template saved.');
   } catch (error) {
     busy = false;
@@ -262,7 +261,7 @@ function remove() {
       busy = true; renderFooter();
       try { await deleteTemplate(template.id); } finally { busy = false; renderFooter(); }
       load(state.templates[0]?.id ?? null);
-      render(); renderApp();
+      render(); renderBoard();
       toast('Template deleted.');
     } });
 }

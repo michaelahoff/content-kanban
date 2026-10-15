@@ -490,30 +490,6 @@ test('a saved composer drops the fields and roles a template edit hides or remov
   assert.ok(!JSON.stringify(submission.context).includes('The hook'), 'The hidden value is not sent');
 });
 
-test('a shared prompt is refused for the whole project when it exceeds a card template’s prompt limit', async (t) => {
-  const f = await fixture(t);
-  const template = await f.ok('POST', '/api/templates', { name: 'Short prompt', title: youtubeVideoTemplate.title, imageRoles: youtubeVideoTemplate.imageRoles,
-    fields: youtubeVideoTemplate.fields.map((field) => (field.key === 'prompt' ? { ...field, max: 5 } : field)) });
-  assert.equal(template.fields.find((field) => field.key === 'prompt').max, 5);
-  const { project, stages } = await createProject(f, 'Shorts', template.id);
-  const cards = [await createCard(f, project, stages[0].id, { title: 'One' }), await createCard(f, project, stages[0].id, { title: 'Two' })];
-  const refused = await f.call('POST', `/api/projects/${project.id}/prompt`, { prompt: 'Too long prompt' });
-  assert.equal(refused.status, 400);
-  assert.equal(refused.body.error, 'Prompts for “Short prompt” cards can be up to 5 characters.');
-  for (const card of cards) {
-    const unchanged = await getCard(f, card.id);
-    assert.equal(unchanged.fields.prompt, '', 'No card takes a refused prompt');
-    assert.equal(unchanged.revision, card.revision);
-  }
-  const updated = await f.ok('POST', `/api/projects/${project.id}/prompt`, { prompt: 'Short' });
-  assert.deepEqual(updated.cards.map((entry) => entry.id).sort(), cards.map((card) => card.id).sort());
-  for (const card of cards) {
-    const changed = await getCard(f, card.id);
-    assert.equal(changed.fields.prompt, 'Short');
-    assert.equal(changed.revision, card.revision + 1);
-  }
-});
-
 test('validateTemplate tells fields and roles apart by key, so a shared label or a label that spells another key is refused', () => {
   const errorsOf = (input) => validateTemplate({ name: 'Check', ...input }).errors;
   assert.deepEqual(errorsOf({ fields: [{ key: 'first', label: 'Same' }, { key: 'second', label: 'Same' }] }),

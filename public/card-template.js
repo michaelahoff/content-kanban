@@ -39,7 +39,7 @@ export const youtubeVideoTemplate = Object.freeze({
     { key: 'titleOptions', label: 'Title Options', max: 200000, control: 'textarea', placeholder: 'Brainstorm titles here, one idea per line…' },
     { key: 'intro', label: 'Intro', max: 200000, control: 'textarea', copy: true, placeholder: "What's the hook? Start with the idea that pulls people in…" },
     { key: 'script', label: 'Script', max: 1000000, control: 'textarea', countWords: true, copy: true, placeholder: 'Make room for the full story. Write your script here…' },
-    // Prompt is set with Set prompt or lane playbooks and used by Trifecta copy; the editor doesn't show it.
+    // Prompt is set with lane playbooks and used by Trifecta copy; the editor doesn't show it.
     { key: 'prompt', label: 'Prompt', max: 200000, control: 'textarea', editor: false },
     { key: 'publishedVideoUrl', label: 'Published video URL', max: 4096, control: 'url', videoLabel: 'published video', placeholder: 'https://…' },
     { key: 'originalVideoTitle', label: 'Original video title', max: 500, control: 'text', placeholder: 'The video that inspired this idea…' },
@@ -164,8 +164,8 @@ export function setFields(template) {
 export function editorFields(template) {
   return template.fields.filter((field) => field.editor !== false);
 }
-// Fields a chat or lane run can send, edit or report: hidden fields such as
-// a shared prompt are left out because every card tends to share them.
+// Fields a chat or lane run can send, edit or report: hidden fields, such as
+// the YouTube video template's Prompt, are left out.
 export function contextFields(template) {
   return [{ key: 'title', label: template.title.label }, ...editorFields(template)];
 }

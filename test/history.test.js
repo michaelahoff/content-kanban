@@ -248,11 +248,10 @@ test('all card mutation boundaries record complete states; entry Set effects sha
   assert.equal(f.states(card.id).at(-1).snapshot.fields.script, 'Keep');
   assert.equal(f.states(card.id).at(-1).snapshot.imageRoles.original, image.id);
   f.store.undoMove(f.ctx, card.id, { moveId: moved.card.lastMove.id, revision: moved.card.revision });
-  f.store.setProjectPrompt(f.ctx, f.project.id, 'Bulk prompt');
   f.store.deleteCard(f.ctx, card.id);
-  assert.deepEqual(f.states(card.id).map((entry) => entry.source), ['created', 'editing_session', 'images_changed', 'images_changed', 'images_changed', 'editing_session', 'reordered', 'moved', 'move_undone', 'bulk_prompt', 'deleted']);
+  assert.deepEqual(f.states(card.id).map((entry) => entry.source), ['created', 'editing_session', 'images_changed', 'images_changed', 'images_changed', 'editing_session', 'reordered', 'moved', 'move_undone', 'deleted']);
   assert.ok(f.states(card.id).at(-1).snapshot.deletedAt);
-  assert.equal(f.states(card.id).at(-1).snapshot.fields.prompt, 'Bulk prompt');
+  assert.equal(f.states(card.id).at(-1).snapshot.fields.prompt, 'Created prompt');
   assert.equal(f.states(card.id).at(-1).snapshot.imageRoles.original, image.id);
   f.store.deleteStage(f.ctx, f.stages[0].id);
   assert.equal(f.states(neighbour.id).at(-1).source, 'deleted');

@@ -220,7 +220,6 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
       ['DELETE', /^\/api\/projects\/([^/]+)$/, (ctx, req, id) => (store.deleteProject(ctx, id), { ok: true })],
       ['POST', /^\/api\/projects\/([^/]+)\/archive$/, (ctx, req, id) => store.archiveProject(ctx, id)],
       ['POST', /^\/api\/projects\/([^/]+)\/unarchive$/, (ctx, req, id) => store.unarchiveProject(ctx, id)],
-      ['POST', /^\/api\/projects\/([^/]+)\/prompt$/, async (ctx, req, id) => ({ cards: store.setProjectPrompt(ctx, id, (await read(req))?.prompt) })],
       ['GET', /^\/api\/projects\/([^/]+)\/library$/, (ctx, req, id) => store.library.list(ctx, id)],
       ['POST', /^\/api\/projects\/([^/]+)\/library\/uploads$/, (ctx, req, id, url) => store.library.upload(ctx, id, uploadInput(url), req, { signal: uploadSignal(req) }), 201],
       ['GET', /^\/api\/projects\/([^/]+)\/library\/assets\/[^/]+$/, (ctx, req, id, url) => store.library.asset(ctx, id, url.pathname.split('/').at(-1))],

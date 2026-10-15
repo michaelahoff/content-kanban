@@ -81,21 +81,6 @@ test('moving a stale card does not authorize overwriting another tab’s content
   assert.deepEqual(f.client.saveStatus().conflicts, []);
 });
 
-test('shared prompts preserve unrelated newer fields and save matching prompt versions', async (t) => {
-  const f = await fixture(t);
-  const stale = await f.card();
-  const other = await f.card();
-  await f.call('PATCH', `/api/cards/${stale.id}`, { revision: 1, fields: { script: 'External script' } });
-  f.client.setProjectPrompt(f.client.project(), 'Shared prompt');
-  await f.idle();
-  assert.equal(stale.revision, 3);
-  assert.equal(stale.fields.prompt, 'Shared prompt');
-  const saved = (await f.call('GET', `/api/cards/${stale.id}`)).card;
-  assert.equal(saved.fields.script, 'External script');
-  assert.equal(saved.fields.prompt, 'Shared prompt');
-  assert.equal((await f.call('GET', `/api/cards/${other.id}`)).card.fields.prompt, 'Shared prompt');
-});
-
 test('conflicts do not block other writes, and loading the saved card resolves only that draft', async (t) => {
   const f = await fixture(t);
   const stale = await f.card();
@@ -495,77 +480,6 @@ test('a field the template gains while cards are loaded is not a local edit, and
   assert.equal((await f.call('GET', `/api/cards/${card.id}`)).card.fields.summary, 'x');
   assert.deepEqual(f.client.saveStatus().conflicts, []);
   assert.equal(f.api.syncState().error, '');
-});
-
-test('the shared prompt reaches only cards whose template has a Prompt field', async (t) => {
-  const f = await fixture(t);
-  const projectId = f.client.state.projectId;
-  const youtube = [await f.card(), await f.card()];
-  const plainTemplate = await f.call('POST', '/api/templates', { name: 'Plain', title: { label: 'Card title', max: 500 }, fields: [{ key: 'body', label: 'Body', control: 'textarea' }], imageRoles: [] });
-  assert.equal(plainTemplate.id, 'plain');
-  await f.call('PATCH', `/api/flows/${f.client.flow().id}`, { templateId: 'plain' });
-  // Reload as the fixture does: the flow's template changed in another tab.
-  await f.client.loadWorkspace();
-  await f.client.loadCards(projectId);
-  const p = f.client.project();
-  assert.equal(f.client.flow(p).templateId, 'plain');
-  const plain = f.client.createCard(f.client.flow(p).lanes[0]);
-  await f.idle();
-  assert.equal(plain.template, 'plain');
-  assert.deepEqual(Object.keys(plain.fields), ['body']);
-  assert.equal(f.client.hasPromptField(plain), false);
-  assert.equal(f.client.setProjectPrompt(p, 'Shared'), 2, 'Only the YouTube cards take the prompt');
-  await f.idle();
-  assert.equal(f.api.syncState().error, '');
-  assert.deepEqual(f.client.saveStatus().conflicts, []);
-  assert.equal(Object.hasOwn(plain.fields, 'prompt'), false);
-  assert.equal(Object.hasOwn((await f.call('GET', `/api/cards/${plain.id}`)).card.fields, 'prompt'), false);
-  for (const card of youtube) {
-    assert.equal(f.client.locateCard(card.id).card.fields.prompt, 'Shared');
-    assert.equal((await f.call('GET', `/api/cards/${card.id}`)).card.fields.prompt, 'Shared');
-  }
-  // A project whose cards all lack the field has nothing to set.
-  const plainOnly = await f.client.createProject('Plain only', 'plain');
-  f.client.createCard(plainOnly.flows[0].lanes[0], plainOnly);
-  await f.idle();
-  assert.equal(f.client.setProjectPrompt(plainOnly, 'Shared'), 0);
-  await f.idle();
-  assert.equal(f.api.syncState().error, '');
-});
-
-test('a shared prompt over a card’s template limit is refused before any card changes', async (t) => {
-  const f = await fixture(t);
-  const projectId = f.client.state.projectId;
-  const youtube = (await f.call('GET', '/api/templates')).templates.find((template) => template.id === 'youtube-video');
-  const short = await f.call('POST', '/api/templates', { name: 'Short prompts', title: youtube.title, imageRoles: youtube.imageRoles,
-    fields: youtube.fields.map((field) => (field.key === 'prompt' ? { ...field, max: 5 } : field)) });
-  assert.equal(short.id, 'short-prompts');
-  await f.call('PATCH', `/api/flows/${f.client.flow().id}`, { templateId: short.id });
-  // Reload as the fixture does: the flow's template changed in another tab.
-  await f.client.loadWorkspace();
-  await f.client.loadCards(projectId);
-  const p = f.client.project();
-  const card = f.client.createCard(f.client.flow(p).lanes[0]);
-  await f.idle();
-  assert.equal(f.client.promptLimit(card), 5);
-  assert.throws(() => f.client.setProjectPrompt(p, 'Too long prompt'), { name: 'Error', message: /“Short prompts”.*\b5 characters/ });
-  assert.equal(card.fields.prompt, '');
-  await f.idle();
-  assert.equal(f.api.syncState().pending, 0);
-  assert.equal(f.api.syncState().error, '');
-  assert.equal(f.client.hasUnsavedWork(), false);
-  assert.equal((await f.call('GET', `/api/cards/${card.id}`)).card.fields.prompt, '');
-  // The refusal queues nothing, so the next save goes straight through.
-  card.title = 'Edited after the refusal';
-  f.client.cardChanged(card);
-  f.client.flushCards();
-  await f.idle();
-  assert.equal((await f.call('GET', `/api/cards/${card.id}`)).card.title, 'Edited after the refusal');
-  assert.equal(f.client.setProjectPrompt(p, 'Short'), 1);
-  await f.idle();
-  assert.equal(f.api.syncState().error, '');
-  assert.equal(card.fields.prompt, 'Short');
-  assert.equal((await f.call('GET', `/api/cards/${card.id}`)).card.fields.prompt, 'Short');
 });
 
 test('a draft in a field the template dropped is let go and no longer holds the write queue', async (t) => {

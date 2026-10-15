@@ -504,17 +504,3 @@ export function deleteProject(p) {
   state.projects = state.projects.filter((item) => item.id !== p.id);
   enqueue(() => send('DELETE', url('projects', p.id)));
 }
-// Only cards whose template has a Prompt field take the shared prompt.
-export const hasPromptField = (card) => templateOf(card).fields.some((field) => field.key === 'prompt');
-export const promptLimit = (card) => templateOf(card).fields.find((field) => field.key === 'prompt')?.max ?? null;
-// Throws before any card changes when the prompt is too long for one of them.
-export function setProjectPrompt(p, prompt) {
-  const cards = lanesOf(p).flatMap((lane) => lane.cards).filter(hasPromptField);
-  for (const card of cards) if (prompt.length > promptLimit(card)) throw new Error(`Prompts for “${templateOf(card).name}” cards can be up to ${promptLimit(card).toLocaleString()} characters. Nothing was changed.`);
-  for (const card of cards) {
-    card.fields.prompt = prompt;
-    cardChanged(card);
-  }
-  flushCards();
-  return cards.length;
-}

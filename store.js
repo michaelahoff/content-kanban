@@ -993,26 +993,6 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
       return { id, archivedAt: null };
     },
 
-    // Cards whose template has a Prompt field take the shared prompt; every
-    // affected card's own limit is checked before any card changes.
-    setProjectPrompt(ctx, projectId, prompt) {
-      requireProject(ctx, projectId);
-      check(typeof prompt === 'string', 'Prompts must be text.');
-      return transaction(() => {
-        const at = now();
-        const affected = all('SELECT * FROM cards WHERE project_id = ? AND deleted_at IS NULL', projectId).map(cardFrom)
-          .map((card) => ({ card, template: templates.forCard(card) })).map(({ card, template }) => ({ card, template, field: template.fields.find((field) => field.key === 'prompt') }))
-          .filter(({ field }) => field);
-        for (const { template, field } of affected) check(prompt.length <= field.max, `Prompts for “${template.name}” cards can be up to ${field.max.toLocaleString('en-US')} characters.`);
-        return affected.map(({ card }) => {
-            run('UPDATE cards SET fields = ?, revision = revision + 1, updated_at = ? WHERE id = ?', JSON.stringify({ ...card.fields, prompt }), at, card.id);
-            recordChange(ctx, 'card', card.id, 'updated', { projectId, data: { revision: card.revision + 1 }, at });
-            recordSavedState(ctx, card.id, 'bulk_prompt', at);
-            return { id: card.id, revision: card.revision + 1, updatedAt: at };
-          });
-      });
-    },
-
     createStage(ctx, flowId, input) {
       check(isObject(input), 'Invalid lane.');
       requireFlow(ctx, flowId);

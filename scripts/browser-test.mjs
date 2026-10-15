@@ -173,7 +173,7 @@ try {
     const codes = { ArrowLeft: 37, ArrowUp: 38, ArrowRight: 39, ArrowDown: 40 };
     for (const type of ['rawKeyDown', 'keyUp']) await send('Input.dispatchKeyEvent', { type, key, code: key, modifiers: 1, windowsVirtualKeyCode: codes[key] });
   };
-  // The editor doesn't show Prompt; it is set through Set prompt, lane commands, or card state.
+  // The editor doesn't show Prompt; it is set through lane commands or card state.
   const openCardPrompt = () => evaluate(`(async () => (await import('/state.js')).locateCard().card.fields.prompt)()`);
   const setOpenCardPrompt = (value) => evaluate(`(async () => { const { locateCard, cardChanged } = await import('/state.js'); const card = locateCard().card; card.fields.prompt = ${JSON.stringify(value)}; cardChanged(card); })()`);
   const saved = () => waitFor(`document.querySelector('[data-save-status]')?.textContent.includes('All changes saved')`);
@@ -1525,7 +1525,6 @@ These values apply when a card enters this lane.
     assert.equal((await api('GET', '/api/workspace')).flows.find((item) => item.projectId === templateProjectId).templateId, templateId);
   };
   await chooseProjectTemplate('blog-post');
-  assert.equal(await evaluate(`document.querySelector('[data-action="set-project-prompt"]')`), null, 'Set prompt needs a Prompt field');
   await click('.header-actions [data-action="add-card"]');
   await waitFor(`document.querySelector('#card-dialog').open && !!document.querySelector('#card-headline') && !!document.querySelector('#card-body')`);
   assert.equal(await evaluate(`document.querySelector('#card-headline').tagName + ' ' + document.querySelector('#card-body').tagName`), 'INPUT TEXTAREA');
