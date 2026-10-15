@@ -405,8 +405,16 @@ export function moveNode(lane, x, y) {
 }
 // A node's routes ([{ name, to }]) and advance ('review' or 'auto'), saved
 // into its playbook. Resolves once the server has written the file.
+// The save names the playbook version shown; when the file changed since,
+// the server refuses and the routes shown are reloaded.
 export async function setRoutes(f, lane, routes, advance = undefined) {
-  const saved = await enqueue(() => send('PUT', `${url('stages', lane.id)}/routes`, { routes, ...(advance ? { advance } : {}) }), undefined, { rejectOnError: true });
+  let saved;
+  try {
+    saved = await enqueue(() => send('PUT', `${url('stages', lane.id)}/routes`, { routes, baseHash: lane.playbook?.hash ?? null, ...(advance ? { advance } : {}) }), undefined, { rejectOnError: true });
+  } catch (error) {
+    if (error.status === 409) applyStages(f, (await loadPlaybooks(f)).stages);
+    throw error;
+  }
   applyStages(f, saved.stages);
 }
 // A flow as the server describes it (kind, lane order, places and playbooks),

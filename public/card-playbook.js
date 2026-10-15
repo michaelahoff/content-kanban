@@ -85,7 +85,7 @@ export function renderBar() {
   const latest = active.runs[0];
   const guidance = latest && runGuidance(latest, { here: latest.stageId === lane.id });
   // A graph node's routes: the user can send the card along any of them.
-  const routes = found.flow.kind === 'graph' ? (playbook?.routes ?? []).filter((route) => found.flow.lanes.some((item) => item.id === route.laneId)) : [];
+  const routes = found.flow.kind === 'graph' && !found.project.archivedAt ? (playbook?.routes ?? []).filter((route) => found.flow.lanes.some((item) => item.id === route.laneId)) : [];
   const routeButtons = routes.map((route) => `<button type="button" class="chip" data-action="follow-route" data-to="${route.laneId}" data-route="${escape(route.name)}">${escape(route.name)}${icon('arrow')}${escape(found.flow.lanes.find((item) => item.id === route.laneId).name)}</button>`).join('');
   panel.innerHTML = `<div class="card-playbook-info">${icon('playbook')}<div><strong>${escape(lane.name)} playbook</strong><span>${escape(playbook ? playbook.summary : 'No playbook yet. Open playbooks to write one.')}</span></div></div>
     <div class="card-playbook-actions">${button('run-playbook', 'Run playbook', 'arrow', 'button small secondary', runnable ? '' : 'disabled title="This lane has no runnable playbook"')}${button('open-lane-playbook', 'Open playbook', null, 'button small secondary', `data-id="${lane.id}"`)}</div>

@@ -142,10 +142,11 @@ export function createProtectionStore({ all, get, run, transaction, requireCard,
           result = { applied: Object.keys(applied), proposalId };
         } else if (tool === 'propose_move') {
           check(typeof input.toStageId === 'string', 'Choose a destination lane.');
+          check(input.route === undefined || (typeof input.route === 'string' && input.route.length <= 100), 'Invalid route.');
           // Any lane of a live flow in the card's project, as for a move.
           const target = get('SELECT s.id FROM stages s JOIN flows f ON f.id = s.flow_id WHERE f.project_id = ? AND s.id = ? AND f.deleted_at IS NULL AND s.deleted_at IS NULL', card.projectId, input.toStageId);
           check(target, 'Choose a lane in this project.');
-          result = { proposalId: proposal(ctx, a, 'move', { toStageId: input.toStageId, placementVersion: card.placementVersion, fieldVersions: versions(card.id) }) };
+          result = { proposalId: proposal(ctx, a, 'move', { toStageId: input.toStageId, ...(input.route ? { route: input.route } : {}), placementVersion: card.placementVersion, fieldVersions: versions(card.id) }) };
         } else if (tool === 'register_image' && artifact) {
           const output = registerOutput(ctx, a.id, callId, artifact);
           item(ctx, a.id, { id: `registered-${callId}`, kind: 'registeredImage', text: output.name, data: output, completed: true });
@@ -175,7 +176,7 @@ export function createProtectionStore({ all, get, run, transaction, requireCard,
         if (row.kind === 'move') {
           if (input.placementVersion !== card.placementVersion || (review?.placementVersion ?? payload.placementVersion) !== card.placementVersion) fail(409, 'The card moved after this proposal. Review its current placement.');
           for (const [key, version] of Object.entries(reviewedVersions)) if (current[key] !== version || leased(cardId, key)) fail(409, 'The card changed or has an unsaved draft. Review before moving.');
-          transitionCard(ctx, cardId, { action: 'move', toStageId: payload.toStageId });
+          transitionCard(ctx, cardId, { action: 'move', toStageId: payload.toStageId, ...(payload.route ? { route: payload.route } : {}) });
           run("UPDATE card_proposals SET status = 'accepted' WHERE id = ?", id);
         } else {
           check(Array.isArray(input.fields) && input.fields.length && new Set(input.fields).size === input.fields.length && input.fields.every((k) => Object.hasOwn(payload.fields, k)), 'Choose proposal fields to accept.');

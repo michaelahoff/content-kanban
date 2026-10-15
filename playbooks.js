@@ -131,12 +131,15 @@ export function createPlaybooks({ dataDir }) {
     // Changes named settings of a lane's playbook, as the graph editor does
     // with routes and advance, and leaves every other byte as it is. A lane
     // without a playbook gets a node playbook that runs nothing. A value of
-    // undefined removes the setting.
-    updateSettings(flowId, stage, changes) {
+    // undefined removes the setting. baseHash, when given, is the hash the
+    // editor saw (null for no playbook); a newer file is not overwritten.
+    // Returns the written document, or null when nothing changed.
+    updateSettings(flowId, stage, changes, baseHash = undefined) {
       const document = api.forStage(flowId, stage.id);
+      if (baseHash !== undefined && (document?.hash ?? null) !== baseHash) fail(409, `${stage.name}'s playbook changed since this page loaded it, so nothing was saved. Its current routes are shown now; try again.`);
       if (document) {
         const text = withSettings(document.text, changes);
-        return text === document.text ? document : api.write(flowId, document.path, text, document.hash);
+        return text === document.text ? null : api.write(flowId, document.path, text, document.hash);
       }
       if (Object.values(changes).every((value) => value === undefined)) return null;
       return api.write(flowId, api.freePath(flowId, stage.name), withSettings(nodeTemplate(stage), changes), null);

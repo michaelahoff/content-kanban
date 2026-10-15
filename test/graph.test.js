@@ -4,10 +4,10 @@ import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fixture, waitFor } from './support/chat-fixture.js';
 import { setPlaybook } from './support/playbooks.js';
-import { parseDocument, playbookSettings, resolveRoutes, composeLanePrompt, parseLaneResult, withSetting } from '../public/playbook-format.js';
+import { parseDocument, playbookSettings, resolveRoutes, composeLanePrompt, parseLaneResult, withSetting, maxAutomaticMoves } from '../public/playbook-format.js';
 import { youtubeVideoTemplate } from '../public/card-template.js';
 import { DatabaseSync } from 'node:sqlite';
-import { maxAutomaticMoves, supportedSchemaVersion } from '../store.js';
+import { supportedSchemaVersion } from '../store.js';
 
 const result = (value) => `Done.\n\n\`\`\`frameboard-result\n${JSON.stringify(value, null, 2)}\n\`\`\``;
 const settingsOf = (text) => playbookSettings(parseDocument(text), youtubeVideoTemplate);
@@ -48,7 +48,7 @@ test('a lane run prompt lists its routes and the result block names one', () => 
   const settings = settingsOf('---\nadvance: auto\n---\nChoose a route.');
   const routes = [{ name: 'approved', laneId: 'c', laneName: 'Done' }, { name: 'revise', laneId: 'a', laneName: 'Draft' }, { name: 'gone', laneId: null, laneName: null }];
   const prompt = composeLanePrompt({ ...base, settings, routes });
-  assert.ok(prompt.includes('## Routes out of this step'));
+  assert.ok(prompt.includes('## Routes out of this lane'));
   assert.ok(prompt.includes('- approved → Done\n- revise → Draft'));
   assert.ok(!prompt.includes('gone'), 'a route that leads nowhere is not offered');
   assert.ok(prompt.includes('Frameboard moves the card along the route you choose as soon as you finish'));
@@ -57,10 +57,10 @@ test('a lane run prompt lists its routes and the result block names one', () => 
   const review = composeLanePrompt({ ...base, settings: settingsOf('---\nrun: on-enter\n---\nChoose.'), routes });
   assert.ok(review.includes('The user reviews the route you choose before the card moves.'));
   const plain = composeLanePrompt({ ...base, settings: settingsOf('Work.'), routes: [] });
-  assert.ok(!plain.includes('Routes out of this step') && plain.includes('"move": "Lane name"'));
+  assert.ok(!plain.includes('Routes out of this lane') && plain.includes('"move": "Lane name"'));
 
   assert.equal(parseLaneResult(result({ route: ' revise ' }), youtubeVideoTemplate).route, 'revise');
-  assert.deepEqual(parseLaneResult(result({ route: 7 }), youtubeVideoTemplate).errors, ['Ignored “route”: it must be the name of one of this step\'s routes.']);
+  assert.deepEqual(parseLaneResult(result({ route: 7 }), youtubeVideoTemplate).errors, ['Ignored “route”: it must be the name of one of this lane\'s routes.']);
 });
 
 test('a new graph flow is a placed loop whose routes live in node playbooks', async (t) => {
@@ -114,6 +114,20 @@ test('routes are edited one setting at a time and refuse what would lead nowhere
     assert.match(refused.body.error, message);
   }
 
+  // A save names the playbook version it was based on; a newer file is kept.
+  const shown = (await f.playbook(Review)).hash;
+  await f.ok('PUT', `/api/stages/${Review.id}/routes`, { routes: [{ name: 'ship', to: Done.id }], baseHash: shown });
+  const stale = await f.call('PUT', `/api/stages/${Review.id}/routes`, { routes: [], baseHash: shown });
+  assert.equal(stale.status, 409);
+  assert.match(stale.body.error, /Review's playbook changed since this page loaded it/);
+  assert.match((await f.playbook(Review)).text, /ship: /);
+  // A route that already leads nowhere stays when another route changes; a new one cannot.
+  const current = await f.playbook(Review);
+  await f.ok('PUT', `/api/flows/${f.flow.id}/playbooks`, { path: current.path, text: current.text.replace(/routes:\n/, 'routes:\n  old: Nowhere\n'), baseHash: current.hash });
+  await f.ok('PUT', `/api/stages/${Review.id}/routes`, { routes: [{ name: 'old', to: 'Nowhere' }, { name: 'ship', to: Ideas.id }], baseHash: (await f.playbook(Review)).hash });
+  assert.match((await f.playbook(Review)).text, /routes:\n {2}old: Nowhere\n {2}ship: /);
+  assert.equal((await f.call('PUT', `/api/stages/${Review.id}/routes`, { routes: [{ name: 'other', to: 'Nowhere' }] })).status, 400);
+
   // Deleting a node takes the routes to it out of the other playbooks.
   await f.ok('PUT', `/api/stages/${Draft.id}/routes`, { routes: [{ name: 'next', to: Review.id }, { name: 'skip', to: Done.id }] });
   await f.ok('PUT', `/api/stages/${Ideas.id}/routes`, { routes: [{ name: 'straight to review', to: Review.id }] });
@@ -129,13 +143,16 @@ test('a board becomes a single line of routes, and a graph a board in route orde
   const progress = f.lane['In progress'];
   // A lane that already has routes keeps them.
   await setPlaybook(f.ok, f.flow.id, Review, { run: 'off', routes: { approved: Done.id, again: Ideas.id } }, 'Check it.');
+  const since = (await f.ok('GET', '/api/workspace')).eventCursor;
   const converted = await f.ok('POST', `/api/flows/${f.flow.id}/convert`, { kind: 'graph' });
   assert.equal(converted.kind, 'graph');
   assert.deepEqual(converted.stages.map((stage) => [stage.name, stage.x, stage.y]), [['Ideas', 0, 40], ['In progress', 380, 40], ['Review', 760, 40], ['Done', 1140, 40]]);
   const routes = (view, stage) => view.stages.find((item) => item.id === stage.id).playbook?.routes.map((route) => [route.name, route.laneId]) ?? null;
   assert.deepEqual(routes(converted, Ideas), [['next', progress.id]]);
   assert.deepEqual(routes(converted, Review), [['approved', Done.id], ['again', Ideas.id]]);
-  assert.equal(routes(converted, Done), null, 'the last lane needs no playbook');
+  assert.deepEqual(routes(converted, Done), [], 'every node has a playbook, the last one too');
+  const recorded = (await f.ok('GET', `/api/events?since=${since}`)).events.filter((event) => event.entity === 'flow' && event.type === 'playbook_saved');
+  assert.equal(recorded.length, 3, 'open playbook editors hear about the three files the conversion wrote; Review kept its routes');
   assert.equal((await f.ok('POST', `/api/flows/${f.flow.id}/convert`, { kind: 'graph' })).kind, 'graph', 'converting to the same kind changes nothing');
 
   // Reorder the graph so route order differs from lane order, then go back.
@@ -169,7 +186,7 @@ test('an agent\'s route is followed at once with advance: auto, and proposed oth
   await f.ok('POST', `/api/cards/${card.id}/transitions`, { action: 'move', toStageId: Draft.id, route: 'next' });
 
   const draft = await waitFor(() => f.codex.sends[0]);
-  assert.ok(sentText(draft).includes('## Routes out of this step'));
+  assert.ok(sentText(draft).includes('## Routes out of this lane'));
   assert.ok(sentText(draft).includes('- next → Review'));
   f.codex.finish(draft, 'completed', result({ fields: { script: 'Draft one' }, notes: 'Drafted.', route: 'next' }));
 
@@ -191,16 +208,23 @@ test('an agent\'s route is followed at once with advance: auto, and proposed oth
   assert.equal((await f.ok('GET', `/api/cards/${card.id}`)).card.stageId, Review.id);
   const proposal = (await f.chat(card.id)).proposals.find((item) => item.kind === 'move');
   assert.equal(proposal.payload.toStageId, Done.id);
+  assert.equal(proposal.payload.route, 'approved');
 
-  // A route the step does not have changes nothing.
+  // A route the lane does not have changes nothing.
   await f.ok('POST', `/api/cards/${card.id}/lane-runs`, {});
   const again = await waitFor(() => f.codex.sends[2]);
   f.codex.finish(again, 'completed', result({ notes: 'Hmm.', route: 'publish' }));
   const ignored = await waitFor(async () => (await runs(f, card.id)).find((run) => run.status === 'completed' && run.id !== done.id && run.stageId === Review.id));
-  assert.match(ignored.reason, /Ignored the route “publish”: this step's routes are “approved”, “revise”\./);
+  assert.match(ignored.reason, /Ignored the route “publish”: this lane's routes are “approved”, “revise”\./);
+  // Accepting the proposal moves the card along the route and records it.
+  const { card: before } = await f.ok('GET', `/api/cards/${card.id}`);
+  await f.ok('POST', `/api/cards/${card.id}/chat/proposals/${proposal.id}/accept`, { placementVersion: before.placementVersion });
+  const accepted = await f.ok('GET', `/api/cards/${card.id}`);
+  assert.equal(accepted.card.stageId, Done.id);
+  assert.deepEqual(accepted.events.filter((event) => event.type === 'moved').at(-1).data, { route: 'approved' });
 });
 
-test('an automatic route waits for review when the card left the step or keeps looping', async (t) => {
+test('an automatic route waits for review when the card left the lane or keeps looping', async (t) => {
   const f = await graph(t);
   const { Ideas, Draft, Review } = f.lane;
   await setPlaybook(f.ok, f.flow.id, Draft, { run: 'on-enter', model: 'test-model', advance: 'auto', routes: { next: Review.id } }, 'Draft.');
@@ -213,26 +237,37 @@ test('an automatic route waits for review when the card left the step or keeps l
   await f.ok('POST', `/api/cards/${left.id}/transitions`, { action: 'move', toStageId: Ideas.id });
   f.codex.finish(first, 'completed', result({ notes: 'Done.', route: 'next' }));
   const held = await waitFor(async () => (await runs(f, left.id)).find((run) => run.status === 'completed'));
-  assert.match(held.reason, /Proposed following next to Review for your review\. The card left this step before the run finished\./);
+  assert.match(held.reason, /Proposed following next to Review for your review\. The card left this lane before the run finished\./);
   assert.equal((await f.ok('GET', `/api/cards/${left.id}`)).card.stageId, Ideas.id);
+
+  // A lane set back to review while its run works: the route waits for the user.
+  const turned = await f.card(Ideas, { title: 'Turned back' });
+  await f.ok('POST', `/api/cards/${turned.id}/transitions`, { action: 'move', toStageId: Draft.id });
+  const working = await waitFor(() => f.codex.sends[1]);
+  await f.ok('PUT', `/api/stages/${Draft.id}/routes`, { routes: [{ name: 'next', to: Review.id }], advance: 'review' });
+  f.codex.finish(working, 'completed', result({ notes: 'Done.', route: 'next' }));
+  const stopped = await waitFor(async () => (await runs(f, turned.id)).find((run) => run.status === 'completed'));
+  assert.match(stopped.reason, /Proposed following next to Review for your review\. This lane no longer moves cards on by itself\./);
+  await f.ok('PUT', `/api/stages/${Draft.id}/routes`, { routes: [{ name: 'next', to: Review.id }], advance: 'auto' });
 
   // A loop that never converges pauses after maxAutomaticMoves moves in a row.
   const looping = await f.card(Ideas, { title: 'Looper' });
+  const start = f.codex.sends.length;
   await f.ok('POST', `/api/cards/${looping.id}/transitions`, { action: 'move', toStageId: Draft.id });
   for (let index = 1; index <= maxAutomaticMoves + 1; index++) {
-    const send = await waitFor(() => f.codex.sends[index]);
+    const send = await waitFor(() => f.codex.sends[start + index - 1]);
     f.codex.finish(send, 'completed', result({ notes: `Pass ${index}.`, route: index % 2 ? 'next' : 'revise' }));
     await waitFor(async () => (await runs(f, looping.id)).filter((run) => run.status === 'completed').length === index);
   }
   const all = await runs(f, looping.id);
   assert.match(all[0].reason, new RegExp(`It made ${maxAutomaticMoves} automatic moves in a row, so this one waits for you\\.`));
   assert.equal(all.filter((run) => /^Followed/.test(run.reason)).length, maxAutomaticMoves);
-  assert.equal(f.codex.sends.length, maxAutomaticMoves + 2, 'no run starts after the loop pauses');
+  assert.equal(f.codex.sends.length, start + maxAutomaticMoves + 1, 'no run starts after the loop pauses');
   // A move by the user starts the count again.
   const { card } = await f.ok('GET', `/api/cards/${looping.id}`);
   const proposal = (await f.chat(looping.id)).proposals.find((item) => item.kind === 'move' && item.status === 'pending');
   await f.ok('POST', `/api/cards/${looping.id}/chat/proposals/${proposal.id}/accept`, { placementVersion: card.placementVersion });
-  const resumed = await waitFor(() => f.codex.sends[maxAutomaticMoves + 2]);
+  const resumed = await waitFor(() => f.codex.sends[start + maxAutomaticMoves + 1]);
   f.codex.finish(resumed, 'completed', result({ notes: 'Fresh start.', route: 'revise' }));
   await waitFor(async () => (await runs(f, looping.id)).some((run) => run.stageId === Review.id && /^Followed revise to Draft\./.test(run.reason)));
   assert.equal((await f.ok('GET', `/api/cards/${looping.id}`)).card.stageId, Draft.id);

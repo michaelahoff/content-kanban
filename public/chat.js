@@ -473,7 +473,7 @@ async function reviewProposal(item, id) {
   const found = locateCard(item.id); const lanes = found ? lanesOf(found.project) : [];
   const label = (key) => contextFields(templateOf(locateCard(item.id).card)).find((f) => f.key === key)?.label ?? key;
   smallForm({ title: 'Review card proposal', fields: p.kind === 'move'
-    ? `<p>${escape(lanes.find((l) => l.id === preview.fromStageId)?.name ?? 'Current lane')} → ${escape(lanes.find((l) => l.id === preview.payload.toStageId)?.name ?? 'Missing lane')}</p>`
+    ? `<p>${escape(lanes.find((l) => l.id === preview.fromStageId)?.name ?? 'Current lane')} → ${escape(lanes.find((l) => l.id === preview.payload.toStageId)?.name ?? 'Missing lane')}${preview.payload.route ? ` (route “${escape(preview.payload.route)}”)` : ''}</p>`
     : Object.entries(preview.payload.fields).map(([key, value]) => `<label><input type="checkbox" name="field" value="${escape(key)}" checked> ${escape(label(key))}</label><p>Current</p><pre class="chat-review-text">${escape(preview.before[key])}</pre><p>Proposed</p><pre class="chat-review-text">${escape(value)}</pre>`).join(''), submit: p.kind === 'move' ? 'Accept lane move' : 'Apply selected fields', onSubmit: async (data) => {
       await send('POST', url(item.id, `proposals/${id}/accept`), { reviewId: preview.reviewId, fields: data.getAll('field'), baseVersions: preview.baseVersions, placementVersion: preview.placementVersion });
       await refresh(item);

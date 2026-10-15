@@ -18,6 +18,9 @@ export const advanceModes = ['review', 'auto'];
 export const knownKeys = ['lane', 'run', 'provider', 'model', 'context', 'may_edit', 'set', 'conversation', 'skills', 'assets', 'advance', 'routes'];
 export const skillName = /^[a-z0-9][a-z0-9_-]{0,79}$/i;
 export const routeName = /^[a-z0-9][a-z0-9 _-]{0,39}$/i;
+// Automatic route moves in a row, without a move by the user, before the
+// next one waits for review. Stops a loop that never converges.
+export const maxAutomaticMoves = 12;
 const notesInPrompt = 20000;
 
 // --- Frontmatter: a small YAML subset -------------------------------------
@@ -508,8 +511,8 @@ What should happen when a card enters this lane?
 }
 // A node of a graph flow starts with a playbook that runs nothing until it
 // has instructions, so its routes have a file to live in.
-export function nodeTemplate(lane, { routes = {}, run = 'off', body = '' } = {}) {
-  return serializeDocument({ lane: lane.id, run, ...(Object.keys(routes).length ? { routes } : {}) }, body || `# ${lane.name}
+export function nodeTemplate(lane, { routes = {}, body = '' } = {}) {
+  return serializeDocument({ lane: lane.id, run: 'off', ...(Object.keys(routes).length ? { routes } : {}) }, body || `# ${lane.name}
 
 What happens when a card reaches this node? Write the instructions here, then set run to on-enter to have an agent work on each card that arrives (or manual to run it from the card).
 
@@ -538,13 +541,13 @@ export function composeLanePrompt({ projectName, flowName, laneName, lanes, trig
   const trimmedNotes = notes.length > notesInPrompt ? `…(earlier notes omitted)\n${notes.slice(-notesInPrompt)}` : notes;
   const ways = routes.filter((route) => route.laneId);
   const automatic = settings.advance === 'auto';
-  const routeSection = ways.length ? `## Routes out of this step
+  const routeSection = ways.length ? `## Routes out of this lane
 
-When this step's work decides where the card goes next, choose one of these routes by name in "route":
+When this lane's work decides where the card goes next, choose one of these routes by name in "route":
 
 ${ways.map((route) => `- ${route.name} → ${route.laneName}`).join('\n')}
 
-${automatic ? 'Frameboard moves the card along the route you choose as soon as you finish, and the next step\'s playbook starts. Leave "route" out to keep the card here for the user.' : 'The user reviews the route you choose before the card moves.'}` : '';
+${automatic ? 'Frameboard moves the card along the route you choose as soon as you finish, and the next lane\'s playbook starts. Leave "route" out to keep the card here for the user.' : 'The user reviews the route you choose before the card moves.'}` : '';
   const sections = [
     `You are working on one card in the Frameboard project “${projectName}”${flowName ? `, in its “${flowName}” flow` : ''}. ${trigger === 'manual' ? `The user asked you to run the “${laneName}” lane playbook for it.` : `The card just entered the “${laneName}” lane.`} Follow that lane's playbook below.`,
     map?.text.trim() ? `## Flow map (${map.path})\n\n${map.text.trim()}` : '',
@@ -611,7 +614,7 @@ export function parseLaneResult(text, template) {
   }
   if (value.route !== undefined && value.route !== null && value.route !== '') {
     if (typeof value.route === 'string' && value.route.trim().length <= 100) result.route = value.route.trim();
-    else result.errors.push('Ignored “route”: it must be the name of one of this step\'s routes.');
+    else result.errors.push('Ignored “route”: it must be the name of one of this lane\'s routes.');
   }
   // Explicit outputs to save: an inline document's exact text, or a finished
   // file named by its workspace path. Leaving out "sources" leaves the

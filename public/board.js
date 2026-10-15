@@ -2,13 +2,14 @@
 // cards, and the project, flow and lane forms.
 import { $, escape, icon, button, iconButton, imageURL, palette, smallForm, nameField, themeSwitchMarkup, accentSwitchMarkup } from './ui.js';
 import { state, project, flow, locateCard, cardCount, flowCardCount, searchText, saveStatus, createProject, renameProject, createFlow, updateFlow, selectFlow, addLane, updateLane, latestMoveCard } from './state.js';
+import { activityMarkup } from './chat.js';
+import { renderLibrary } from './library.js';
+import { renderGraph, nodeForm } from './graph.js';
+
 // A graph flow shows its lanes as nodes joined by routes (graph.js); the
 // forms call them nodes there.
 const isGraph = (f) => f?.kind === 'graph';
 const flowIcon = (f) => (isGraph(f) ? 'graph' : 'board');
-import { activityMarkup } from './chat.js';
-import { renderLibrary } from './library.js';
-import { renderGraph, nodeForm } from './graph.js';
 
 const app = $('#app');
 export const view = { query: '', pasteLaneId: null, cardsCollapsed: false, tab: 'board' };

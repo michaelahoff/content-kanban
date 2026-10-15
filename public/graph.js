@@ -7,6 +7,7 @@
 // playbook, and the canvas's pan and zoom in this browser only.
 import { $, escape, icon, iconButton, imageURL, palette, smallForm, toast } from './ui.js';
 import { searchText, moveNode, setRoutes, addLane } from './state.js';
+import { routeName, maxAutomaticMoves } from './playbook-format.js';
 import { activityMarkup } from './chat.js';
 import { renderBoard } from './board.js';
 
@@ -21,7 +22,6 @@ const saveViews = () => {
 const grid = 20;
 const spacing = 380;
 const zoomRange = [0.3, 1.6];
-const routeName = /^[a-z0-9][a-z0-9 _-]{0,39}$/i;
 // The flow on screen and the last render's options; null until a graph is shown.
 let current = null;
 let gesture = null;
@@ -78,7 +78,7 @@ function nodeMarkup(lane, index, { search, collapsed, readOnly }) {
   const cards = lane.cards.filter((card) => searchText(card).toLocaleLowerCase().includes(search));
   const ways = routesOf(lane).filter((route) => route.laneId).map((route) => `${route.name} to ${laneOf(route.laneId)?.name ?? ''}`);
   const marks = badges(lane, index);
-  return `<section class="graph-node ${lane.color}" data-lane="${lane.id}" data-node="${lane.id}" tabindex="0" aria-label="${escape(lane.name)} node${readOnly ? '' : '; paste images here'}">
+  return `<section class="graph-node ${lane.color}" data-lane="${lane.id}" data-node="${lane.id}" tabindex="0" aria-label="${escape(lane.name)} node${readOnly ? '' : '; paste images here'}" ${readOnly ? '' : 'aria-keyshortcuts="Alt+ArrowLeft Alt+ArrowRight Alt+ArrowUp Alt+ArrowDown"'}>
     <div class="graph-node-head" ${readOnly ? '' : 'data-node-drag title="Drag to move this node"'}><span class="lane-dot"></span><h2>${escape(lane.name)}</h2><span class="lane-count">${search ? `${cards.length}/` : ''}${lane.cards.length}</span>
       ${readOnly ? '' : `<div class="graph-node-actions">${iconButton('edit-playbook', `${lane.name} playbook`, 'playbook', `data-id="${lane.id}"`)}${iconButton('edit-lane', `Edit ${lane.name} node`, 'more', `data-id="${lane.id}"`)}${iconButton('add-card', `Add card to ${lane.name}`, 'plus', `data-lane-id="${lane.id}"`)}</div>`}</div>
     ${marks ? `<div class="graph-badges">${marks}</div>` : ''}
@@ -218,7 +218,9 @@ function suggestName(lane, target) {
   for (let index = 2; taken.has(name); index++) name = `${safe} ${index}`;
   return name;
 }
-const routeList = (lane) => routesOf(lane).filter((route) => route.laneId).map((route) => ({ name: route.name, to: route.laneId }));
+// A node's routes as the server takes them. A route that leads nowhere is
+// sent as written, so editing another route keeps it in the playbook.
+const routeList = (lane) => routesOf(lane).map((route) => ({ name: route.name, to: route.laneId ?? route.target }));
 async function saveRoutes(lane, routes, advance) {
   await setRoutes(current.flow, lane, routes, advance);
   renderBoard();
@@ -226,7 +228,7 @@ async function saveRoutes(lane, routes, advance) {
 async function connect(fromId, toId) {
   const lane = laneOf(fromId); const target = laneOf(toId);
   if (!lane || !target) return;
-  if (fromId === toId) return toast('A route leads to another node. To repeat a step, route through a review node and back.');
+  if (fromId === toId) return toast('A route leads to another node. To repeat a node, route through a review node and back.');
   const existing = routesOf(lane).find((route) => route.laneId === toId);
   if (existing) return toast(`“${existing.name}” already leads from ${lane.name} to ${target.name}.`);
   const name = suggestName(lane, target);
@@ -250,7 +252,7 @@ export function routeForm(fromId, name = null) {
   const fields = `<label class="form-label" for="name-input">Route name</label><input class="form-input" id="name-input" name="name" value="${escape(route?.name ?? suggestName(lane, targets[0]))}" maxlength="40" pattern="[A-Za-z0-9][A-Za-z0-9 _\\-]*" required autocomplete="off" placeholder="e.g. approved">
     <p class="field-help">The agent in ${escape(lane.name)} picks a route by this name, so name the outcome: approved, revise, too long.</p>
     <label class="form-label" for="route-to">Leads to</label><select class="form-input" id="route-to" name="to">${targets.map((item) => `<option value="${item.id}" ${item.id === route?.laneId ? 'selected' : ''}>${escape(item.name)}</option>`).join('')}</select>
-    <fieldset class="kind-field"><legend class="form-label">When the agent in ${escape(lane.name)} picks a route</legend>${choice('review', 'Wait for my review', 'The move is a proposal you accept in the card chat.', 'clock')}${choice('auto', 'Move on by itself', 'The card follows the route at once and the next node’s playbook runs. Loops pause after a dozen moves in a row.', 'bolt')}</fieldset>
+    <fieldset class="kind-field"><legend class="form-label">When the agent in ${escape(lane.name)} picks a route</legend>${choice('review', 'Wait for my review', 'The move is a proposal you accept in the card chat.', 'clock')}${choice('auto', 'Move on by itself', `The card follows the route at once and the next node’s playbook runs. A loop pauses for you after ${maxAutomaticMoves} moves in a row.`, 'bolt')}</fieldset>
     <p class="field-help">This applies to every route out of ${escape(lane.name)}. You can always move a card along a route yourself from the card.</p>`;
   smallForm({
     title: route ? `Route from ${lane.name}` : `New route from ${lane.name}`,
@@ -272,7 +274,7 @@ export function routeForm(fromId, name = null) {
 export function nodeForm(at = null) {
   const f = current?.flow;
   if (!f) return;
-  const place = at ?? { x: f.lanes.length ? Math.max(...f.lanes.map((lane) => lane.x ?? 0)) + spacing : 0, y: f.lanes.length ? Math.min(...f.lanes.map((lane) => lane.y ?? 0)) : 40 };
+  const spot = at ?? { x: f.lanes.length ? Math.max(...f.lanes.map((lane) => lane.x ?? 0)) + spacing : 0, y: f.lanes.length ? Math.min(...f.lanes.map((lane) => lane.y ?? 0)) : 40 };
   const color = palette[f.lanes.length % palette.length];
   smallForm({
     title: 'Add a node',
@@ -281,7 +283,7 @@ export function nodeForm(at = null) {
       <fieldset class="color-field"><legend>Node color</legend>${palette.map((item) => `<label class="color-option ${item}" title="${item}"><input type="radio" name="color" value="${item}" ${item === color ? 'checked' : ''}><span>${icon('check')}<span class="sr-only">${item}</span></span></label>`).join('')}</fieldset>`,
     submit: 'Add node',
     onSubmit: (data) => {
-      addLane(f, { name: String(data.get('name')).trim(), color: String(data.get('color')), x: Math.round(place.x / grid) * grid, y: Math.round(place.y / grid) * grid });
+      addLane(f, { name: String(data.get('name')).trim(), color: String(data.get('color')), x: Math.round(spot.x / grid) * grid, y: Math.round(spot.y / grid) * grid });
       renderBoard();
       document.querySelector('.header-actions [data-action="add-card"]')?.removeAttribute('disabled');
     },
@@ -408,6 +410,33 @@ document.addEventListener('click', async (event) => {
       toast(`Deleted the route “${target.dataset.route}”.`);
     } catch (error) { toast(error.message); }
   }
+});
+// A focused node, such as one reached with Tab, is panned into view. The
+// canvas never scrolls: a browser scrolling it to show focus would shift
+// every node away from where pan and zoom place it.
+document.addEventListener('focusin', (event) => {
+  const node = event.target.closest?.('[data-node]');
+  if (!node || !current?.world.contains(node)) return;
+  current.viewport.scrollTop = 0; current.viewport.scrollLeft = 0;
+  const box = node.getBoundingClientRect(); const frame = current.viewport.getBoundingClientRect();
+  const dx = box.left < frame.left + 24 ? frame.left + 24 - box.left : box.right > frame.right - 24 ? Math.max(frame.right - 24 - box.right, frame.left + 24 - box.left) : 0;
+  const dy = box.top < frame.top + 24 ? frame.top + 24 - box.top : box.bottom > frame.bottom - 24 ? Math.max(frame.bottom - 24 - box.bottom, frame.top + 24 - box.top) : 0;
+  if (dx || dy) { const v = view(); v.x += dx; v.y += dy; applyView(); }
+});
+document.addEventListener('scroll', (event) => {
+  if (event.target === current?.viewport) { current.viewport.scrollTop = 0; current.viewport.scrollLeft = 0; }
+}, true);
+// Alt and the arrow keys move a focused node one grid step, as dragging does.
+document.addEventListener('keydown', (event) => {
+  if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || !current || current.readOnly) return;
+  const node = event.target.matches?.('[data-node]') ? event.target : null;
+  const step = { ArrowLeft: [-grid, 0], ArrowRight: [grid, 0], ArrowUp: [0, -grid], ArrowDown: [0, grid] }[event.key];
+  if (!node || !step || !current.world.contains(node)) return;
+  event.preventDefault();
+  const lane = laneOf(node.dataset.node);
+  moveNode(lane, lane.x + step[0], lane.y + step[1]);
+  place(node, lane);
+  drawEdges();
 });
 // The canvas keeps its size with the window; routes follow the nodes as
 // their cards load or change size.

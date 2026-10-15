@@ -1054,6 +1054,13 @@ These values apply when a card enters this lane.
     await saved();
     const moved = (await api('GET', '/api/workspace')).flows.find((entry) => entry.id === graphFlow.id).stages.find((stage) => stage.id === review.id);
     assert.ok(moved.y > review.y + 60 && moved.y % 20 === 0, 'The node lands lower, on the grid');
+    // A focused node moves one grid step with Alt and an arrow key.
+    await evaluate(`document.querySelector('.graph-node[data-node="${review.id}"]').focus()`);
+    await altArrow('ArrowRight');
+    await saved();
+    const nudged = (await api('GET', '/api/workspace')).flows.find((entry) => entry.id === graphFlow.id).stages.find((stage) => stage.id === review.id);
+    assert.deepEqual([nudged.x, nudged.y], [moved.x + 20, moved.y]);
+    assert.ok(await evaluate(`document.activeElement?.dataset.node === '${review.id}'`), 'The node keeps focus');
 
     // A new card starts in the start node and follows a route from its editor.
     await click('.header-actions [data-action="add-card"]');

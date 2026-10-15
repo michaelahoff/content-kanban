@@ -390,7 +390,7 @@ function showDropTarget(lane, y) {
   lane.classList.add('drag-over');
   const cards = $('.lane-cards', lane);
   const before = [...cards.querySelectorAll('[data-card]')].find((card) => card.dataset.card === target.beforeId);
-  openSlot(dropIndicator, cards, before || cards.querySelector('.empty-lane'));
+  openSlot(dropIndicator, cards, before || cards.querySelector('.empty-lane, .graph-empty'));
 }
 // Puts the insertion line in `list` before `before` (the end when null),
 // opening its own gap there. It lies flat between cards and flows and

@@ -17,7 +17,7 @@
 //   graph: whether the flow is a graph, which shows the advance and routes rows }.
 import { escape, icon } from './ui.js';
 import { contextFields, setFields, imageRoles, fieldKey } from './card-template.js';
-import { withSetting, withSettings, skillName, knownKeys, providers, providerNames } from './playbook-format.js';
+import { withSetting, withSettings, skillName, knownKeys, providers, providerNames, maxAutomaticMoves } from './playbook-format.js';
 
 const listOf = (value) => (Array.isArray(value) ? value.map(String) : typeof value === 'string' && value.trim() ? value.split(',').map((item) => item.trim()) : []);
 const cleanSkill = (name) => String(name).replace(/^skills\//i, '').replace(/\.md$/i, '');
@@ -133,7 +133,7 @@ function advanceRow({ settings }) {
   const modes = [['review', 'Wait for review'], ['auto', 'Move on by itself']];
   const buttons = modes.map(([value, label]) => `<button type="button" class="chip" id="playbook-advance-${value}" data-playbook-action="form-advance" data-value="${value}" aria-pressed="${settings.advance === value}">${label}</button>`).join('');
   return row('advance', 'Advance', `<div class="playbook-segments" role="group" aria-label="Advance">${buttons}</div>`,
-    { help: 'When the agent chooses a route, Wait for review makes the move a proposal; Move on by itself follows it at once and starts the next node’s playbook. Loops pause after a dozen automatic moves in a row.' });
+    { help: `When the agent chooses a route, Wait for review makes the move a proposal; Move on by itself follows it at once and starts the next node’s playbook. A loop pauses for you after ${maxAutomaticMoves} automatic moves in a row.` });
 }
 
 // routes: a map of route name → lane. Each row picks the lane a route leads

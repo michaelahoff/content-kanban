@@ -1,11 +1,10 @@
 // Turns pending lane runs into card chat submissions. A run reads its flow's
 // map, its lane playbook, the skills it names and the card's hand-off notes,
 // and freezes all of it into one prompt. The chat worker delivers it.
-import { composeLanePrompt, parseLaneResult, setFields, parseDocument, playbookSettings, resolveRoutes, findRoute } from './public/playbook-format.js';
+import { composeLanePrompt, parseLaneResult, setFields, parseDocument, playbookSettings, resolveRoutes, findRoute, maxAutomaticMoves } from './public/playbook-format.js';
 import { submissionText } from './public/chat-context.js';
 import { problemMessage } from './submission-inputs.js';
 import { uniqueSources } from './public/library-format.js';
-import { maxAutomaticMoves } from './store.js';
 
 const providerName = (provider) => (provider === 'claude' ? 'Claude' : 'Codex');
 // The Library sources a run sends: its playbook's, then the card's own. A
@@ -200,23 +199,27 @@ export function createLaneRunner({ store, service, providers, ctx, paused = () =
 // the user as a proposal.
 function followRoute({ store, ctx, attempt, submission, run, card, template, name, outcome }) {
   const settings = playbookSettings(parseDocument(submission.lane.playbook?.text ?? ''), template);
-  const { stages } = store.laneRuns.context(ctx, run.id);
+  const { stage: lane, stages } = store.laneRuns.context(ctx, run.id);
   const route = findRoute(resolveRoutes(settings.routes, stages, run.stageId), name);
   const names = settings.routes.map((item) => `“${item.name}”`).join(', ');
-  if (!route) return outcome.errors.push(`Ignored the route “${name}”: ${names ? `this step's routes are ${names}` : 'this step has no routes'}.`);
+  if (!route) return outcome.errors.push(`Ignored the route “${name}”: ${names ? `this lane's routes are ${names}` : 'this lane has no routes'}.`);
   const target = stages.find((stage) => stage.id === route.laneId);
   if (!target) return outcome.errors.push(`Ignored the route “${route.name}”: the node it led to no longer exists.`);
   if (target.id === card.stageId) return outcome.errors.push(`Ignored the route “${route.name}”: the card is already in ${target.name}.`);
   const editing = Object.keys(card.fieldVersions ?? {}).some((key) => store.protection.leased(card.id, key));
+  // Moving on by itself also needs the lane's playbook to say so now: a flow
+  // turned into a board, or a lane set back to review, stops a run in flight.
+  const now = store.playbooks.settings(lane.flowId, lane.id, template);
   const held = settings.advance !== 'auto' ? null
-    : card.stageId !== run.stageId || store.laneRuns.entry(card.id) !== submission.lane.entry ? 'The card left this step before the run finished.'
-      : editing ? 'The card has unsaved edits.'
-        : store.laneRuns.automaticMoves(card.id) >= maxAutomaticMoves ? `It made ${maxAutomaticMoves} automatic moves in a row, so this one waits for you.` : null;
+    : card.stageId !== run.stageId || store.laneRuns.entry(card.id) !== submission.lane.entry ? 'The card left this lane before the run finished.'
+      : now?.settings.advance !== 'auto' ? 'This lane no longer moves cards on by itself.'
+        : editing ? 'The card has unsaved edits.'
+          : store.laneRuns.automaticMoves(card.id) >= maxAutomaticMoves ? `It made ${maxAutomaticMoves} automatic moves in a row, so this one waits for you.` : null;
   if (settings.advance === 'auto' && !held) {
     store.transitionCard({ ...ctx, actor: `automation:${attempt.id}` }, card.id, { action: 'move', toStageId: target.id, route: route.name });
     outcome.route = { name: route.name, to: target.name, followed: true };
   } else {
-    store.protection.tool(ctx, attempt.id, 'lane-result-route', 'propose_move', { toStageId: target.id });
+    store.protection.tool(ctx, attempt.id, 'lane-result-route', 'propose_move', { toStageId: target.id, route: route.name });
     outcome.route = { name: route.name, to: target.name, followed: false, ...(held ? { held } : {}) };
   }
 }
