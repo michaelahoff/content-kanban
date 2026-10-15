@@ -2,8 +2,8 @@
 import { $, escape, iconButton, imageURL, toast, wordCount, confirmDelete, smallForm, setTheme, setAccent } from './ui.js';
 import { retry, request } from './api.js';
 import { fieldInputId } from './card-template.js';
-import { state, project, flow, flowCardCount, forgetFlow, locateCard, locateFlow, cardCount, loadWorkspace, loadCards, loadTemplates, templateOf, flowTemplate, cardChanged, flushCards, createCard, moveCard, deleteCard, updateLane, updateFlow, deleteLane, deleteFlow, deleteProject, archiveProject, unarchiveProject, saveStatus, hasUnsavedWork, onStatusChange, useSavedCard, undoLastMove, loadPlaybooks, applyStages, restoreFlowSelection } from './state.js';
-import { view, selectProject, renderApp, renderBoard, renderStatus, editProject, editFlow, editLane, editProjectPrompt, toggleCards, showTab, showFlow } from './board.js';
+import { state, project, flow, flowCardCount, forgetFlow, locateCard, locateFlow, cardCount, loadWorkspace, loadCards, loadTemplates, templateOf, cardChanged, flushCards, createCard, moveCard, deleteCard, updateLane, updateFlow, deleteLane, deleteFlow, deleteProject, archiveProject, unarchiveProject, saveStatus, hasUnsavedWork, onStatusChange, useSavedCard, undoLastMove, loadPlaybooks, applyStages, restoreFlowSelection } from './state.js';
+import { view, selectProject, renderApp, renderBoard, renderStatus, editProject, editFlow, editLane, toggleCards, showTab, showFlow } from './board.js';
 import { dropLibraryItems, libraryActivity, hasLibraryUploads } from './library.js';
 import { openCard, closeCard, cardPanelOpen, renderImages, copyText, copyTrifecta, fetchYoutube, addImages, originalVideoMarkup, videoLinkMarkup } from './editor.js';
 import { openPlaybooks, playbooksChanged } from './playbook-editor.js';
@@ -113,7 +113,6 @@ document.addEventListener('click', (event) => {
   if (action === 'toggle-sidebar') $('.sidebar').classList.toggle('mobile-open');
   if (action === 'set-theme') setTheme(target.dataset.theme);
   if (action === 'set-accent') setAccent(target.dataset.accent);
-  if (action === 'set-project-prompt') editProjectPrompt();
   if (action === 'toggle-cards') toggleCards();
   if (action === 'show-board') showTab('board');
   if (action === 'show-flow') void openFlow(target.dataset.projectId, targetId);
@@ -582,9 +581,8 @@ try {
     cardPlaybookActivity(entry);
     libraryActivity(entry);
     cardLibraryActivity(entry);
-    // Another tab changed the card templates: reload them and redraw the board,
-    // or the whole app when the header's Set prompt button may have changed.
-    if (entry.entity === 'template') void loadTemplates().then(() => { if (flowTemplate()?.id === entry.entityId) renderApp(); else renderBoard(); templatesChanged(); }).catch(() => {});
+    // Another tab changed the card templates: reload them and redraw the board.
+    if (entry.entity === 'template') void loadTemplates().then(() => { renderBoard(); templatesChanged(); }).catch(() => {});
     // Another tab archived or unarchived a project.
     const changed = entry.entity === 'project' && ['archived', 'unarchived'].includes(entry.type) && state.projects.find((item) => item.id === entry.entityId);
     if (changed && Boolean(changed.archivedAt) !== (entry.type === 'archived')) {

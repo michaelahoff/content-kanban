@@ -5,7 +5,7 @@
 // stored by, so keys lock once a saved template has cards.
 import { $, escape, icon, toast, smallForm } from './ui.js';
 import { state, loadTemplates, createTemplate, updateTemplate, deleteTemplate } from './state.js';
-import { renderApp } from './board.js';
+import { renderBoard } from './board.js';
 import { validateTemplate, fieldKeyFrom, youtubeVideoTemplate, controls, maxFields, maxImageRoles, maxFieldLength } from './card-template.js';
 
 const dialog = $('#template-dialog');
@@ -237,8 +237,7 @@ async function save() {
       draft = typed;
     }
     render();
-    // The header's Set prompt button follows the project's template, so the whole app redraws.
-    renderApp();
+    renderBoard();
     toast('Template saved.');
   } catch (error) {
     busy = false;
@@ -262,7 +261,7 @@ function remove() {
       busy = true; renderFooter();
       try { await deleteTemplate(template.id); } finally { busy = false; renderFooter(); }
       load(state.templates[0]?.id ?? null);
-      render(); renderApp();
+      render(); renderBoard();
       toast('Template deleted.');
     } });
 }

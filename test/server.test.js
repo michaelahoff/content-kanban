@@ -236,16 +236,6 @@ test('deletes cards and projects without erasing their history', async (t) => {
   assert.deepEqual((await f.ok('GET', `/api/events?since=${events[1].id}`)).events.map((event) => event.id), events.slice(2).map((event) => event.id));
 });
 
-test('sets one prompt on every card in a project', async (t) => {
-  const f = await fixture(t);
-  const first = await f.card();
-  await f.card({ stageId: f.stages[2].id });
-  const { cards } = await f.ok('POST', `/api/projects/${f.project.id}/prompt`, { prompt: 'Shared' });
-  assert.equal(cards.length, 2);
-  assert.deepEqual((await f.cards()).map((card) => [card.fields.prompt, card.revision]), [['Shared', 2], ['Shared', 2]]);
-  assert.equal((await f.call('PATCH', `/api/cards/${first.id}`, { revision: 1, title: 'stale' })).status, 409);
-});
-
 test('change feed includes content, image flags, ordering, and structure without cluttering history', async (t) => {
   const f = await fixture(t);
   const a = await f.card({ images: [{ id: imageId(1), name: 'image.png' }], imageRoles: { cover: imageId(1) } });
@@ -254,7 +244,6 @@ test('change feed includes content, image flags, ordering, and structure without
   await f.ok('PATCH', `/api/cards/${a.id}`, { revision: 1, fields: { intro: 'New intro' } });
   await f.ok('PATCH', `/api/cards/${a.id}`, { revision: 2, imageRoles: { inspiration: imageId(1) } });
   await f.ok('POST', `/api/cards/${b.id}/transitions`, { action: 'move', toStageId: a.stageId, beforeCardId: a.id });
-  await f.ok('POST', `/api/projects/${f.project.id}/prompt`, { prompt: 'Prompt' });
   const stage = await f.ok('POST', `/api/flows/${f.project.flowId}/stages`, { name: 'New lane', color: 'blue' });
   await f.ok('PATCH', `/api/stages/${stage.id}`, { name: 'Renamed lane', position: 0 });
   await f.ok('DELETE', `/api/stages/${stage.id}`);
@@ -264,7 +253,6 @@ test('change feed includes content, image flags, ordering, and structure without
   const { events } = await f.ok('GET', `/api/events?since=${eventCursor}`);
   assert.deepEqual(events.map((event) => [event.entity, event.entityId, event.type]), [
     ['card', a.id, 'updated'], ['card', a.id, 'images_changed'], ['card', b.id, 'reordered'],
-    ['card', a.id, 'updated'], ['card', b.id, 'updated'],
     ['stage', stage.id, 'created'], ['stage', stage.id, 'updated'], ['stage', stage.id, 'deleted'],
     ['project', project.id, 'created'], ['project', project.id, 'updated'], ['project', project.id, 'deleted'],
   ]);

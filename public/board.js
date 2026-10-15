@@ -1,7 +1,7 @@
 // The project sidebar with each project's flows, the board of lanes and
 // cards, and the project, flow and lane forms.
-import { $, escape, icon, button, iconButton, imageURL, palette, smallForm, nameField, toast, themeSwitchMarkup, accentSwitchMarkup } from './ui.js';
-import { state, project, flow, lanesOf, locateCard, cardCount, flowCardCount, searchText, saveStatus, createProject, renameProject, createFlow, updateFlow, selectFlow, flowTemplate, addLane, updateLane, setProjectPrompt, latestMoveCard, hasPromptField, promptLimit } from './state.js';
+import { $, escape, icon, button, iconButton, imageURL, palette, smallForm, nameField, themeSwitchMarkup, accentSwitchMarkup } from './ui.js';
+import { state, project, flow, locateCard, cardCount, flowCardCount, searchText, saveStatus, createProject, renameProject, createFlow, updateFlow, selectFlow, addLane, updateLane, latestMoveCard } from './state.js';
 import { activityMarkup } from './chat.js';
 import { renderLibrary } from './library.js';
 
@@ -104,7 +104,7 @@ export function renderApp() {
     <main class="main">
       <div class="topbar"><div class="breadcrumbs">${iconButton('toggle-sidebar', 'Toggle projects', 'menu')}</div><div class="workspace-chat-activity"><button class="button small secondary" data-action="workspace-chat-activity">Chat activity</button><div id="chat-activity-list" hidden></div></div><div class="save-status" data-save-status></div></div>
       <div id="save-error" class="error-banner" role="alert" hidden></div>
-      ${p?.archivedAt ? archivedHeader(p) : p ? `<header class="board-header"><div><div class="heading-row"><h1>${escape(p.name)}</h1>${iconButton('edit-project', 'Project settings', 'more')}</div></div><div class="header-actions">${button('open-playbooks', 'Playbooks', 'playbook', 'button secondary')}${flowTemplate(flow(p))?.fields.some((field) => field.key === 'prompt') ? button('set-project-prompt', 'Set prompt', 'text', 'button secondary') : ''}${button('add-lane', 'Add lane', 'plus', 'button secondary')}${button('add-card', 'New card', 'plus', 'button primary', flow(p)?.lanes.length ? '' : 'disabled')}</div></header>
+      ${p?.archivedAt ? archivedHeader(p) : p ? `<header class="board-header"><div><div class="heading-row"><h1>${escape(p.name)}</h1>${iconButton('edit-project', 'Project settings', 'more')}</div></div><div class="header-actions">${button('open-playbooks', 'Playbooks', 'playbook', 'button secondary')}${button('add-lane', 'Add lane', 'plus', 'button secondary')}${button('add-card', 'New card', 'plus', 'button primary', flow(p)?.lanes.length ? '' : 'disabled')}</div></header>
       ${projectView(p, `${button('undo-move', 'Undo last move', 'undo', 'button small secondary', 'data-undo-move="board" disabled')}${button('toggle-cards', view.cardsCollapsed ? 'Expand cards' : 'Collapse cards', null, 'button small secondary', `aria-pressed="${view.cardsCollapsed}" aria-controls="board"`)}<span class="paste-hint">${icon('image')} Paste an image to start a card</span>${searchBox()}`)}` : `<div class="no-projects"><span class="empty-symbol">${icon('board')}</span><h1>No projects yet</h1><p>Create a project to start a board.</p>${button('add-project', 'Create a project', 'plus', 'button primary')}</div>`}
     </main>`;
   renderBoard();
@@ -215,25 +215,4 @@ export function editLane(laneId) {
     // Enable the new-card action when adding the first lane.
     $('.header-actions [data-action="add-card"]').disabled = !f.lanes.length;
   } });
-}
-export function editProjectPrompt() {
-  const p = project();
-  // Cards of a template without a Prompt field are left alone.
-  const cards = lanesOf(p).flatMap((lane) => lane.cards).filter(hasPromptField);
-  if (!cards.length) return toast('Add a card with a Prompt field before applying a shared prompt.');
-  const current = cards.map((card) => card.fields.prompt);
-  const commonPrompt = current.every((prompt) => prompt === current[0]) ? current[0] : '';
-  // The shortest Prompt limit among the affected cards' templates bounds the text.
-  const limit = Math.min(...cards.map(promptLimit));
-  smallForm({
-    title: 'Set prompt for all cards',
-    description: `This replaces the prompt on all ${cards.length} cards in “${p.name}” (up to ${limit.toLocaleString()} characters).`,
-    fields: `<label class="form-label" for="prompt-input">Shared prompt</label><textarea class="form-input prompt-input" id="prompt-input" name="prompt" maxlength="${limit}" placeholder="Write the prompt to apply to every card…">${escape(commonPrompt)}</textarea>`,
-    submit: 'Apply to all cards',
-    onSubmit: (data) => {
-      setProjectPrompt(p, String(data.get('prompt') || ''));
-      renderBoard();
-      toast(`Prompt applied to ${cards.length} ${cards.length === 1 ? 'card' : 'cards'}.`);
-    },
-  });
 }
