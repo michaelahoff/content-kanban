@@ -88,6 +88,13 @@ export function locateCard(targetId = state.cardId) {
   }
   return null;
 }
+export function locateFlow(flowId) {
+  for (const p of state.projects) {
+    const f = p.flows.find((item) => item.id === flowId);
+    if (f) return { flow: f, project: p };
+  }
+  return null;
+}
 export function cardCount(p) { return p.loaded ? lanesOf(p).reduce((sum, lane) => sum + lane.cards.length, 0) : p.cardCount; }
 export const flowCardCount = (f) => f.lanes.reduce((sum, lane) => sum + lane.cards.length, 0);
 // Card template definitions come with the workspace. A card keeps the template
@@ -387,7 +394,7 @@ export function addLane(f, { name, color }) {
   f.lanes.push(lane);
   enqueue(() => send('POST', `${url('flows', f.id)}/stages`, { id: lane.id, name, color }));
 }
-export function updateLane(f, lane, { name, color, position }) {
+export function updateLane(f, lane, { name = lane.name, color = lane.color, position = f.lanes.indexOf(lane) }) {
   Object.assign(lane, { name, color });
   f.lanes.splice(f.lanes.indexOf(lane), 1);
   f.lanes.splice(position, 0, lane);

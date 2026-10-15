@@ -2,7 +2,7 @@
 import { $, escape, iconButton, imageURL, toast, wordCount, confirmDelete, smallForm, setTheme, setAccent } from './ui.js';
 import { retry, request } from './api.js';
 import { fieldInputId } from './card-template.js';
-import { state, project, flow, flowCardCount, forgetFlow, locateCard, cardCount, loadWorkspace, loadCards, loadTemplates, templateOf, flowTemplate, cardChanged, flushCards, createCard, moveCard, deleteCard, deleteLane, deleteFlow, deleteProject, archiveProject, unarchiveProject, saveStatus, hasUnsavedWork, onStatusChange, useSavedCard, undoLastMove, loadPlaybooks, applyStages, restoreFlowSelection } from './state.js';
+import { state, project, flow, flowCardCount, forgetFlow, locateCard, locateFlow, cardCount, loadWorkspace, loadCards, loadTemplates, templateOf, flowTemplate, cardChanged, flushCards, createCard, moveCard, deleteCard, updateLane, updateFlow, deleteLane, deleteFlow, deleteProject, archiveProject, unarchiveProject, saveStatus, hasUnsavedWork, onStatusChange, useSavedCard, undoLastMove, loadPlaybooks, applyStages, restoreFlowSelection } from './state.js';
 import { view, selectProject, renderApp, renderBoard, renderStatus, editProject, editFlow, editLane, editProjectPrompt, toggleCards, showTab, showFlow } from './board.js';
 import { dropLibraryItems, libraryActivity, hasLibraryUploads } from './library.js';
 import { openCard, closeCard, cardPanelOpen, renderImages, copyText, copyTrifecta, fetchYoutube, addImages, originalVideoMarkup, videoLinkMarkup } from './editor.js';
@@ -17,10 +17,34 @@ const imageDialog = $('#image-dialog');
 const app = $('#app');
 let draggedId;
 let dropTarget = null;
-const dropIndicator = document.createElement('div');
-dropIndicator.className = 'drop-indicator';
-dropIndicator.setAttribute('aria-hidden', 'true');
-dropIndicator.innerHTML = '<span></span>';
+// One insertion line for cards, an upright one between lanes, and one in
+// the sidebar's flow lists.
+function insertionLine(tag = 'div') {
+  const node = document.createElement(tag);
+  node.className = 'drop-indicator';
+  node.setAttribute('aria-hidden', 'true');
+  node.innerHTML = '<span></span>';
+  return node;
+}
+const dropIndicator = insertionLine();
+// Lanes reorder across the board and flows down their project's list in the
+// sidebar, by dragging or with Alt and the arrow keys. `move` saves the new
+// place and redraws.
+const reorderKinds = {
+  lane: { across: true, indicator: insertionLine(), keys: { ArrowLeft: -1, ArrowRight: 1 }, move(id, position) {
+    const f = flow();
+    updateLane(f, f.lanes.find((lane) => lane.id === id), { position });
+    renderBoard();
+  } },
+  flow: { across: false, indicator: insertionLine('li'), keys: { ArrowUp: -1, ArrowDown: 1 }, move(id, position) {
+    const { project: p, flow: f } = locateFlow(id);
+    updateFlow(p, f, { position });
+    renderApp();
+  } },
+};
+reorderKinds.lane.indicator.classList.add('upright');
+// The lane or flow being dragged: { kind: 'lane' | 'flow', id, target }.
+let reorder = null;
 
 function makeCard(laneId) {
   const p = project();
@@ -45,12 +69,16 @@ async function flowActivity(entry) {
     const { stages, ...rest } = created;
     p.flows.push({ ...rest, lanes: stages.map((stage) => ({ ...stage, cards: [] })) });
   } else if (entry.type === 'updated' && existing) {
+    const shown = `${existing.name} ${existing.templateId} ${p.flows.indexOf(existing)}`;
     if (entry.data.name) existing.name = entry.data.name;
     if (entry.data.templateId) existing.templateId = entry.data.templateId;
     if (Number.isInteger(entry.data.position) && p.flows.indexOf(existing) !== entry.data.position) {
       p.flows.splice(p.flows.indexOf(existing), 1);
       p.flows.splice(Math.min(entry.data.position, p.flows.length), 0, existing);
     }
+    // This tab's own change comes back already applied; redrawing would
+    // only take focus from the flow just moved with the keyboard.
+    if (`${existing.name} ${existing.templateId} ${p.flows.indexOf(existing)}` === shown) return;
   } else if (entry.type === 'deleted' && existing) {
     forgetFlow(p, existing);
     if (state.cardId && !locateCard()) closeCard();
@@ -278,6 +306,21 @@ document.addEventListener('paste', (event) => {
   if (targetId) addImages(files, targetId);
 });
 document.addEventListener('dragstart', (event) => {
+  // A drag whose element was redrawn away never reports dragend; start clean.
+  draggedId = null;
+  reorder = null;
+  const handle = event.target.closest?.('[data-lane-handle], [draggable="true"][data-flow]');
+  if (handle) {
+    const kind = handle.dataset.laneHandle ? 'lane' : 'flow';
+    const node = kind === 'lane' ? handle.closest('[data-lane]') : handle;
+    reorder = { kind, id: node.dataset[kind], target: null };
+    event.dataTransfer.setData(`application/x-frameboard-${kind}`, reorder.id);
+    event.dataTransfer.effectAllowed = 'move';
+    const rect = node.getBoundingClientRect();
+    event.dataTransfer.setDragImage(node, event.clientX - rect.left, event.clientY - rect.top);
+    node.classList.add('dragging');
+    return;
+  }
   const card = event.target.closest('[data-card]');
   if (!card) return;
   draggedId = card.dataset.card;
@@ -286,9 +329,12 @@ document.addEventListener('dragstart', (event) => {
   card.classList.add('dragging');
 });
 function clearDropTarget() {
-  dropIndicator.getAnimations({ subtree: true }).forEach((animation) => animation.cancel());
-  dropIndicator.remove();
+  for (const indicator of [dropIndicator, ...Object.values(reorderKinds).map((kind) => kind.indicator)]) {
+    indicator.getAnimations({ subtree: true }).forEach((animation) => animation.cancel());
+    indicator.remove();
+  }
   dropTarget = null;
+  if (reorder) reorder.target = null;
   document.querySelectorAll('.drag-over').forEach((node) => node.classList.remove('drag-over'));
 }
 function clearDrag() {
@@ -314,41 +360,116 @@ function showDropTarget(lane, y) {
   lane.classList.add('drag-over');
   const cards = $('.lane-cards', lane);
   const before = [...cards.querySelectorAll('[data-card]')].find((card) => card.dataset.card === target.beforeId);
-  cards.insertBefore(dropIndicator, before || cards.querySelector('.empty-lane'));
-  if (!matchMedia('(prefers-reduced-motion: reduce)').matches) {
-    const gap = parseFloat(getComputedStyle(cards).rowGap) || 0;
-    const easing = 'cubic-bezier(.22, 1, .36, 1)';
-    // Cancel out the extra flex gap at first, then ease the cards apart.
-    dropIndicator.animate([
-      { flexBasis: '0px', marginBlock: `${-gap / 2}px`, opacity: 0 },
-      { flexBasis: '26px', marginBlock: '0px', opacity: 1 },
-    ], { duration: 180, easing });
-    $('span', dropIndicator).animate([
-      { transform: 'scaleX(0)', opacity: 0 },
-      { transform: 'scaleX(1)', opacity: 1 },
-    ], { duration: 220, easing });
-  }
+  openSlot(dropIndicator, cards, before || cards.querySelector('.empty-lane'));
 }
-function cardPositions() {
-  return new Map([...document.querySelectorAll('[data-card]')]
-    .filter((card) => card.dataset.card !== draggedId)
-    .map((card) => [card.dataset.card, card.getBoundingClientRect()]));
-}
-function slideCards(previous) {
+// Puts the insertion line in `list` before `before` (the end when null),
+// opening its own gap there. It lies flat between cards and flows and
+// stands upright between lanes.
+function openSlot(indicator, list, before, upright = false) {
+  list.insertBefore(indicator, before);
   if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-  for (const card of document.querySelectorAll('[data-card]')) {
-    const before = previous.get(card.dataset.card);
+  const style = getComputedStyle(list);
+  const gap = parseFloat(upright ? style.columnGap : style.rowGap) || 0;
+  const margin = upright ? 'marginInline' : 'marginBlock';
+  const scale = upright ? 'scaleY' : 'scaleX';
+  const easing = 'cubic-bezier(.22, 1, .36, 1)';
+  // Cancel out the extra flex gap at first, then ease the neighbours apart.
+  indicator.animate([
+    { flexBasis: '0px', [margin]: `${-gap / 2}px`, opacity: 0 },
+    { flexBasis: '26px', [margin]: '0px', opacity: 1 },
+  ], { duration: 180, easing });
+  $('span', indicator).animate([
+    { transform: `${scale}(0)`, opacity: 0 },
+    { transform: `${scale}(1)`, opacity: 1 },
+  ], { duration: 220, easing });
+}
+// Where cards, lanes or flows (`kind`) sit, apart from the one being dragged, so
+// they can slide from there to their new places after a drop.
+function positions(kind, skipId) {
+  return new Map([...document.querySelectorAll(`[data-${kind}]`)]
+    .filter((node) => node.dataset[kind] !== skipId)
+    .map((node) => [node.dataset[kind], node.getBoundingClientRect()]));
+}
+function slide(kind, previous) {
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  for (const node of document.querySelectorAll(`[data-${kind}]`)) {
+    const before = previous.get(node.dataset[kind]);
     if (!before) continue;
-    const after = card.getBoundingClientRect();
+    const after = node.getBoundingClientRect();
     const x = before.left - after.left, y = before.top - after.top;
     if (Math.abs(x) < 1 && Math.abs(y) < 1) continue;
-    card.animate([
+    node.animate([
       { transform: `translate(${x}px, ${y}px)` },
-      { transform: getComputedStyle(card).transform },
+      { transform: getComputedStyle(node).transform },
     ], { duration: 200, easing: 'cubic-bezier(.22, 1, .36, 1)' });
   }
 }
-document.addEventListener('dragend', () => { draggedId = null; clearDrag(); });
+const reorderNode = () => document.querySelector(`[data-${reorder.kind}="${reorder.id}"]`);
+// The pointer's place along the line a lane or flow moves on, and where a
+// rectangle starts and ends on it.
+const along = (event) => (reorderKinds[reorder.kind].across ? event.clientX : event.clientY);
+const span = (rect) => (reorderKinds[reorder.kind].across ? [rect.left, rect.right] : [rect.top, rect.bottom]);
+// Where a dragged lane or flow would land among its siblings: before the
+// first whose middle is past the pointer. `same` marks a drop that would
+// leave it where it is.
+function reorderTarget(point) {
+  const list = reorderNode().parentElement;
+  const items = [...list.querySelectorAll(`:scope > [data-${reorder.kind}]`)];
+  const others = items.filter((node) => node.dataset[reorder.kind] !== reorder.id);
+  const before = others.find((node) => { const [start, end] = span(node.getBoundingClientRect()); return point <= (start + end) / 2; }) || null;
+  const position = before ? others.indexOf(before) : others.length;
+  // Past the last sibling the line goes before whatever follows the list
+  // (Add a lane, Add a new flow).
+  let after = items.at(-1).nextElementSibling;
+  if (after === reorderKinds[reorder.kind].indicator) after = after.nextElementSibling;
+  return { list, before: before || after, position, same: position === items.indexOf(reorderNode()) };
+}
+// Lanes reorder within the board, flows within their project's list.
+const overReorderList = (event) => !!reorderNode()?.parentElement.contains(event.target);
+function showReorderTarget(point) {
+  const { indicator, across } = reorderKinds[reorder.kind];
+  // Keep the slot stable when the pointer is inside the gap it just opened.
+  const [start, end] = span(indicator.getBoundingClientRect());
+  if (indicator.isConnected && point >= start && point <= end) return;
+  const target = reorderTarget(point);
+  if (indicator.isConnected && reorder.target?.position === target.position) return;
+  clearDropTarget();
+  reorder.target = target;
+  openSlot(indicator, target.list, target.before, across);
+}
+function dropReorder(event) {
+  const { kind, id } = reorder;
+  const target = !overReorderList(event) ? null : reorder.target ?? reorderTarget(along(event));
+  const previous = positions(kind, id);
+  clearDrag();
+  reorder = null;
+  if (!target) return;
+  event.preventDefault();
+  if (target.same) return;
+  reorderKinds[kind].move(id, target.position);
+  slide(kind, previous);
+}
+// Alt with an arrow key moves the focused lane left or right, or the focused
+// flow up or down, one place.
+document.addEventListener('keydown', (event) => {
+  if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || cardPanelOpen() || formDialog.open || imageDialog.open) return;
+  const lane = event.target.matches?.('#board > [data-lane]') && $('[data-lane-handle]', event.target) ? event.target : null;
+  const node = lane || event.target.closest?.('.flow-link')?.closest('[draggable="true"][data-flow]');
+  if (!node) return;
+  const kind = lane ? 'lane' : 'flow';
+  const step = reorderKinds[kind].keys[event.key];
+  if (!step) return;
+  event.preventDefault();
+  const id = node.dataset[kind];
+  const siblings = [...node.parentElement.querySelectorAll(`:scope > [data-${kind}]`)];
+  const position = siblings.indexOf(node) + step;
+  if (position < 0 || position >= siblings.length) return;
+  const previous = positions(kind);
+  reorderKinds[kind].move(id, position);
+  slide(kind, previous);
+  document.querySelector(kind === 'lane' ? `#board > [data-lane="${id}"]` : `[data-flow="${id}"] .flow-link`)?.focus();
+});
+document.addEventListener('dragend', () => { draggedId = null; reorder = null; clearDrag(); });
 // A card dropped on another flow of its project in the sidebar moves to that
 // flow's first lane.
 const flowDropTarget = (event) => {
@@ -357,6 +478,7 @@ const flowDropTarget = (event) => {
   return f && f !== flow() && f.lanes.length && !project().archivedAt ? { row, flow: f } : null;
 };
 document.addEventListener('dragenter', (event) => {
+  if (reorder) { if (overReorderList(event)) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; } return; }
   if (flowDropTarget(event)) { event.preventDefault(); event.dataTransfer.dropEffect = 'move'; return; }
   if (!draggedId || cardPanelOpen() || formDialog.open || imageDialog.open || !event.target.closest('[data-lane]')) return;
   // Opening the insertion gap can put a different child under the pointer.
@@ -368,6 +490,13 @@ document.addEventListener('dragover', (event) => {
   const files = event.dataTransfer.types.includes('Files');
   if (files) event.preventDefault();
   if (formDialog.open || imageDialog.open) return;
+  if (reorder) {
+    if (!overReorderList(event)) { clearDropTarget(); return; }
+    event.preventDefault();
+    showReorderTarget(along(event));
+    event.dataTransfer.dropEffect = 'move';
+    return;
+  }
   if (cardPanelOpen() && files) { $('#image-drop').classList.add('drag-over'); return; }
   const flowDrop = !files && flowDropTarget(event);
   if (flowDrop) {
@@ -397,13 +526,14 @@ document.addEventListener('dragleave', (event) => {
   } else if (!lane && !event.relatedTarget) clearDropTarget();
 });
 document.addEventListener('drop', (event) => {
+  if (reorder) { dropReorder(event); return; }
   const files = [...event.dataTransfer.files];
   if (files.length) event.preventDefault();
   const lane = event.target.closest('[data-lane]');
   const target = lane && draggedId && !files.length
     ? dropTarget?.laneId === lane.dataset.lane ? dropTarget : insertionTarget(lane, event.clientY)
     : null;
-  const previous = target ? cardPositions() : null;
+  const previous = target ? positions('card', draggedId) : null;
   clearDrag();
   if (formDialog.open || imageDialog.open) return;
   if (cardPanelOpen() && files.length) { addImages(files, state.cardId); return; }
@@ -423,7 +553,7 @@ document.addEventListener('drop', (event) => {
     if (card) addImages(files, card.id);
   } else if (target && moveCard(draggedId, target.laneId, target.beforeId)) {
     renderBoard();
-    slideCards(previous);
+    slide('card', previous);
   }
   draggedId = null;
 });
