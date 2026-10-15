@@ -255,6 +255,10 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
       ['POST', /^\/api\/projects\/([^/]+)\/flows$/, async (ctx, req, id) => store.createFlow(ctx, id, await read(req)), 201],
       ['PATCH', /^\/api\/flows\/([^/]+)$/, async (ctx, req, id) => store.updateFlow(ctx, id, await read(req))],
       ['DELETE', /^\/api\/flows\/([^/]+)$/, (ctx, req, id) => (store.deleteFlow(ctx, id), { ok: true })],
+      // A board becomes a graph (a single line of routes) or a graph a board (losing its routes and layout).
+      ['POST', /^\/api\/flows\/([^/]+)\/convert$/, async (ctx, req, id) => store.convertFlow(ctx, id, await read(req))],
+      // A node's routes and advance setting, written into its lane playbook.
+      ['PUT', /^\/api\/stages\/([^/]+)\/routes$/, async (ctx, req, id) => store.setRoutes(ctx, id, await read(req))],
       ['POST', /^\/api\/flows\/([^/]+)\/stages$/, async (ctx, req, id) => store.createStage(ctx, id, await read(req)), 201],
       ['PATCH', /^\/api\/stages\/([^/]+)$/, async (ctx, req, id) => store.updateStage(ctx, id, await read(req))],
       ['DELETE', /^\/api\/stages\/([^/]+)$/, (ctx, req, id) => (store.deleteStage(ctx, id), { ok: true })],

@@ -303,7 +303,8 @@ export function createCard(lane, p = project()) {
 
 // Moves a card before another card, or to the end of a lane, which may be in
 // another flow of its project. Returns false when the card is already there.
-export function moveCard(targetId, laneId, beforeId = null) {
+// `route` names the route of a graph node the card follows.
+export function moveCard(targetId, laneId, beforeId = null, route = undefined) {
   const source = locateCard(targetId);
   const destination = source && lanesOf(source.project).find((lane) => lane.id === laneId);
   if (!source || !destination || targetId === beforeId || state.undoingCardId === targetId) return false;
@@ -319,7 +320,7 @@ export function moveCard(targetId, laneId, beforeId = null) {
   showEdited(card);
   enqueue(async () => {
     const previousValues = contentValues(card);
-    const result = await send('POST', `${url('cards', card.id)}/transitions`, { action: 'move', toStageId: laneId, beforeCardId: beforeIndex < 0 ? null : beforeId });
+    const result = await send('POST', `${url('cards', card.id)}/transitions`, { action: 'move', toStageId: laneId, beforeCardId: beforeIndex < 0 ? null : beforeId, ...(route ? { route } : {}) });
     if (result.fieldUpdate) {
       const baseline = savedValues.get(card.id);
       const keys = Object.keys(result.fieldUpdate.values);
@@ -388,11 +389,50 @@ export function deleteCard(cardId) {
   enqueue(() => send('DELETE', url('cards', cardId)));
 }
 
-// Lanes belong to a flow; `f` is a flow from a project's `flows`.
-export function addLane(f, { name, color }) {
-  const lane = toLane({ id: id(), flowId: f.id, name, color, playbook: null, position: f.lanes.length, instructions: '', exitCriteria: [], approveTo: null, sendBackTo: null, automations: [] });
+// Lanes belong to a flow; `f` is a flow from a project's `flows`. A node of
+// a graph flow has a place on the canvas (x, y); the server gives it a playbook.
+export function addLane(f, { name, color, x = null, y = null }) {
+  const lane = toLane({ id: id(), flowId: f.id, name, color, playbook: null, position: f.lanes.length, x, y, instructions: '', exitCriteria: [], approveTo: null, sendBackTo: null, automations: [] });
   f.lanes.push(lane);
-  enqueue(() => send('POST', `${url('flows', f.id)}/stages`, { id: lane.id, name, color }));
+  enqueue(() => send('POST', `${url('flows', f.id)}/stages`, { id: lane.id, name, color, ...(x === null ? {} : { x, y }) }));
+  return lane;
+}
+// A node dragged to a new place on the graph canvas.
+export function moveNode(lane, x, y) {
+  if (lane.x === x && lane.y === y) return;
+  Object.assign(lane, { x, y });
+  enqueue(() => send('PATCH', url('stages', lane.id), { x, y }));
+}
+// A node's routes ([{ name, to }]) and advance ('review' or 'auto'), saved
+// into its playbook. Resolves once the server has written the file.
+// The save names the playbook version shown; when the file changed since,
+// the server refuses and the routes shown are reloaded.
+export async function setRoutes(f, lane, routes, advance = undefined) {
+  let saved;
+  try {
+    saved = await enqueue(() => send('PUT', `${url('stages', lane.id)}/routes`, { routes, baseHash: lane.playbook?.hash ?? null, ...(advance ? { advance } : {}) }), undefined, { rejectOnError: true });
+  } catch (error) {
+    if (error.status === 409) applyStages(f, (await loadPlaybooks(f)).stages);
+    throw error;
+  }
+  applyStages(f, saved.stages);
+}
+// A flow as the server describes it (kind, lane order, places and playbooks),
+// after a conversion here or in another tab. Cards stay in their lanes.
+export function applyFlowView(f, view) {
+  f.kind = view.kind;
+  const lanes = view.stages.map((stage) => {
+    const lane = f.lanes.find((item) => item.id === stage.id) ?? toLane(stage);
+    return Object.assign(lane, { name: stage.name, color: stage.color, position: stage.position, x: stage.x, y: stage.y, playbook: stage.playbook });
+  });
+  f.lanes = lanes;
+}
+// Board to graph keeps everything and adds routes; graph to board drops the
+// routes and layout. Waits for the server, which rewrites the playbooks.
+export async function convertFlow(f, kind) {
+  flushCards();
+  const view = await enqueue(() => send('POST', `${url('flows', f.id)}/convert`, { kind }), undefined, { rejectOnError: true });
+  applyFlowView(f, view);
 }
 export function updateLane(f, lane, { name = lane.name, color = lane.color, position = f.lanes.indexOf(lane) }) {
   Object.assign(lane, { name, color });
@@ -439,8 +479,8 @@ export function deleteLane(f, laneId) {
 }
 
 // Projects and flows get their default lanes from the server, so creation waits for it.
-export async function createProject(name, templateId = undefined) {
-  const { project: { flowId, ...created }, flow: first } = await enqueue(() => send('POST', '/api/projects', { id: id(), name, ...(templateId ? { templateId } : {}) }));
+export async function createProject(name, templateId = undefined, kind = 'board') {
+  const { project: { flowId, ...created }, flow: first } = await enqueue(() => send('POST', '/api/projects', { id: id(), name, kind, ...(templateId ? { templateId } : {}) }));
   const p = { ...created, loaded: true, flows: [toFlow(first)] };
   state.projects.push(p);
   return p;
@@ -456,11 +496,12 @@ export function selectFlow(p, flowId) {
 export function restoreFlowSelection() {
   try { Object.assign(state.flowIds, JSON.parse(localStorage.getItem('frameboard-flows') || '{}')); } catch { /* Optional preference. */ }
 }
-export async function createFlow(p, name, templateId = undefined) {
-  const created = await enqueue(() => send('POST', `${url('projects', p.id)}/flows`, { id: id(), name, ...(templateId ? { templateId } : {}) }), undefined, { rejectOnError: true });
-  // The change feed may have added it already.
+export async function createFlow(p, name, templateId = undefined, kind = 'board') {
+  const created = await enqueue(() => send('POST', `${url('projects', p.id)}/flows`, { id: id(), name, kind, ...(templateId ? { templateId } : {}) }), undefined, { rejectOnError: true });
+  // The change feed may have added it already, before a graph's playbooks were written.
   const f = p.flows.find((item) => item.id === created.id) ?? toFlow(created);
   if (!p.flows.includes(f)) p.flows.push(f);
+  applyFlowView(f, created);
   return f;
 }
 // A flow's name, its place among the project's flows, and the template its

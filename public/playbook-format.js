@@ -12,8 +12,15 @@ export const runModes = ['on-enter', 'manual', 'off'];
 export const conversationModes = ['continue', 'fresh'];
 export const providers = ['codex', 'claude'];
 export const providerNames = { codex: 'Codex', claude: 'Claude' };
-export const knownKeys = ['lane', 'run', 'provider', 'model', 'context', 'may_edit', 'set', 'conversation', 'skills', 'assets'];
+// How a card leaves a node of a graph flow when its agent chooses a route:
+// after the user reviews the move, or at once.
+export const advanceModes = ['review', 'auto'];
+export const knownKeys = ['lane', 'run', 'provider', 'model', 'context', 'may_edit', 'set', 'conversation', 'skills', 'assets', 'advance', 'routes'];
 export const skillName = /^[a-z0-9][a-z0-9_-]{0,79}$/i;
+export const routeName = /^[a-z0-9][a-z0-9 _-]{0,39}$/i;
+// Automatic route moves in a row, without a move by the user, before the
+// next one waits for review. Stops a loop that never converges.
+export const maxAutomaticMoves = 12;
 const notesInPrompt = 20000;
 
 // --- Frontmatter: a small YAML subset -------------------------------------
@@ -413,9 +420,34 @@ export function playbookSettings(document, template) {
   }
   const library = assetSources(data.assets);
   errors.push(...library.errors); warnings.push(...library.warnings);
+  // routes: one "name: lane" line per way out of this lane, naming the lane
+  // by ID (as the graph editor writes it) or by name.
+  const advance = data.advance === undefined || data.advance === '' ? 'review' : String(data.advance).toLowerCase();
+  if (!advanceModes.includes(advance)) errors.push('advance must be review or auto.');
+  const routes = [];
+  if (data.routes !== undefined && data.routes !== '') {
+    if (!data.routes || typeof data.routes !== 'object' || Array.isArray(data.routes)) errors.push('routes needs one “name: lane” line per route.');
+    else for (const [name, target] of Object.entries(data.routes)) {
+      if (!routeName.test(name)) errors.push(`routes: “${name}” is not a route name. Use letters, numbers, spaces, - and _ (up to 40).`);
+      else if (!target.trim()) errors.push(`routes: “${name}” needs the lane it leads to.`);
+      else if (routes.some((route) => route.name.toLowerCase() === name.toLowerCase())) errors.push(`routes: “${name}” is listed twice.`);
+      else routes.push({ name, target: target.trim() });
+    }
+  }
   return { lane: data.lane ? String(data.lane) : null, run, provider, model, conversation, selections, mayEdit, set, skills, assets: library.sources,
-    instructions: body.trim(), errors, warnings };
+    advance, routes, instructions: body.trim(), errors, warnings };
 }
+
+// A playbook's routes resolved against its flow's lanes, by ID and then by
+// name. A route whose lane is gone, or that leads back to its own lane, has
+// no laneId.
+export function resolveRoutes(routes, lanes, ownId = null) {
+  return routes.map((route) => {
+    const lane = lanes.find((item) => item.id === route.target) ?? lanes.find((item) => item.name.toLowerCase() === route.target.toLowerCase());
+    return { name: route.name, target: route.target, laneId: lane && lane.id !== ownId ? lane.id : null, laneName: lane?.name ?? null };
+  });
+}
+export const findRoute = (routes, name) => routes.find((route) => route.name.toLowerCase() === String(name).trim().toLowerCase()) ?? null;
 
 // One sentence for the board and editor, e.g. "Runs on entry · Claude · may edit Title Options".
 export function describeSettings(settings, template) {
@@ -428,22 +460,30 @@ export function describeSettings(settings, template) {
   if (settings.mayEdit.length) parts.push(`may edit ${settings.mayEdit.map(label).join(', ')}`);
   const set = Object.keys(settings.set);
   if (set.length) parts.push(`sets ${set.map(label).join(', ')}`);
+  if (settings.routes.length) parts.push(`${settings.routes.length} ${settings.routes.length === 1 ? 'route' : 'routes'}${settings.advance === 'auto' ? ', followed automatically' : ''}`);
   return parts.join(' · ');
 }
 
 // --- Starter documents -----------------------------------------------------
-export function mapTemplate(flowName, lanes, template) {
+// `routes`, for a graph flow, maps a lane ID to its routes ([{ name, to }],
+// `to` a lane name), so the map describes nodes and the ways between them.
+export function mapTemplate(flowName, lanes, template, routes = null) {
+  const ways = (lane) => (routes.get(lane.id) ?? []).map((route) => `${route.name} → ${route.to}`).join(', ');
   return `# ${flowName} — flow map
 
-Every lane run in this flow reads this file first. Describe what this flow is for and how its lanes fit together, so an agent always knows where it is.
+Every lane run in this flow reads this file first. Describe what this flow is for and how its ${routes ? 'nodes' : 'lanes'} fit together, so an agent always knows where it is.
 
 ## What we make
 
 (Describe what this flow produces: the audience, the format, the voice.)
 
-## Lanes, in order
+${routes ? `## Nodes and their routes
 
-${lanes.map((lane, index) => `${index + 1}. **${lane.name}** — (what happens here)`).join('\n')}
+Cards start in ${lanes[0]?.name ?? 'the first node'}. Each node's agent chooses one of its routes when its work decides where the card goes next.
+
+${lanes.map((lane) => `- **${lane.name}** — (what happens here)${ways(lane) ? `. Routes: ${ways(lane)}.` : '. The end of the flow.'}`).join('\n')}` : `## Lanes, in order
+
+${lanes.map((lane, index) => `${index + 1}. **${lane.name}** — (what happens here)`).join('\n')}`}
 
 ## Card fields
 
@@ -469,6 +509,16 @@ What should happen when a card enters this lane?
 - (How you know this lane's work is finished.)
 `);
 }
+// A node of a graph flow starts with a playbook that runs nothing until it
+// has instructions, so its routes have a file to live in.
+export function nodeTemplate(lane, { routes = {}, body = '' } = {}) {
+  return serializeDocument({ lane: lane.id, run: 'off', ...(Object.keys(routes).length ? { routes } : {}) }, body || `# ${lane.name}
+
+What happens when a card reaches this node? Write the instructions here, then set run to on-enter to have an agent work on each card that arrives (or manual to run it from the card).
+
+The routes in the settings are the ways out of this node. Tell the agent how to choose one, for example: choose “approved” when the draft is ready and “revise” when it needs another pass.
+`);
+}
 export function skillTemplate(name) {
   return `# ${name}
 
@@ -480,18 +530,30 @@ export function skillTemplate(name) {
 export const resultTag = 'frameboard-result';
 const maxLaneOutputs = 20;
 
-export function composeLanePrompt({ projectName, flowName, laneName, lanes, trigger = 'enter', map, playbook, skills = [], notes = '', settings, template }) {
+// `routes` are the playbook's routes resolved against the flow (resolveRoutes);
+// a route whose lane is gone is left out.
+export function composeLanePrompt({ projectName, flowName, laneName, lanes, trigger = 'enter', map, playbook, skills = [], notes = '', settings, template, routes = [] }) {
   const fields = setFields(template).filter((field) => field.editor !== false);
   const label = (key) => fields.find((field) => field.key === key)?.label ?? key;
   // The example names a long-text field when there is one, never a URL or the title.
   const example = (fields.find((field) => field.control === 'textarea') ?? fields.find((field) => field.key !== 'title' && field.control !== 'url') ?? fields.find((field) => field.key !== 'title'))?.key ?? 'title';
   const roles = imageRoles(template).filter((role) => role.key !== 'cover').map((role) => role.label.toLowerCase());
   const trimmedNotes = notes.length > notesInPrompt ? `…(earlier notes omitted)\n${notes.slice(-notesInPrompt)}` : notes;
+  const ways = routes.filter((route) => route.laneId);
+  const automatic = settings.advance === 'auto';
+  const routeSection = ways.length ? `## Routes out of this lane
+
+When this lane's work decides where the card goes next, choose one of these routes by name in "route":
+
+${ways.map((route) => `- ${route.name} → ${route.laneName}`).join('\n')}
+
+${automatic ? 'Frameboard moves the card along the route you choose as soon as you finish, and the next lane\'s playbook starts. Leave "route" out to keep the card here for the user.' : 'The user reviews the route you choose before the card moves.'}` : '';
   const sections = [
     `You are working on one card in the Frameboard project “${projectName}”${flowName ? `, in its “${flowName}” flow` : ''}. ${trigger === 'manual' ? `The user asked you to run the “${laneName}” lane playbook for it.` : `The card just entered the “${laneName}” lane.`} Follow that lane's playbook below.`,
     map?.text.trim() ? `## Flow map (${map.path})\n\n${map.text.trim()}` : '',
     `## Lane playbook: ${laneName} (${playbook.path})\n\n${settings.instructions}`,
     ...skills.map((skill) => (skill.text === null ? `## Skill ${skill.name}\n\n(skills/${skill.name}.md does not exist yet.)` : `## Skill: ${skill.name} (${skill.path})\n\n${skill.text.trim()}`)),
+    routeSection,
     `## Hand-off notes (notes.md)\n\n${trimmedNotes.trim() || 'No notes yet. This is the first lane run that leaves notes for this card.'}`,
     `Every photo in the card gallery is attached to this run. Use the current image references listed below to identify the available photos${roles.length ? `; the ${roles.join(', ')} and display labels mark the roles the card assigns` : ''}. Hand-off notes describe earlier runs; check these attachments before treating a photo as missing.`,
     `## Reporting your result
@@ -502,7 +564,7 @@ When you finish, end your reply with exactly one fenced code block tagged \`${re
 {
   "fields": { "${example}": "the complete new value" },
   "notes": "a short hand-off for whoever works on this card next",
-  "move": "Lane name",
+  ${ways.length ? `"route": "${ways[0].name}"` : '"move": "Lane name"'},
   "outputs": [
     { "filename": "script.md", "text": "the document's complete exact text", "sources": ["a supplied version ID"] },
     { "path": "renders/thumbnail.png", "filename": "thumbnail.png", "sources": [] }
@@ -513,7 +575,7 @@ When you finish, end your reply with exactly one fenced code block tagged \`${re
 - Field keys: ${fields.map((field) => `${field.key} (${field.label})`).join(', ')}.
 - A value replaces the whole field. Leave out fields you did not change.
 - ${settings.mayEdit.length ? `Frameboard applies ${settings.mayEdit.map(label).join(', ')} directly.` : 'This lane may not edit fields directly.'} Every other field becomes a proposal the user reviews.
-- Include "move" only if the playbook tells you to propose a move. Moves always wait for the user. Lanes: ${lanes.map((lane) => lane.name).join(', ')}.
+- ${ways.length ? `Include "route" with one of ${ways.map((route) => `"${route.name}"`).join(', ')} when your work decides where the card goes next. ${automatic ? 'The card follows it at once.' : 'The user reviews it first.'}` : `Include "move" only if the playbook tells you to propose a move. Moves always wait for the user. Lanes: ${lanes.map((lane) => lane.name).join(', ')}.`}
 - Always include "notes": what you did, decisions made and anything still open.
 - Include "outputs" only for finished documents and files the playbook asks you to deliver. Give a document's exact "text", or the workspace-relative "path" of a finished file you wrote in this card workspace ("filename" defaults to its last part). Frameboard saves exactly those bytes when you finish, kept with this card chat; it saves nothing you do not list, and mentioning a path in your reply saves nothing. A path is saved only if you could write files here and it is a regular file inside the workspace, not a link or a reference copy. In "sources", list the version IDs of the supplied images or Library files it was derived from, [] if none, or leave it out if unsure. Saving never adds anything to the project Library: only the user can save it to the project Library, so suggest that in "notes" if it would help.
 - Report through this block only. Do not call Frameboard card tools or edit notes.md yourself during a lane run.`,
@@ -527,8 +589,8 @@ export function parseLaneResult(text, template) {
   const blocks = [...String(text ?? '').matchAll(/^```[ \t]*frameboard(?:-result)?[ \t]*\r?\n([\s\S]*?)^```[ \t]*(?=\r?$)/gm)];
   if (!blocks.length) return null;
   let value;
-  try { value = JSON.parse(blocks.at(-1)[1]); } catch (error) { return { fields: {}, notes: '', move: null, outputs: [], errors: [`The result block is not valid JSON: ${error.message}`] }; }
-  const result = { fields: {}, notes: '', move: null, outputs: [], errors: [] };
+  try { value = JSON.parse(blocks.at(-1)[1]); } catch (error) { return { fields: {}, notes: '', move: null, route: null, outputs: [], errors: [`The result block is not valid JSON: ${error.message}`] }; }
+  const result = { fields: {}, notes: '', move: null, route: null, outputs: [], errors: [] };
   if (!value || typeof value !== 'object' || Array.isArray(value)) return { ...result, errors: ['The result block must be a JSON object.'] };
   const fields = setFields(template).filter((field) => field.editor !== false);
   if (value.fields !== undefined) {
@@ -549,6 +611,10 @@ export function parseLaneResult(text, template) {
   if (value.move !== undefined && value.move !== null && value.move !== '') {
     if (typeof value.move === 'string') result.move = value.move.trim();
     else result.errors.push('Ignored “move”: it must be a lane name.');
+  }
+  if (value.route !== undefined && value.route !== null && value.route !== '') {
+    if (typeof value.route === 'string' && value.route.trim().length <= 100) result.route = value.route.trim();
+    else result.errors.push('Ignored “route”: it must be the name of one of this lane\'s routes.');
   }
   // Explicit outputs to save: an inline document's exact text, or a finished
   // file named by its workspace path. Leaving out "sources" leaves the

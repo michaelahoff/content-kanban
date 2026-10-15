@@ -1004,6 +1004,94 @@ These values apply when a card enters this lane.
   }
   console.log('PASS flows: nested in the sidebar with a quiet Add a new flow, cross-flow moves from the editor and by dropping on a sidebar flow, undo across flows, drag to reorder, rename and delete');
 
+  // Graph flows: lanes are nodes on a canvas joined by routes from their
+  // playbooks. Routes are drawn from a node's port and edited from their
+  // labels; nodes drag and save their place; a card follows a route from its
+  // editor; turning the graph into a board drops its routes.
+  {
+    const projectId = (await state()).projects[0].id;
+    const mouse = async (from, to, steps = 6) => {
+      await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: from.x, y: from.y });
+      await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: from.x, y: from.y, button: 'left', clickCount: 1 });
+      for (let step = 1; step <= steps; step++) await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: from.x + (to.x - from.x) * step / steps, y: from.y + (to.y - from.y) * step / steps, button: 'left', buttons: 1 });
+      await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: to.x, y: to.y, button: 'left', clickCount: 1 });
+    };
+    const center = (selector) => evaluate(`(() => { const r = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; })()`);
+    await click('[data-action="add-flow"]');
+    await waitFor(`document.querySelector('#form-dialog').open && !!document.querySelector('input[name="kind"][value="graph"]')`);
+    await fill('#name-input', 'Script loop');
+    await click('input[name="kind"][value="graph"]');
+    await click('#small-form [type="submit"]');
+    await waitFor(`document.querySelectorAll('.graph-node').length === 4 && document.querySelectorAll('.graph-route').length === 4`);
+    const graphFlow = (await api('GET', '/api/workspace')).flows.find((entry) => entry.projectId === projectId && entry.name === 'Script loop');
+    const [ideas, draft, review, done] = graphFlow.stages;
+    assert.equal(graphFlow.kind, 'graph');
+    assert.ok(await evaluate(`!!document.querySelector('.flow-row.active .flow-kind')`), 'The sidebar marks a graph flow');
+    const lefts = await evaluate(`[...document.querySelectorAll('.graph-node')].map((node) => Math.round(node.getBoundingClientRect().left))`);
+    assert.deepEqual([...lefts].sort((a, b) => a - b), lefts, 'Nodes sit in a line from the start node');
+    assert.equal(new Set(lefts).size, 4, 'Each node has its own place');
+    assert.deepEqual(await evaluate(`[...document.querySelectorAll('.graph-route')].map((label) => label.textContent.trim())`), ['next', 'next', 'approved', 'revise']);
+    await snapshot('graph-flow');
+
+    // Drawing a route: drag Done's port onto Ideas.
+    await mouse(await center(`.graph-port[data-from="${done.id}"]`), await center(`.graph-node[data-node="${ideas.id}"] .graph-node-head h2`));
+    await waitFor(`document.querySelectorAll('.graph-route').length === 5`);
+    let doneRoutes = (await api('GET', '/api/workspace')).flows.find((entry) => entry.id === graphFlow.id).stages.find((stage) => stage.id === done.id).playbook.routes;
+    assert.deepEqual(doneRoutes.map((route) => [route.name, route.laneId]), [['next', ideas.id]]);
+    // Its label opens the route: rename it and let the card move on by itself.
+    await click(`.graph-route[data-from="${done.id}"]`);
+    await waitFor(`document.querySelector('#form-dialog').open && document.querySelector('#route-to')?.value === '${ideas.id}'`);
+    await fill('#name-input', 'start over');
+    await click('input[name="advance"][value="auto"]');
+    await click('#small-form [type="submit"]');
+    await waitFor(`[...document.querySelectorAll('.graph-route.auto')].some((label) => label.textContent.trim() === 'start over')`);
+    const doneDocument = (await api('GET', `/api/flows/${graphFlow.id}/playbooks`)).lanes.find((document) => document.laneId === done.id);
+    assert.match(doneDocument.text, new RegExp(`routes:\\n  start over: ${ideas.id}\\nadvance: auto`));
+
+    // Dragging a node by its heading moves it and saves its place.
+    const head = await center(`.graph-node[data-node="${review.id}"] .graph-node-head h2`);
+    await mouse(head, { x: head.x + 40, y: head.y + 160 });
+    await saved();
+    const moved = (await api('GET', '/api/workspace')).flows.find((entry) => entry.id === graphFlow.id).stages.find((stage) => stage.id === review.id);
+    assert.ok(moved.y > review.y + 60 && moved.y % 20 === 0, 'The node lands lower, on the grid');
+    // A focused node moves one grid step with Alt and an arrow key.
+    await evaluate(`document.querySelector('.graph-node[data-node="${review.id}"]').focus()`);
+    await altArrow('ArrowRight');
+    await saved();
+    const nudged = (await api('GET', '/api/workspace')).flows.find((entry) => entry.id === graphFlow.id).stages.find((stage) => stage.id === review.id);
+    assert.deepEqual([nudged.x, nudged.y], [moved.x + 20, moved.y]);
+    assert.ok(await evaluate(`document.activeElement?.dataset.node === '${review.id}'`), 'The node keeps focus');
+
+    // A new card starts in the start node and follows a route from its editor.
+    await click('.header-actions [data-action="add-card"]');
+    await waitFor(`document.querySelector('#card-dialog').open && !!document.querySelector('[data-action="follow-route"]')`);
+    const cardId = await evaluate(`(async () => (await import('/state.js')).state.cardId)()`);
+    await saved();
+    assert.equal((await api('GET', `/api/cards/${cardId}`)).card.stageId, ideas.id);
+    await click(`[data-action="follow-route"][data-to="${draft.id}"]`);
+    await saved();
+    const followed = await api('GET', `/api/cards/${cardId}`);
+    assert.equal(followed.card.stageId, draft.id);
+    assert.deepEqual(followed.events.at(-1).data, { route: 'next' });
+    await click('[data-action="close-card"]');
+    await waitFor(`!document.querySelector('#card-dialog').open && !!document.querySelector('.graph-node[data-node="${draft.id}"] [data-card="${cardId}"]')`);
+
+    // Turning the graph into a board keeps lanes and cards and drops the routes.
+    await click(`[data-action="edit-flow"][data-id="${graphFlow.id}"]`);
+    await waitFor(`!!document.querySelector('[data-action="convert-flow"]')`);
+    await click('[data-action="convert-flow"]');
+    await waitFor(`document.querySelector('#form-dialog').open && document.querySelector('#form-heading').textContent.includes('into a board')`);
+    await click('#small-form [type="submit"]');
+    await waitFor(`document.querySelectorAll('#board .lane').length === 4 && !document.querySelector('.graph-node')`);
+    assert.ok(await evaluate(`!!document.querySelector('#board [data-lane="${draft.id}"] [data-card="${cardId}"]')`));
+    for (const document of (await api('GET', `/api/flows/${graphFlow.id}/playbooks`)).lanes) assert.doesNotMatch(document.text, /routes:|advance:/);
+    await click(`[data-action="edit-flow"][data-id="${graphFlow.id}"]`);
+    await click('[data-action="delete-flow"]');
+    await click('#small-form [type="submit"]');
+    await waitFor(`document.querySelectorAll('[data-action="show-flow"]').length === 1`);
+  }
+  console.log('PASS graph flows: a placed loop of nodes, routes drawn from ports and edited from labels into playbooks, node drag, following a route from the card, and turning into a board');
+
   await click('[data-action="edit-project"]');
   await click('[data-action="archive-project"]');
   await click('#small-form [type="submit"]');

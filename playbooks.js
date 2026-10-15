@@ -9,7 +9,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync, lstatSync } from 'node:fs';
 import path from 'node:path';
-import { parseDocument, playbookSettings, mapTemplate, serializeDocument, maxDocumentLength, skillName } from './public/playbook-format.js';
+import { parseDocument, playbookSettings, mapTemplate, serializeDocument, maxDocumentLength, skillName, withSettings, nodeTemplate } from './public/playbook-format.js';
 
 const fail = (status, message) => { throw Object.assign(new Error(message), { status }); };
 export const documentHash = (text) => createHash('sha256').update(text).digest('hex');
@@ -62,9 +62,9 @@ export function createPlaybooks({ dataDir }) {
   const api = {
     root: flowRoot,
     // Creates the folder with a starter map the first time a flow is used.
-    ensure(flowId, { flowName, lanes, template }) {
+    ensure(flowId, { flowName, lanes, template, routes = null }) {
       const filename = resolve(flowId, 'MAP.md');
-      if (!existsSync(filename)) writeText(filename, mapTemplate(flowName, lanes, template));
+      if (!existsSync(filename)) writeText(filename, mapTemplate(flowName, lanes, template, routes));
       for (const folder of ['lanes', 'skills']) mkdirSync(path.join(flowRoot(flowId), folder), { recursive: true });
     },
     read(flowId, relative) { return documentFrom(relative, readText(resolve(flowId, relative))); },
@@ -127,6 +127,22 @@ export function createPlaybooks({ dataDir }) {
       if (!skillName.test(name)) return { name, path: `skills/${name}.md`, text: null };
       const document = api.read(flowId, `skills/${name}.md`);
       return { name, path: `skills/${name}.md`, text: document?.text ?? null, hash: document?.hash ?? null };
+    },
+    // Changes named settings of a lane's playbook, as the graph editor does
+    // with routes and advance, and leaves every other byte as it is. A lane
+    // without a playbook gets a node playbook that runs nothing. A value of
+    // undefined removes the setting. baseHash, when given, is the hash the
+    // editor saw (null for no playbook); a newer file is not overwritten.
+    // Returns the written document, or null when nothing changed.
+    updateSettings(flowId, stage, changes, baseHash = undefined) {
+      const document = api.forStage(flowId, stage.id);
+      if (baseHash !== undefined && (document?.hash ?? null) !== baseHash) fail(409, `${stage.name}'s playbook changed since this page loaded it, so nothing was saved. Its current routes are shown now; try again.`);
+      if (document) {
+        const text = withSettings(document.text, changes);
+        return text === document.text ? null : api.write(flowId, document.path, text, document.hash);
+      }
+      if (Object.values(changes).every((value) => value === undefined)) return null;
+      return api.write(flowId, api.freePath(flowId, stage.name), withSettings(nodeTemplate(stage), changes), null);
     },
     // One-time move of a lane's Set field commands into its playbook.
     migrateSet(flowId, stage, set) {

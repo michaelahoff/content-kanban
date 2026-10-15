@@ -2,8 +2,9 @@
 // card's latest lane runs, Run playbook, and the card's hand-off notes
 // (notes.md in its workspace), which every lane run reads.
 import { $, escape, icon, button, toast } from './ui.js';
-import { locateCard, lanesOf, laneRuns, runPlaybook, loadNotes, saveNotes } from './state.js';
+import { locateCard, lanesOf, laneRuns, runPlaybook, loadNotes, saveNotes, moveCard } from './state.js';
 import { openPlaybooks } from './playbook-editor.js';
+import { renderBoard } from './board.js';
 
 let refreshTimer = null;
 const cardStates = new Map();
@@ -83,8 +84,12 @@ export function renderBar() {
   const runnable = playbook && playbook.hasInstructions && playbook.run !== 'off' && !playbook.errors.length;
   const latest = active.runs[0];
   const guidance = latest && runGuidance(latest, { here: latest.stageId === lane.id });
+  // A graph node's routes: the user can send the card along any of them.
+  const routes = found.flow.kind === 'graph' && !found.project.archivedAt ? (playbook?.routes ?? []).filter((route) => found.flow.lanes.some((item) => item.id === route.laneId)) : [];
+  const routeButtons = routes.map((route) => `<button type="button" class="chip" data-action="follow-route" data-to="${route.laneId}" data-route="${escape(route.name)}">${escape(route.name)}${icon('arrow')}${escape(found.flow.lanes.find((item) => item.id === route.laneId).name)}</button>`).join('');
   panel.innerHTML = `<div class="card-playbook-info">${icon('playbook')}<div><strong>${escape(lane.name)} playbook</strong><span>${escape(playbook ? playbook.summary : 'No playbook yet. Open playbooks to write one.')}</span></div></div>
     <div class="card-playbook-actions">${button('run-playbook', 'Run playbook', 'arrow', 'button small secondary', runnable ? '' : 'disabled title="This lane has no runnable playbook"')}${button('open-lane-playbook', 'Open playbook', null, 'button small secondary', `data-id="${lane.id}"`)}</div>
+    ${routeButtons ? `<div class="card-routes" role="group" aria-label="Follow a route"><span>Follow a route</span>${routeButtons}</div>` : ''}
     ${latest ? `<p class="card-playbook-run ${latest.status === 'failed' ? 'failed' : ''}"><span>Last run${latest.stageId !== lane.id ? ` in ${escape(lanesOf(found.project).find((item) => item.id === latest.stageId)?.name ?? 'another lane')}` : ''}:</span> ${escape(runLabel(latest))}</p>` : ''}
     ${guidance ? `<p class="card-playbook-guidance">${escape(guidance)}</p>` : ''}`;
 }
@@ -155,6 +160,15 @@ document.addEventListener('click', async (event) => {
       await refresh();
     }
     if (action === 'open-lane-playbook') await openPlaybooks({ laneId: target.dataset.id });
+    if (action === 'follow-route') {
+      const id = active.id;
+      if (moveCard(id, target.dataset.to, null, target.dataset.route)) {
+        const found = locateCard(id);
+        if ($('#card-lane')) $('#card-lane').value = found.card.stageId;
+        renderBoard(); renderBar();
+        toast(`Followed ${target.dataset.route} to ${found.lane.name}.`);
+      }
+    }
     if (action === 'notes-use-newer' && active.notes.newer) { active.draft = null; active.conflict = false; active.notes = active.notes.newer; renderNotes(); }
     if (action === 'notes-keep-mine') { await flushNotes(true); }
   } catch (error) { toast(error.message); renderBar(); }

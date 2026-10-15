@@ -2,7 +2,7 @@
 import { $, escape, iconButton, imageURL, toast, wordCount, confirmDelete, smallForm, setTheme, setAccent } from './ui.js';
 import { retry, request } from './api.js';
 import { fieldInputId } from './card-template.js';
-import { state, project, flow, flowCardCount, forgetFlow, locateCard, locateFlow, cardCount, loadWorkspace, loadCards, loadTemplates, templateOf, cardChanged, flushCards, createCard, moveCard, deleteCard, updateLane, updateFlow, deleteLane, deleteFlow, deleteProject, archiveProject, unarchiveProject, saveStatus, hasUnsavedWork, onStatusChange, useSavedCard, undoLastMove, loadPlaybooks, applyStages, restoreFlowSelection } from './state.js';
+import { state, project, flow, flowCardCount, forgetFlow, locateCard, locateFlow, cardCount, loadWorkspace, loadCards, loadTemplates, templateOf, cardChanged, flushCards, createCard, moveCard, deleteCard, updateLane, updateFlow, deleteLane, deleteFlow, deleteProject, archiveProject, unarchiveProject, saveStatus, hasUnsavedWork, onStatusChange, useSavedCard, undoLastMove, loadPlaybooks, applyStages, applyFlowView, convertFlow, restoreFlowSelection, refreshSavedCard } from './state.js';
 import { view, selectProject, renderApp, renderBoard, renderStatus, editProject, editFlow, editLane, toggleCards, showTab, showFlow } from './board.js';
 import { dropLibraryItems, libraryActivity, hasLibraryUploads } from './library.js';
 import { openCard, closeCard, cardPanelOpen, renderImages, copyText, copyTrifecta, fetchYoutube, addImages, originalVideoMarkup, videoLinkMarkup } from './editor.js';
@@ -69,7 +69,12 @@ async function flowActivity(entry) {
     const { stages, ...rest } = created;
     p.flows.push({ ...rest, lanes: stages.map((stage) => ({ ...stage, cards: [] })) });
   } else if (entry.type === 'updated' && existing) {
-    const shown = `${existing.name} ${existing.templateId} ${p.flows.indexOf(existing)}`;
+    const shown = `${existing.name} ${existing.templateId} ${p.flows.indexOf(existing)} ${existing.kind}`;
+    // A conversion reorders lanes and rewrites playbooks: take the server's view.
+    if (entry.data.kind && entry.data.kind !== existing.kind) {
+      const latest = (await request('/api/workspace')).flows.find((item) => item.id === existing.id);
+      if (latest) applyFlowView(existing, latest);
+    }
     if (entry.data.name) existing.name = entry.data.name;
     if (entry.data.templateId) existing.templateId = entry.data.templateId;
     if (Number.isInteger(entry.data.position) && p.flows.indexOf(existing) !== entry.data.position) {
@@ -78,7 +83,7 @@ async function flowActivity(entry) {
     }
     // This tab's own change comes back already applied; redrawing would
     // only take focus from the flow just moved with the keyboard.
-    if (`${existing.name} ${existing.templateId} ${p.flows.indexOf(existing)}` === shown) return;
+    if (`${existing.name} ${existing.templateId} ${p.flows.indexOf(existing)} ${existing.kind}` === shown) return;
   } else if (entry.type === 'deleted' && existing) {
     forgetFlow(p, existing);
     if (state.cardId && !locateCard()) closeCard();
@@ -95,6 +100,13 @@ async function openFlow(projectId, flowId = null) {
   }
   if (flowId) showFlow(flowId); else renderApp();
   return true;
+}
+// An agent moved a card along a route: show it in its new lane or node, with
+// the values the lane set, unless this tab is still saving it.
+async function agentMoved(cardId) {
+  if (!locateCard(cardId)) return;
+  try { refreshSavedCard((await request(`/api/cards/${encodeURIComponent(cardId)}`)).card); } catch { return; }
+  renderBoard();
 }
 async function switchProject(projectId) {
   selectProject(projectId);
@@ -203,11 +215,30 @@ document.addEventListener('click', (event) => {
     });
   }
   if (action === 'delete-lane') {
-    const lane = flow().lanes.find((item) => item.id === targetId);
-    confirmDelete(`Delete “${lane.name}”?`, `This will also delete ${lane.cards.length} ${lane.cards.length === 1 ? 'card' : 'cards'} in this lane. Move any cards you want to keep to another lane first.`, () => {
-      deleteLane(flow(), targetId);
+    const f = flow();
+    const lane = f.lanes.find((item) => item.id === targetId);
+    const noun = f.kind === 'graph' ? 'node' : 'lane';
+    confirmDelete(`Delete “${lane.name}”?`, `This will also delete ${lane.cards.length} ${lane.cards.length === 1 ? 'card' : 'cards'} in this ${noun}. Move any cards you want to keep to another ${noun} first.${f.kind === 'graph' ? ' Routes that lead here are removed from the other nodes’ playbooks.' : ''}`, () => {
+      deleteLane(f, targetId);
       renderApp();
-      toast('Lane deleted.');
+      toast(f.kind === 'graph' ? 'Node deleted.' : 'Lane deleted.');
+    });
+  }
+  if (action === 'convert-flow') {
+    const p = project();
+    const f = p.flows.find((item) => item.id === targetId);
+    const toGraph = f.kind !== 'graph';
+    smallForm({
+      title: toGraph ? `Turn “${f.name}” into a graph?` : `Turn “${f.name}” into a board?`,
+      description: toGraph
+        ? 'Every lane becomes a node, in a single line from the first lane to the last, joined by routes named “next”. Cards, playbooks and history stay as they are. You can then drag nodes, add routes and make loops.'
+        : 'This cannot be undone. Nodes become lanes in route order from the start node. Every route, every advance setting and the layout are removed from this flow and its playbooks. Cards, the rest of each playbook and history stay.',
+      submit: toGraph ? 'Turn into a graph' : 'Turn into a board', danger: !toGraph,
+      onSubmit: async () => {
+        await convertFlow(f, toGraph ? 'graph' : 'board');
+        renderApp();
+        toast(toGraph ? 'This flow is now a graph.' : 'This flow is now a board.');
+      },
     });
   }
   if (action === 'delete-card') {
@@ -359,7 +390,7 @@ function showDropTarget(lane, y) {
   lane.classList.add('drag-over');
   const cards = $('.lane-cards', lane);
   const before = [...cards.querySelectorAll('[data-card]')].find((card) => card.dataset.card === target.beforeId);
-  openSlot(dropIndicator, cards, before || cards.querySelector('.empty-lane'));
+  openSlot(dropIndicator, cards, before || cards.querySelector('.empty-lane, .graph-empty'));
 }
 // Puts the insertion line in `list` before `before` (the end when null),
 // opening its own gap there. It lies flat between cards and flows and
@@ -581,6 +612,7 @@ try {
     cardPlaybookActivity(entry);
     libraryActivity(entry);
     cardLibraryActivity(entry);
+    if (entry.entity === 'card' && entry.type === 'moved' && entry.actor?.startsWith('automation:')) void agentMoved(entry.entityId);
     // Another tab changed the card templates: reload them and redraw the board.
     if (entry.entity === 'template') void loadTemplates().then(() => { renderBoard(); templatesChanged(); }).catch(() => {});
     // Another tab archived or unarchived a project.

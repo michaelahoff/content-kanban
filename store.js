@@ -10,7 +10,7 @@ import { emptyFields, emptyImageRoles, normalizeCard, youtubeVideoTemplate, card
 import { templatesMigration, templatesTable, projectTemplateColumn, createTemplateStore } from './store-templates.js';
 import { readLegacyBoard } from './legacy-board.js';
 import { createPlaybooks } from './playbooks.js';
-import { parseDocument, playbookSettings, describeSettings } from './public/playbook-format.js';
+import { parseDocument, playbookSettings, describeSettings, resolveRoutes, nodeTemplate, routeName, advanceModes, maxAutomaticMoves } from './public/playbook-format.js';
 import { chatMigration, recoveryMigration, createChatStore, archivedMessage } from './store-chat.js';
 import { protectionMigration, createProtectionStore } from './store-protection.js';
 import { imagesMigration, createImageStore } from './store-images.js';
@@ -119,6 +119,28 @@ export function inspectBackupDatabase(filename) {
 export const laneColors = ['lavender', 'blue', 'amber', 'green', 'pink', 'gray', 'teal', 'cyan', 'orange', 'red', 'purple', 'lime'];
 const defaultStages = [['Ideas', 'lavender'], ['In progress', 'blue'], ['Review', 'amber'], ['Done', 'green']];
 const newStages = () => defaultStages.map(([name, color]) => [randomUUID(), name, color]);
+// A flow is shown as a board of lanes or as a graph of nodes (ADR 0009).
+export const flowKinds = ['board', 'graph'];
+// A new graph flow starts as a small loop: drafts go to review, which sends
+// them back for another pass or on to done.
+const graphStarter = [
+  { name: 'Ideas', color: 'lavender', at: [0, 40], routes: { next: 1 }, body: '' },
+  { name: 'Draft', color: 'blue', at: [380, 40], routes: { next: 2 }, body: '' },
+  { name: 'Review', color: 'amber', at: [760, 40], routes: { approved: 3, revise: 1 }, body: `# Review
+
+Read the card against the flow map and the hand-off notes.
+
+- Choose the route "approved" when the work is ready to ship.
+- Choose the route "revise" when it needs another pass, and say exactly what to change in your notes.
+
+Set run to on-enter when these instructions say what you want, and advance to auto to let the card move on by itself.
+` },
+  { name: 'Done', color: 'green', at: [1140, 40], routes: {}, body: '' },
+];
+// A node is placed on a grid this far from its neighbor in a single line.
+const nodeSpacing = 380;
+// A place on the graph canvas: a finite number of pixels, not absurdly far out.
+const onCanvas = (value) => typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= 1e6;
 const firstFlowName = 'Main';
 const idPattern = /^[\w-]{1,100}$/;
 const criterionRules = { field: 'filled', imageRole: 'set' };
@@ -169,6 +191,13 @@ function cardLibraryMigration(db) {
     CREATE TRIGGER IF NOT EXISTS card_library_changed AFTER UPDATE OF library ON cards WHEN NEW.library != OLD.library BEGIN
       UPDATE card_field_versions SET version = version + 1 WHERE card_id = NEW.id AND field = 'library';
     END;`);
+}
+
+// Graph flows (ADR 0009): a flow's kind says how it is shown, and each lane
+// keeps its place on the graph canvas. Routes are playbook settings.
+function graphFlowsMigration(db) {
+  if (!hasColumn(db, 'flows', 'kind')) db.exec("ALTER TABLE flows ADD COLUMN kind TEXT NOT NULL DEFAULT 'board';");
+  for (const column of ['graph_x', 'graph_y']) if (!hasColumn(db, 'stages', column)) db.exec(`ALTER TABLE stages ADD COLUMN ${column} REAL;`);
 }
 
 function hasTable(db, table) {
@@ -317,7 +346,7 @@ const migrations = [`
 `, libraryDraftsMigration, `
   -- What each delivery attempt actually did with a submission's inputs.
   ALTER TABLE chat_attempts ADD COLUMN delivery TEXT;
-`, foldersMigration, savedOutputsMigration, templatesMigration, schemaRepairMigration, projectFlowsMigration, cardLibraryMigration];
+`, foldersMigration, savedOutputsMigration, templatesMigration, schemaRepairMigration, projectFlowsMigration, cardLibraryMigration, graphFlowsMigration];
 
 // Delivery was already v16 on an earlier feature branch, so the released v17
 // entry (this index) runs only where that column is still missing.
@@ -338,9 +367,9 @@ const isText = (value, max) => typeof value === 'string' && value.length <= max;
 const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 const checkName = (value, max, message) => check(isText(value, max) && value.trim(), message);
 
-const flowFrom = (row) => ({ id: row.id, projectId: row.project_id, name: row.name, position: row.position });
+const flowFrom = (row) => ({ id: row.id, projectId: row.project_id, name: row.name, position: row.position, kind: row.kind });
 const stageFrom = (row) => ({
-  id: row.id, flowId: row.flow_id, name: row.name, color: row.color, position: row.position, instructions: row.instructions,
+  id: row.id, flowId: row.flow_id, name: row.name, color: row.color, position: row.position, x: row.graph_x ?? null, y: row.graph_y ?? null, instructions: row.instructions,
   exitCriteria: JSON.parse(row.exit_criteria), approveTo: row.approve_to, sendBackTo: row.send_back_to, automations: JSON.parse(row.automations),
 });
 const cardFrom = (row) => ({
@@ -486,16 +515,30 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
   const schemaVersion = () => (get("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'meta'")
     ? Number(get("SELECT value FROM meta WHERE key = 'schema_version'")?.value || 0) : 0);
 
-  function insertFlow(workspaceId, projectId, { id = randomUUID(), name, templateId, stages }) {
+  // stages: [id, name, color] or, for a graph, [id, name, color, x, y].
+  function insertFlow(workspaceId, projectId, { id = randomUUID(), name, templateId, stages, kind = 'board' }) {
     const position = projectId ? (get('SELECT MAX(position) AS position FROM flows WHERE project_id = ? AND deleted_at IS NULL', projectId).position ?? -1) + 1 : 0;
-    run('INSERT INTO flows (id, workspace_id, project_id, name, position, template_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', id, workspaceId, projectId, name, position, templateId, now());
-    stages.forEach(([stageId, stageName, color], index) => run('INSERT INTO stages (id, flow_id, name, color, position) VALUES (?, ?, ?, ?, ?)', stageId, id, stageName, color, index));
+    run('INSERT INTO flows (id, workspace_id, project_id, name, position, template_id, kind, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', id, workspaceId, projectId, name, position, templateId, kind, now());
+    stages.forEach(([stageId, stageName, color, x = null, y = null], index) => run('INSERT INTO stages (id, flow_id, name, color, position, graph_x, graph_y) VALUES (?, ?, ?, ?, ?, ?, ?)', stageId, id, stageName, color, index, x, y));
     return id;
+  }
+  // The lanes a new flow starts with: the default board, or the starter
+  // graph whose routes are written into node playbooks once the flow exists.
+  const starterStages = (kind) => (kind === 'graph' ? graphStarter.map((node) => [randomUUID(), node.name, node.color, ...node.at]) : newStages());
+  // The starter graph's routes by lane ID, with lane names, for its flow map.
+  const starterRoutes = (kind, stages) => (kind === 'graph' ? new Map(graphStarter.map((node, index) => [stages[index].id,
+    Object.entries(node.routes).map(([name, target]) => ({ name, to: stages[target].name }))])) : null);
+  function writeStarterGraph(flowId) {
+    const stages = activeStages(flowId);
+    graphStarter.forEach((node, index) => {
+      const routes = Object.fromEntries(Object.entries(node.routes).map(([name, target]) => [name, stages[target].id]));
+      playbooks.write(flowId, playbooks.freePath(flowId, node.name), nodeTemplate(stages[index], { routes, body: node.body }), null);
+    });
   }
   // A project starts with one flow. The flow row comes first because the
   // project names it, then it is given its project.
-  function insertProject(workspaceId, { id, name, position, templateId, stages }) {
-    const flowId = insertFlow(workspaceId, null, { name: firstFlowName, templateId, stages });
+  function insertProject(workspaceId, { id, name, position, templateId, stages, kind = 'board' }) {
+    const flowId = insertFlow(workspaceId, null, { name: firstFlowName, templateId, stages, kind });
     run('INSERT INTO projects (id, workspace_id, flow_id, name, position, created_at, template_id) VALUES (?, ?, ?, ?, ?, ?, ?)', id, workspaceId, flowId, name, position, now(), templateId);
     run('UPDATE flows SET project_id = ? WHERE id = ?', id, flowId);
     return flowId;
@@ -691,6 +734,8 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
   }
   // Lane playbook summaries for the board, read once per flow and checked
   // against the flow's card template.
+  // Routes are resolved against the flow's lanes: laneId is null for a
+  // route whose lane is gone.
   function withPlaybooks(flowId, stages, template) {
     const documents = playbooks.lanes(flowId);
     return stages.map((stage) => {
@@ -698,8 +743,29 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
       if (!document) return { ...stage, playbook: null };
       const settings = playbookSettings(parseDocument(document.text), template);
       return { ...stage, playbook: { path: document.path, hash: document.hash, run: settings.run, provider: settings.provider, model: settings.model,
-        hasInstructions: Boolean(settings.instructions), errors: settings.errors, summary: describeSettings(settings, template) } };
+        hasInstructions: Boolean(settings.instructions), errors: settings.errors, summary: describeSettings(settings, template),
+        advance: settings.advance, routes: resolveRoutes(settings.routes, stages, stage.id).map(({ name, target, laneId }) => ({ name, target, laneId })) } };
     });
+  }
+  // Routes of each lane, by lane ID, resolved against the flow's lanes.
+  function flowRoutes(flowId, stages, template) {
+    return new Map(stages.map((stage) => {
+      const found = playbooks.settings(flowId, stage.id, template);
+      return [stage.id, found ? resolveRoutes(found.settings.routes, stages, stage.id).filter((route) => route.laneId) : []];
+    }));
+  }
+  // A graph's lanes in board order: breadth first from the first lane along
+  // its routes, then any lane no route reaches, left to right.
+  function graphOrder(stages, routes) {
+    const order = []; const queue = stages.length ? [stages[0]] : [];
+    while (queue.length) {
+      const stage = queue.shift();
+      if (order.includes(stage)) continue;
+      order.push(stage);
+      for (const route of routes.get(stage.id) ?? []) queue.push(stages.find((item) => item.id === route.laneId));
+    }
+    const rest = stages.filter((stage) => !order.includes(stage)).sort((a, b) => (a.x ?? 0) - (b.x ?? 0) || (a.y ?? 0) - (b.y ?? 0) || a.position - b.position);
+    return [...order, ...rest];
   }
   // Archived projects stay readable; only reads pass { allowArchived: true }.
   const checkActive = (row, allowArchived) => { if (row.archived_at && !allowArchived) fail(409, archivedMessage); return row; };
@@ -871,7 +937,9 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
       checkId(input.id);
       checkName(input.name, 150, 'Projects need a name (up to 150 characters).');
       check(input.templateId === undefined || typeof input.templateId === 'string', 'Choose a card template.');
-      return transaction(() => {
+      check(input.kind === undefined || flowKinds.includes(input.kind), 'Choose a board or a graph.');
+      const kind = input.kind ?? 'board';
+      const created = transaction(() => {
         const { count } = get('SELECT COUNT(*) AS count FROM projects WHERE workspace_id = ? AND deleted_at IS NULL', ctx.workspaceId);
         check(count < 200, 'A workspace can hold up to 200 projects.');
         // The template is the first flow's: each flow chooses its own.
@@ -879,12 +947,14 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
         const id = input.id ?? randomUUID();
         const name = input.name.trim();
         const position = (get('SELECT MAX(position) AS position FROM projects WHERE workspace_id = ?', ctx.workspaceId).position ?? -1) + 1;
-        const flowId = insertProject(ctx.workspaceId, { id, name, position, templateId: template.id, stages: newStages() });
-        recordChange(ctx, 'project', id, 'created', { projectId: id, data: { flowId, templateId: template.id } });
+        const flowId = insertProject(ctx.workspaceId, { id, name, position, templateId: template.id, stages: starterStages(kind), kind });
+        recordChange(ctx, 'project', id, 'created', { projectId: id, data: { flowId, templateId: template.id, kind } });
         const flow = get('SELECT * FROM flows WHERE id = ?', flowId);
-        playbooks.ensure(flowId, { flowName: flow.name, lanes: activeStages(flowId), template });
-        return { project: { id, name, flowId, position, cardCount: 0, archivedAt: null }, flow: flowView(flow) };
+        playbooks.ensure(flowId, { flowName: flow.name, lanes: activeStages(flowId), template, routes: starterRoutes(kind, activeStages(flowId)) });
+        return { project: { id, name, flowId, position, cardCount: 0, archivedAt: null }, flowId };
       });
+      if (kind === 'graph') writeStarterGraph(created.flowId);
+      return { project: created.project, flow: flowView(get('SELECT * FROM flows WHERE id = ?', created.flowId)) };
     },
 
     // A project's name. Card templates belong to its flows.
@@ -909,15 +979,87 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
       checkId(input.id);
       checkName(input.name, 100, 'Flows need a name (up to 100 characters).');
       check(input.templateId === undefined || typeof input.templateId === 'string', 'Choose a card template.');
-      const name = input.name.trim();
-      return transaction(() => {
+      check(input.kind === undefined || flowKinds.includes(input.kind), 'Choose a board or a graph.');
+      const name = input.name.trim(); const kind = input.kind ?? 'board';
+      const id = transaction(() => {
         check(activeFlows(projectId).length < 50, 'A project can hold up to 50 flows.');
         const template = templates.requireLive(ctx, input.templateId ?? templates.defaultId(ctx));
-        const id = insertFlow(ctx.workspaceId, projectId, { id: input.id, name, templateId: template.id, stages: newStages() });
-        recordChange(ctx, 'flow', id, 'created', { projectId, data: { templateId: template.id } });
-        playbooks.ensure(id, { flowName: name, lanes: activeStages(id), template });
+        const created = insertFlow(ctx.workspaceId, projectId, { id: input.id, name, templateId: template.id, stages: starterStages(kind), kind });
+        recordChange(ctx, 'flow', created, 'created', { projectId, data: { templateId: template.id, kind } });
+        playbooks.ensure(created, { flowName: name, lanes: activeStages(created), template, routes: starterRoutes(kind, activeStages(created)) });
+        return created;
+      });
+      if (kind === 'graph') writeStarterGraph(id);
+      return flowView(get('SELECT * FROM flows WHERE id = ?', id));
+    },
+
+    // Turns a board into a graph or back. A board becomes a single line, each
+    // lane routing to the next ("next"), unless its playbook already has
+    // routes. A graph becomes a board in route order from its first lane and
+    // loses its routes, advance settings and layout: this is destructive.
+    // Playbooks are checked before any file changes.
+    convertFlow(ctx, id, input) {
+      check(isObject(input) && flowKinds.includes(input.kind), 'Choose a board or a graph.');
+      const flow = requireFlow(ctx, id);
+      if (flow.kind === input.kind) return flowView(flow);
+      const stages = activeStages(id);
+      const template = templateForFlow(flow);
+      for (const document of playbooks.lanes(id)) {
+        const problem = parseDocument(document.text).errors[0];
+        if (problem && stages.some((stage) => stage.id === document.laneId)) fail(409, `Fix the settings in ${document.path} before converting this flow: ${problem}`);
+      }
+      let ordered = stages; const written = [];
+      if (input.kind === 'graph') {
+        // Every node of a graph has a playbook, the last one included.
+        stages.forEach((stage, index) => {
+          const next = stages[index + 1];
+          const found = playbooks.settings(id, stage.id, template);
+          if (next && !found?.settings.routes.length) written.push(playbooks.updateSettings(id, stage, { routes: { next: next.id } }));
+          else if (!found) written.push(playbooks.write(id, playbooks.freePath(id, stage.name), nodeTemplate(stage), null));
+        });
+      } else {
+        ordered = graphOrder(stages, flowRoutes(id, stages, template));
+        for (const stage of stages) written.push(playbooks.updateSettings(id, stage, { routes: undefined, advance: undefined }));
+      }
+      // Open playbook editors learn the files changed, as for any save.
+      for (const document of written) if (document) api.recordPlaybookChange(ctx, id, document.path, 'playbook_saved');
+      return transaction(() => {
+        run('UPDATE flows SET kind = ? WHERE id = ?', input.kind, id);
+        ordered.forEach((stage, index) => run('UPDATE stages SET position = ?, graph_x = ?, graph_y = ? WHERE id = ?', index,
+          input.kind === 'graph' ? index * nodeSpacing : null, input.kind === 'graph' ? 40 : null, stage.id));
+        recordChange(ctx, 'flow', id, 'updated', { projectId: flow.project_id, data: { kind: input.kind } });
         return flowView(get('SELECT * FROM flows WHERE id = ?', id));
       });
+    },
+
+    // The ways out of a lane: its playbook's routes (name → lane) and whether
+    // a route its agent chooses is followed at once (advance: auto) or waits
+    // for review. Only these settings change in the file.
+    // A route that already leads nowhere (written by hand, or to a lane
+    // since renamed) may stay exactly as it is; a new or changed route must
+    // lead to another lane of the flow. baseHash is the playbook version the
+    // editor saw, so routes edited elsewhere are not overwritten.
+    setRoutes(ctx, stageId, input) {
+      check(isObject(input) && Array.isArray(input.routes) && input.routes.length <= 20, 'A node can have up to 20 routes.');
+      check(input.baseHash === undefined || input.baseHash === null || (typeof input.baseHash === 'string' && /^[a-f0-9]{64}$/.test(input.baseHash)), 'Saving routes needs the playbook version you edited.');
+      const stage = requireStage(ctx, stageId);
+      const lanes = activeStages(stage.flowId);
+      const current = playbooks.settings(stage.flowId, stage.id, templateForFlow(requireFlow(ctx, stage.flowId)))?.settings.routes ?? [];
+      const routes = {};
+      for (const route of input.routes) {
+        check(isObject(route) && typeof route.name === 'string' && routeName.test(route.name.trim()) && typeof route.to === 'string', 'Route names use letters, numbers, spaces, - and _ (up to 40 characters).');
+        const name = route.name.trim();
+        check(!Object.keys(routes).some((other) => other.toLowerCase() === name.toLowerCase()), `There is already a route named “${name}”.`);
+        const unchanged = current.some((item) => item.name === name && item.target === route.to);
+        check(unchanged || route.to !== stage.id, 'A route leads to another node.');
+        check(unchanged || lanes.some((lane) => lane.id === route.to), 'A route leads to a node in this flow.');
+        routes[name] = route.to;
+      }
+      check(input.advance === undefined || advanceModes.includes(input.advance), 'Choose review or auto.');
+      const changes = { routes: Object.keys(routes).length ? routes : undefined, ...(input.advance ? { advance: input.advance === 'auto' ? 'auto' : undefined } : {}) };
+      const document = playbooks.updateSettings(stage.flowId, stage, changes, input.baseHash);
+      if (document) api.recordPlaybookChange(ctx, stage.flowId, document.path, 'playbook_saved');
+      return { stages: flowView(requireFlow(ctx, stage.flowId)).stages };
     },
 
     // A flow's name, its place among the project's flows, and the card
@@ -999,15 +1141,22 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
       checkId(input.id);
       checkName(input.name, 100, 'Lanes need a name (up to 100 characters).');
       check(laneColors.includes(input.color), 'Choose a lane color.');
+      check((input.x === undefined || onCanvas(input.x)) && (input.y === undefined || onCanvas(input.y)), 'Invalid node position.');
       rejectCommands(input);
-      return transaction(() => {
+      const stage = transaction(() => {
         const stages = activeStages(flowId);
         check(stages.length < 100, 'A project can hold up to 100 lanes.');
         const id = input.id ?? randomUUID();
-        run('INSERT INTO stages (id, flow_id, name, color, position) VALUES (?, ?, ?, ?, ?)', id, flowId, input.name.trim(), input.color, (stages.at(-1)?.position ?? -1) + 1);
+        run('INSERT INTO stages (id, flow_id, name, color, position, graph_x, graph_y) VALUES (?, ?, ?, ?, ?, ?, ?)', id, flowId, input.name.trim(), input.color, (stages.at(-1)?.position ?? -1) + 1, input.x ?? null, input.y ?? null);
         recordChange(ctx, 'stage', id, 'created', { data: { flowId } });
         return requireStage(ctx, id);
       });
+      // Every node of a graph has a playbook to hold its routes.
+      if (requireFlow(ctx, flowId).kind === 'graph' && !playbooks.forStage(flowId, stage.id)) {
+        const document = playbooks.write(flowId, playbooks.freePath(flowId, stage.name), nodeTemplate(stage), null);
+        api.recordPlaybookChange(ctx, flowId, document.path, 'playbook_saved');
+      }
+      return stage;
     },
 
     updateStage(ctx, id, input) {
@@ -1027,6 +1176,7 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
         columns.automations = JSON.stringify(input.automations);
       }
       if ('position' in input) check(Number.isInteger(input.position) && input.position >= 0, 'Invalid lane position.');
+      for (const [key, column] of [['x', 'graph_x'], ['y', 'graph_y']]) if (key in input) { check(onCanvas(input[key]), 'Invalid node position.'); columns[column] = input[key]; }
       return transaction(() => {
         const keys = Object.keys(columns);
         if (keys.length) run(`UPDATE stages SET ${keys.map((key) => `${key} = ?`).join(', ')} WHERE id = ?`, ...Object.values(columns), id);
@@ -1040,14 +1190,30 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
       });
     },
 
+    // Routes that led to a deleted lane are taken out of the other lanes'
+    // playbooks. A playbook whose settings cannot be read keeps its route,
+    // which then leads nowhere.
     deleteStage(ctx, id) {
       const stage = requireStage(ctx, id);
+      const flow = requireFlow(ctx, stage.flowId);
       transaction(() => {
         deleteCards(ctx, all('SELECT * FROM cards WHERE stage_id = ? AND deleted_at IS NULL', id), 'lane deleted');
         run('UPDATE stages SET deleted_at = ? WHERE id = ?', now(), id);
         renumberStages(stage.flowId, activeStages(stage.flowId));
         recordChange(ctx, 'stage', id, 'deleted', { data: { flowId: stage.flowId } });
       });
+      const remaining = activeStages(stage.flowId);
+      const template = templateForFlow(flow);
+      for (const other of remaining) {
+        const found = playbooks.settings(stage.flowId, other.id, template);
+        const gone = found && resolveRoutes(found.settings.routes, [...remaining, stage], other.id).filter((route) => route.laneId === stage.id);
+        if (!gone?.length) continue;
+        const kept = Object.fromEntries(found.settings.routes.filter((route) => !gone.some((item) => item.name === route.name)).map((route) => [route.name, route.target]));
+        try {
+          const document = playbooks.updateSettings(stage.flowId, other, { routes: Object.keys(kept).length ? kept : undefined });
+          if (document) api.recordPlaybookChange(ctx, stage.flowId, document.path, 'playbook_saved');
+        } catch { /* The route stays and leads nowhere. */ }
+      }
     },
 
     listCards(ctx, projectId) {
@@ -1170,6 +1336,7 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
       const current = stages[index];
       const note = input.note ?? '';
       check(isText(note, 20000), 'Notes can be up to 20,000 characters.');
+      check(input.route === undefined || (isText(input.route, 100) && input.route.trim()), 'Invalid route.');
       check(input.beforeCardId === undefined || input.beforeCardId === null || typeof input.beforeCardId === 'string', 'Invalid card position.');
       let target;
       if (input.action === 'approve') {
@@ -1201,7 +1368,7 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
           const unmet = otherFlow || target.position > current.position ? unmetCriteria(current, card) : [];
           const type = { approve: 'approved', send_back: 'sent_back', move: 'moved' }[input.action];
           event = insertEvent(ctx.workspaceId, card, type, ctx.actor, { from: current.id, to: target.id, note,
-            data: { ...(unmet.length ? { unmet } : {}), ...(otherFlow ? { fromFlowId: current.flowId, toFlowId: target.flowId } : {}) }, at });
+            data: { ...(unmet.length ? { unmet } : {}), ...(otherFlow ? { fromFlowId: current.flowId, toFlowId: target.flowId } : {}), ...(input.route && changedStage ? { route: input.route.trim() } : {}) }, at });
         } else recordChange(ctx, 'card', id, 'reordered', { projectId: card.projectId, at });
         const fieldUpdate = changedStage ? applyEntrySet(ctx, card, target, at) : null;
         // Keep the complete move boundary separate from the lightweight event feed.
@@ -1296,6 +1463,14 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
       entry(cardId) {
         const move = get("SELECT id, undo_event_id FROM card_moves WHERE card_id = ? AND json_extract(before_card, '$.stageId') != json_extract(after_card, '$.stageId') ORDER BY id DESC LIMIT 1", cardId);
         return move ? `${move.id}:${move.undo_event_id ?? ''}` : 'initial';
+      },
+      // Route moves an agent made in a row since the card was created or the
+      // user last moved it. A loop that reaches maxAutomaticMoves waits for review.
+      automaticMoves(cardId) {
+        const rows = all(`SELECT type, actor, data FROM activity_log WHERE entity = 'card' AND entity_id = ? AND card_event_id IS NOT NULL
+          AND type IN ('created', 'moved', 'approved', 'sent_back', 'move_undone') ORDER BY id DESC LIMIT ?`, cardId, maxAutomaticMoves + 1);
+        const count = rows.findIndex((row) => !(row.type === 'moved' && row.actor.startsWith('automation:') && JSON.parse(row.data).route));
+        return count < 0 ? rows.length : count;
       },
       get: (id) => laneRunFrom(get('SELECT * FROM lane_runs WHERE id = ?', id)),
       bySubmission: (submissionId) => laneRunFrom(get('SELECT * FROM lane_runs WHERE submission_id = ?', submissionId)),

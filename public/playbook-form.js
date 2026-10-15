@@ -13,10 +13,11 @@
 //   lanes: [{ id, name, taken }], skillNames: [...], models: [{ provider, id,
 //   displayName }] or null until the catalog has loaded, libraryMarkup: HTML
 //   for the Library files block,
-//   hints: whether the help text under the rows is shown }.
+//   hints: whether the help text under the rows is shown,
+//   graph: whether the flow is a graph, which shows the advance and routes rows }.
 import { escape, icon } from './ui.js';
 import { contextFields, setFields, imageRoles, fieldKey } from './card-template.js';
-import { withSetting, withSettings, skillName, knownKeys, providers, providerNames } from './playbook-format.js';
+import { withSetting, withSettings, skillName, knownKeys, providers, providerNames, maxAutomaticMoves } from './playbook-format.js';
 
 const listOf = (value) => (Array.isArray(value) ? value.map(String) : typeof value === 'string' && value.trim() ? value.split(',').map((item) => item.trim()) : []);
 const cleanSkill = (name) => String(name).replace(/^skills\//i, '').replace(/\.md$/i, '');
@@ -127,6 +128,34 @@ function skillsRow({ settings, document, skillNames }) {
   return row('skills', 'Skills', `${boxes.length ? `<div class="playbook-choices">${boxes.join('')}</div>` : ''}${add}`, { help: 'Shared know-how sent with the instructions. Mentioning skills/&lt;name&gt;.md in the instructions includes it too.' });
 }
 
+// advance: how a card leaves a graph node when its agent chooses a route.
+function advanceRow({ settings }) {
+  const modes = [['review', 'Wait for review'], ['auto', 'Move on by itself']];
+  const buttons = modes.map(([value, label]) => `<button type="button" class="chip" id="playbook-advance-${value}" data-playbook-action="form-advance" data-value="${value}" aria-pressed="${settings.advance === value}">${label}</button>`).join('');
+  return row('advance', 'Advance', `<div class="playbook-segments" role="group" aria-label="Advance">${buttons}</div>`,
+    { help: `When the agent chooses a route, Wait for review makes the move a proposal; Move on by itself follows it at once and starts the next node’s playbook. A loop pauses for you after ${maxAutomaticMoves} automatic moves in a row.` });
+}
+
+// routes: a map of route name → lane. Each row picks the lane a route leads
+// to; names are changed on the graph or in Markdown.
+const routeEntries = (document) => (document.data.routes && typeof document.data.routes === 'object' && !Array.isArray(document.data.routes) ? Object.entries(document.data.routes) : []);
+function routesRow({ document, lanes }) {
+  const raw = document.data.routes;
+  if (raw !== undefined && raw !== '' && (!raw || typeof raw !== 'object' || Array.isArray(raw))) {
+    return row('routes', 'Routes', '<p class="playbook-missing">routes: needs one “name: lane” line per route. Fix it in Markdown.</p>');
+  }
+  const own = document.data.lane ? String(document.data.lane) : null;
+  const others = lanes.filter((lane) => lane.id !== own);
+  const rows = routeEntries(document).map(([name, target], index) => {
+    const known = others.find((lane) => lane.id === target) ?? others.find((lane) => lane.name.toLowerCase() === String(target).toLowerCase());
+    const options = [...others.map((lane) => option(lane.id, lane.name, lane === known)), ...(known ? [] : [option(target, `${target} (no such lane)`, true, true)])];
+    return `<div class="playbook-route-row"><span class="playbook-route-name">${escape(name)}</span>${icon('arrow')}<label class="sr-only" for="playbook-route-${index}">Route ${escape(name)} leads to</label><select id="playbook-route-${index}" class="form-input" data-playbook-action="form-route-to" data-row="${escape(name)}">${options.join('')}</select>
+      <button type="button" class="text-button" data-playbook-action="form-route-remove" data-row="${escape(name)}">Remove<span class="sr-only"> route ${escape(name)}</span></button></div>`;
+  });
+  const add = `<button type="button" class="button small secondary" data-playbook-action="form-route-add" ${others.length ? '' : 'disabled'}>Add route</button>`;
+  return row('routes', 'Routes', `${rows.join('')}${add}`, { help: 'The ways out of this node. The agent chooses one by name in its result; you can follow any of them from the card. Rename routes on the graph or in Markdown.' });
+}
+
 const unknownKeys = (document) => Object.keys(document.data).filter((key) => !knownKeys.includes(key));
 function unknownRow({ document }) {
   const keys = unknownKeys(document);
@@ -140,8 +169,10 @@ function problems(settings) {
   return `<div class="playbook-problems" role="alert"><strong>Fix before this lane can run</strong><ul>${settings.errors.map((error) => `<li>${escape(error)}</li>`).join('')}</ul></div>`;
 }
 
+// A graph flow's playbooks show their routes; a board's only when its file has them.
+const graphRows = (context) => (context.graph || 'routes' in context.document.data || 'advance' in context.document.data ? advanceRow(context) + routesRow(context) : '');
 export function renderSettingsForm(context) {
-  return `<div class="playbook-form ${context.hints ? 'playbook-form-hints' : ''}">${problems(context.settings)}${laneRow(context)}${runRow(context)}${agentRow(context)}${contextRow(context)}${mayEditRow(context)}${setRow(context)}${skillsRow(context)}${row('assets', 'Library', `<div class="playbook-library">${context.libraryMarkup}</div>`)}${unknownRow(context)}</div>`;
+  return `<div class="playbook-form ${context.hints ? 'playbook-form-hints' : ''}">${problems(context.settings)}${laneRow(context)}${runRow(context)}${agentRow(context)}${contextRow(context)}${mayEditRow(context)}${setRow(context)}${skillsRow(context)}${row('assets', 'Library', `<div class="playbook-library">${context.libraryMarkup}</div>`)}${graphRows(context)}${unknownRow(context)}</div>`;
 }
 
 // --- Changes ---------------------------------------------------------------
@@ -184,6 +215,25 @@ function applySet({ text, template, document }, action, data) {
   return withSetting(text, 'set', Object.fromEntries(entries.map((entry, index) => (index === at ? [value, entry[1]] : entry))));
 }
 
+function applyRoutes({ text, document, lanes }, action, data) {
+  const entries = routeEntries(document);
+  if (action === 'form-route-add') {
+    const own = document.data.lane ? String(document.data.lane) : null;
+    const target = lanes.find((lane) => lane.id !== own);
+    if (!target) throw new Error('Add another node first.');
+    const taken = new Set(entries.map(([name]) => name.toLowerCase()));
+    let name = taken.size ? 'route' : 'next';
+    for (let index = 2; taken.has(name); index++) name = `route ${index}`;
+    return withSetting(text, 'routes', Object.fromEntries([...entries, [name, target.id]]));
+  }
+  const at = entries.findIndex(([name]) => name === data.row);
+  if (at < 0) return null;
+  if (action === 'form-route-remove') return withSetting(text, 'routes', Object.fromEntries(entries.filter((entry, index) => index !== at)));
+  const value = String(data.value ?? '');
+  if (entries[at][1] === value) return null;
+  return withSetting(text, 'routes', Object.fromEntries(entries.map((entry, index) => (index === at ? [entry[0], value] : entry))));
+}
+
 function applySkills({ text, document }, action, data) {
   const explicit = explicitSkills(document);
   let next;
@@ -218,6 +268,8 @@ export function applySettingsChange(context, action, data = {}) {
     case 'form-set-field': case 'form-set-value': case 'form-set-remove': case 'form-set-add': return applySet(context, action, data);
     case 'form-skill': case 'form-skill-add': return applySkills(context, action, data);
     case 'form-unknown-remove': return withSetting(text, data.key, undefined);
+    case 'form-advance': return withSetting(text, 'advance', value === 'auto' ? 'auto' : undefined);
+    case 'form-route-to': case 'form-route-remove': case 'form-route-add': return applyRoutes(context, action, data);
     default: return null;
   }
 }
