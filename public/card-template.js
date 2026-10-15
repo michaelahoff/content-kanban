@@ -164,8 +164,8 @@ export function setFields(template) {
 export function editorFields(template) {
   return template.fields.filter((field) => field.editor !== false);
 }
-// Fields a chat or lane run can send, edit or report: hidden fields such as
-// a shared prompt are left out because every card tends to share them.
+// Fields a chat or lane run can send, edit or report: hidden fields, such as
+// the YouTube video template's Prompt, are left out.
 export function contextFields(template) {
   return [{ key: 'title', label: template.title.label }, ...editorFields(template)];
 }

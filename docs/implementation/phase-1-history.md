@@ -8,7 +8,7 @@ This milestone implements recording and read boundaries while keeping the existi
 
 - Schema version 5 migrates available feed/history facts into `activity_log`. Feed IDs and card-history IDs remain distinct and stable. Only unique exact matches are coalesced; unmatched or ambiguous facts survive without invented labels. New writes use only this canonical log. Existing recording tables remain retained migration input.
 - Existing move records are preserved and their event references point to the canonical log's card-history IDs. Existing/deleted/imported cards receive exactly one history-begins saved state, atomically with schema/import work. Earlier complete card states are not reconstructed.
-- Every new card mutation saves a complete state in its own transaction. Creation and movement include initial Set effects in their saved state. Gallery/role changes, image name/order changes, bulk prompt replacement, reorder, undo and deletion have separate states.
+- Every new card mutation saves a complete state in its own transaction. Creation and movement include initial Set effects in their saved state. Gallery/role changes, image name/order changes, reorder, undo and deletion have separate states.
 - Browser editing sessions use distinct IDs. Matching consecutive manual text saves replace the group's latest saved state; activity itself remains append-only. Two minutes idle, explicit close/switch, another editor/actor or a non-text mutation splits the group. Non-browser clients without an ID get separate states.
 - Retained saved states are accessible through `GET /api/cards/:id/states`; the store provides workspace-scoped activity metadata and recording-time labels. There are no new restoration controls. The existing card-history/feed response shapes and local-access checks remain in place.
 
@@ -21,7 +21,7 @@ Environment: Node.js 22.17.1; Chromium 153.0.8010.52 (Arch Linux). Provider/mode
 - Populated SQLite migration preserves feed cursors, actors, notes, timestamps, unmatched facts, deleted cards and existing move undo. Reopening adds no duplicate baseline. Ambiguous historical matches preserve every fact.
 - Legacy JSON import records the actual imported baseline once.
 - Manual grouping, exact idle boundary, close, another tab/actor, non-text mutations and restart retention.
-- Complete snapshots across creation/Set, text, gallery/roles/image names, move/Set, reorder, undo, bulk prompt and card/lane/project deletion.
+- Complete snapshots across creation/Set, text, gallery/roles/image names, move/Set, reorder, undo and card/lane/project deletion.
 - A forced saved-state insertion failure rolls back the card, activity and move rows and emits no listener notification. Conflicting/invalid writes leave history untouched.
 - Workspace-scoped retained reads, stable historical labels, no new writes to old recording tables and a clean foreign-key check.
 - Client close flushes unsent drafts; typing during an in-flight save remains saved without reopening the earlier closed group.

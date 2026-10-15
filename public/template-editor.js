@@ -77,7 +77,7 @@ const helpMarkup = `<h3>What a template is</h3>
   <h4>Keys and labels</h4>
   <p>Every field has a key, such as <code>script</code>, that card values, lane playbooks and chats refer to. Labels, controls and limits can change at any time; a key is permanent once cards use the template.</p>
   <h4>Hidden fields</h4>
-  <p>A field hidden from the editor stays out of search, chats and lane results, but a lane playbook can still fill it with <code>set:</code>. The shared prompt works this way.</p>
+  <p>A field hidden from the editor stays out of search, chats and lane results, but a lane playbook can still fill it with <code>set:</code>. The YouTube video template's Prompt works this way.</p>
   <h4>Image roles</h4>
   <p>Roles label a card's images for agents, such as Original or Inspiration. Every card also has a display image, which playbooks call <code>display</code>.</p>
   <h4>Removing things</h4>

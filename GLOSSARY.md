@@ -35,7 +35,7 @@ The set of text fields and image roles a card carries. Each card keeps the templ
 _Avoid_: Schema, card type, preset
 
 **Template field**:
-A text field a card template defines, with a key, label, control (text, text area or URL), length limit and display options such as header placement, copy and word-count tools. A key is permanent once cards hold a value for it; labels, controls and limits can change. A hidden field is left out of the card editor, search, chats and lane results, but a playbook's `set:` can still fill it, as with the shared prompt.
+A text field a card template defines, with a key, label, control (text, text area or URL), length limit and display options such as header placement, copy and word-count tools. A key is permanent once cards hold a value for it; labels, controls and limits can change. A hidden field is left out of the card editor, search, chats and lane results, but a playbook's `set:` can still fill it, as with the YouTube video template's Prompt.
 _Avoid_: Column, property, attribute
 
 **Image role**:
