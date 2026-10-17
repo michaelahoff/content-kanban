@@ -28,3 +28,8 @@ body { min-height: 100vh; display: flow-root; background: var(--bg); }
   .provider-settings { margin: 32px auto; padding: 0 16px 48px; }
   .provider-settings fieldset { padding: 16px; }
 }
+.provider-settings .settings-heading { margin: 20px 0 8px; }
+.provider-settings .settings-heading label { margin: 0; }
+.provider-settings legend .help-button { vertical-align: -6px; }
+.provider-settings fieldset { padding: 16px 20px; }
+.settings-heading { display: flex; align-items: center; gap: 4px; }

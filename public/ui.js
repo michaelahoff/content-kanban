@@ -34,6 +34,8 @@ const icons = {
   bolt: '<path d="M13 3 5 14h6l-1 7 8-11h-6Z"/>',
   minus: '<path d="M5 12h14"/>',
   fit: '<path d="M4 9V5a1 1 0 0 1 1-1h4M15 4h4a1 1 0 0 1 1 1v4M20 15v4a1 1 0 0 1-1 1h-4M9 20H5a1 1 0 0 1-1-1v-4"/>',
+  settings: '<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9 7 7M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"/>',
+  help: '<circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.7.3-1 .8-1 1.5V14M12 17h.01"/>',
 };
 export const icon = (name, cls = '') => `<svg class="icon ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${icons[name] || icons.board}</svg>`;
 export const button = (action, label, symbol, cls = '', attrs = '') => `<button type="button" class="${cls}" data-action="${action}" ${attrs}>${symbol ? icon(symbol) : ''}${label}</button>`;
@@ -49,6 +51,8 @@ let toastTimer;
 export const currentTheme = () => document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light';
 export const themeSwitchMarkup = () => `<div class="theme-switch" role="group" aria-label="Theme">${[['light', 'Light', 'sun'], ['dark', 'Dark', 'moon']].map(([theme, label, symbol]) => `<button type="button" class="chip" data-action="set-theme" data-theme="${theme}" aria-pressed="${currentTheme() === theme}">${icon(symbol)}${label}</button>`).join('')}</div>`;
 // The dot colors live in styles.css (.accent-dot); theme.js accepts the same ids.
+// One icon button that flips the theme; it shows the theme it switches to.
+export const themeToggleMarkup = () => { const next = currentTheme() === 'dark' ? 'light' : 'dark'; return `<button type="button" class="icon-button theme-toggle" data-action="set-theme" data-theme="${next}" aria-label="Switch to ${next} theme" title="Switch to ${next} theme">${icon(next === 'dark' ? 'moon' : 'sun')}</button>`; };
 export const accents = [['blue', 'Blue'], ['cyan', 'Cyan'], ['red', 'Red'], ['mint', 'Mint']];
 export const currentAccent = () => document.documentElement.dataset.accent || 'blue';
 export const accentSwitchMarkup = () => `<div class="accent-switch" role="group" aria-label="Accent color">${accents.map(([accent, label]) => `<button type="button" class="accent-dot" data-action="set-accent" data-accent="${accent}" aria-label="${label} accent" title="${label}" aria-pressed="${currentAccent() === accent}"></button>`).join('')}</div>`;
@@ -61,7 +65,10 @@ export function setTheme(theme) {
   document.documentElement.dataset.theme = theme;
   try { localStorage.setItem('frameboard-theme', theme); } catch { /* Optional display preference. */ }
   document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'dark' ? '#0f0f0f' : '#ffffff');
-  document.querySelectorAll('[data-action="set-theme"]').forEach((node) => node.setAttribute('aria-pressed', String(node.dataset.theme === theme)));
+  document.querySelectorAll('[data-action="set-theme"]').forEach((node) => {
+    if (node.classList.contains('theme-toggle')) node.outerHTML = themeToggleMarkup();
+    else node.setAttribute('aria-pressed', String(node.dataset.theme === theme));
+  });
 }
 export function wordCount(text) { return text.trim() ? text.trim().split(/\s+/u).length : 0; }
 export function lastEditedMarkup(card) {
@@ -113,4 +120,32 @@ export function smallForm({ title, description = '', fields = '', submit = 'Save
 export const nameField = (value = '', placeholder = 'Project name', max = 150) => `<label class="form-label" for="name-input">${placeholder}</label><input class="form-input" id="name-input" name="name" value="${escape(value)}" placeholder="${{ 'Project name': 'e.g. YouTube ideas', 'Flow name': 'e.g. Shorts' }[placeholder] ?? 'e.g. Ready to film'}" maxlength="${max}" required autocomplete="off">`;
 export function confirmDelete(title, description, onSubmit) {
   smallForm({ title, description, submit: 'Delete', danger: true, onSubmit });
+}
+
+// On-demand help. help(title, html) renders a small "?" button; clicking it opens
+// the html in a popover so explanations stay out of the way until asked for.
+// html is trusted markup written by the app, not user text.
+export const help = (title, html, cls = '') => `<button type="button" class="help-button ${cls}" data-action="help" aria-label="${escape(`About ${title}`)}" title="${escape(`About ${title}`)}">${icon('help')}</button><template class="help-content" data-help-title="${escape(title)}">${html}</template>`;
+export function showHelp(title, html) {
+  let dialog = document.querySelector('#help-dialog');
+  if (!dialog) {
+    dialog = document.createElement('dialog');
+    dialog.id = 'help-dialog';
+    dialog.className = 'small-dialog help-dialog';
+    dialog.setAttribute('aria-labelledby', 'help-heading');
+    document.body.append(dialog);
+    dialog.addEventListener('click', (event) => { if (event.target === dialog || event.target.closest('[data-action="close-help"]')) dialog.close(); });
+  }
+  dialog.innerHTML = `<div class="small-dialog-header"><h2 id="help-heading">${escape(title)}</h2>${iconButton('close-help', 'Close help', 'close')}</div><div class="help-body">${html}</div>`;
+  dialog.showModal();
+}
+if (typeof document !== 'undefined' && document.addEventListener) {
+  document.addEventListener('click', (event) => {
+    const trigger = event.target.closest?.('[data-action="help"]');
+    if (!trigger) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const content = trigger.nextElementSibling?.matches?.('template.help-content') ? trigger.nextElementSibling : null;
+    showHelp(content?.dataset.helpTitle ?? 'Help', content?.innerHTML ?? '');
+  }, true);
 }

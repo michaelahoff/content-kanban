@@ -5,7 +5,7 @@
 // Dragging a node's port onto another node adds a route; clicking a route's
 // label edits it. A node's place is saved on its lane, its routes in its
 // playbook, and the canvas's pan and zoom in this browser only.
-import { $, escape, icon, iconButton, imageURL, palette, smallForm, toast } from './ui.js';
+import { $, escape, icon, iconButton, imageURL, palette, smallForm, toast, help } from './ui.js';
 import { searchText, moveNode, setRoutes, addLane } from './state.js';
 import { routeName, maxAutomaticMoves } from './playbook-format.js';
 import { activityMarkup } from './chat.js';
@@ -68,9 +68,9 @@ function badges(lane, index) {
   return [
     index === 0 ? '<span class="graph-badge start" title="New cards start here">Start</span>' : '',
     playbook?.errors.length ? `<button type="button" class="graph-badge error" data-action="edit-playbook" data-id="${lane.id}" title="${escape(playbook.errors.join(' '))}">Fix playbook</button>` : '',
-    runs ? `<span class="graph-badge agent" title="${escape(playbook.summary)}">${icon('bolt')}${playbook.run === 'on-enter' ? 'Agent on entry' : 'Agent on request'}</span>` : '',
-    playbook?.advance === 'auto' && routesOf(lane).some((route) => route.laneId) ? '<span class="graph-badge auto" title="When its agent chooses a route, the card moves at once">Moves on by itself</span>' : '',
-    nowhere.length ? `<button type="button" class="graph-badge error" data-action="edit-playbook" data-id="${lane.id}" title="${escape(nowhere.map((route) => `${route.name} → ${route.target}`).join(', '))}">${nowhere.length === 1 ? 'A route leads nowhere' : `${nowhere.length} routes lead nowhere`}</button>` : '',
+    runs ? `<span class="graph-badge agent" title="${escape(playbook.summary)}">${icon('bolt')}${playbook.run === 'on-enter' ? 'On entry' : 'On request'}</span>` : '',
+    playbook?.advance === 'auto' && routesOf(lane).some((route) => route.laneId) ? '<span class="graph-badge auto" title="When its agent chooses a route, the card moves at once">Auto-moves</span>' : '',
+    nowhere.length ? `<button type="button" class="graph-badge error" data-action="edit-playbook" data-id="${lane.id}" title="${escape(nowhere.map((route) => `${route.name} → ${route.target}`).join(', '))}">${nowhere.length === 1 ? 'Dead-end route' : `${nowhere.length} dead-end routes`}</button>` : '',
   ].join('');
 }
 
@@ -82,7 +82,7 @@ function nodeMarkup(lane, index, { search, collapsed, readOnly }) {
     <div class="graph-node-head" ${readOnly ? '' : 'data-node-drag title="Drag to move this node"'}><span class="lane-dot"></span><h2>${escape(lane.name)}</h2><span class="lane-count">${search ? `${cards.length}/` : ''}${lane.cards.length}</span>
       ${readOnly ? '' : `<div class="graph-node-actions">${iconButton('edit-playbook', `${lane.name} playbook`, 'playbook', `data-id="${lane.id}"`)}${iconButton('edit-lane', `Edit ${lane.name} node`, 'more', `data-id="${lane.id}"`)}${iconButton('add-card', `Add card to ${lane.name}`, 'plus', `data-lane-id="${lane.id}"`)}</div>`}</div>
     ${marks ? `<div class="graph-badges">${marks}</div>` : ''}
-    <div class="lane-cards">${cards.map((card) => cardMarkup(card, !readOnly, collapsed)).join('') || `<p class="graph-empty">${search ? 'No matching cards' : readOnly ? 'No cards' : 'Drop or paste cards here'}</p>`}</div>
+    <div class="lane-cards">${cards.map((card) => cardMarkup(card, !readOnly, collapsed)).join('') || `<p class="graph-empty">${search ? 'No matching cards' : readOnly ? 'No cards' : 'Drop or paste a card'}</p>`}</div>
     <p class="sr-only">${ways.length ? `Routes: ${escape(ways.join('; '))}.` : 'No routes out of this node.'}</p>
     ${readOnly ? '' : `<button type="button" class="graph-port" data-graph-action="add-route" data-from="${lane.id}" aria-label="Add a route from ${escape(lane.name)}" title="Drag to another node to add a route"></button>`}
   </section>`;
@@ -96,8 +96,8 @@ export function renderGraph(container, p, f, { search = '', collapsed = false } 
       <div class="graph-world"><svg class="graph-edges" aria-hidden="true"><defs>${['', '-auto'].map((kind) => `<marker id="graph-arrow${kind}" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="11" markerHeight="11" markerUnits="userSpaceOnUse" orient="auto"><path class="graph-arrowhead${kind ? ' auto' : ''}" d="M0 1 9 5 0 9Z"/></marker>`).join('')}</defs><g data-graph-edges></g><path class="graph-edge drafting" data-graph-draft d="" hidden/></svg>
         ${f.lanes.map((lane, index) => nodeMarkup(lane, index, { search, collapsed, readOnly })).join('')}
         <div class="graph-labels" data-graph-labels></div></div>
-      ${f.lanes.length ? '' : `<div class="graph-empty-canvas"><span class="empty-symbol">${icon('graph')}</span><p>This graph has no nodes yet.</p><span>${readOnly ? '' : 'Double-click the canvas or use Add node.'}</span></div>`}
-      <div class="graph-legend" aria-hidden="true"><span><i class="review"></i>Waits for your review</span><span><i class="auto"></i>Moves on by itself</span>${readOnly ? '' : '<span class="graph-tip">Drag a node’s dot onto another node to add a route · Ctrl + scroll to zoom</span>'}</div>
+      ${f.lanes.length ? '' : `<div class="graph-empty-canvas"><span class="empty-symbol">${icon('graph')}</span><p>${readOnly ? 'No nodes' : 'Double-click to add a node'}</p></div>`}
+      <div class="graph-legend" aria-hidden="true"><span><i class="review"></i>Review</span><span><i class="auto"></i>Auto</span></div>
       <div class="graph-controls" role="group" aria-label="Zoom">${iconButton('graph-zoom-out', 'Zoom out', 'minus')}<button type="button" class="graph-zoom-level" data-action="graph-zoom-reset" title="Reset zoom to 100%"></button>${iconButton('graph-zoom-in', 'Zoom in', 'plus')}${iconButton('graph-fit', 'Fit the graph on screen', 'fit')}</div>
     </div>`;
   current.viewport = $('[data-graph-viewport]', container);
@@ -228,13 +228,13 @@ async function saveRoutes(lane, routes, advance) {
 async function connect(fromId, toId) {
   const lane = laneOf(fromId); const target = laneOf(toId);
   if (!lane || !target) return;
-  if (fromId === toId) return toast('A route leads to another node. To repeat a node, route through a review node and back.');
+  if (fromId === toId) return toast('A route must lead to another node.');
   const existing = routesOf(lane).find((route) => route.laneId === toId);
   if (existing) return toast(`“${existing.name}” already leads from ${lane.name} to ${target.name}.`);
   const name = suggestName(lane, target);
   try {
     await saveRoutes(lane, [...routeList(lane), { name, to: toId }]);
-    toast(`Added the route “${name}” from ${lane.name} to ${target.name}. Click its label to rename it.`);
+    toast(`Added route “${name}”. Click its label to edit.`);
   } catch (error) { toast(error.message); }
 }
 
@@ -248,12 +248,10 @@ export function routeForm(fromId, name = null) {
   const targets = current.flow.lanes.filter((item) => item.id !== lane.id);
   if (!targets.length) return toast('Add another node first.');
   const advance = lane.playbook?.advance ?? 'review';
-  const choice = (value, label, help, symbol) => `<label class="kind-option"><input type="radio" name="advance" value="${value}" ${advance === value ? 'checked' : ''}><span>${icon(symbol)}<strong>${label}</strong><small>${help}</small></span></label>`;
+  const choice = (value, label, tip, symbol) => `<label class="kind-option" title="${escape(tip)}"><input type="radio" name="advance" value="${value}" ${advance === value ? 'checked' : ''}><span>${icon(symbol)}<strong>${label}</strong></span></label>`;
   const fields = `<label class="form-label" for="name-input">Route name</label><input class="form-input" id="name-input" name="name" value="${escape(route?.name ?? suggestName(lane, targets[0]))}" maxlength="40" pattern="[A-Za-z0-9][A-Za-z0-9 _\\-]*" required autocomplete="off" placeholder="e.g. approved">
-    <p class="field-help">The agent in ${escape(lane.name)} picks a route by this name, so name the outcome: approved, revise, too long.</p>
     <label class="form-label" for="route-to">Leads to</label><select class="form-input" id="route-to" name="to">${targets.map((item) => `<option value="${item.id}" ${item.id === route?.laneId ? 'selected' : ''}>${escape(item.name)}</option>`).join('')}</select>
-    <fieldset class="kind-field"><legend class="form-label">When the agent in ${escape(lane.name)} picks a route</legend>${choice('review', 'Wait for my review', 'The move is a proposal you accept in the card chat.', 'clock')}${choice('auto', 'Move on by itself', `The card follows the route at once and the next node’s playbook runs. A loop pauses for you after ${maxAutomaticMoves} moves in a row.`, 'bolt')}</fieldset>
-    <p class="field-help">This applies to every route out of ${escape(lane.name)}. You can always move a card along a route yourself from the card.</p>`;
+    <fieldset class="kind-field"><legend class="form-label">Then ${help('routes', `<p>The agent in ${escape(lane.name)} picks a route by its name, so name the outcome: approved, revise, too long.</p><p><strong>Wait for my review</strong>: the move is a proposal you accept in the card chat.</p><p><strong>Move on by itself</strong>: the card follows the route at once and the next node’s playbook runs. A loop pauses for you after ${maxAutomaticMoves} moves in a row.</p><p>This applies to every route out of ${escape(lane.name)}. You can always move a card along a route yourself.</p>`)}</legend>${choice('review', 'Wait for my review', 'The move is a proposal you accept in the card chat.', 'clock')}${choice('auto', 'Move on by itself', `The card follows the route at once. A loop pauses after ${maxAutomaticMoves} moves.`, 'bolt')}</fieldset>`;
   smallForm({
     title: route ? `Route from ${lane.name}` : `New route from ${lane.name}`,
     fields, submit: route ? 'Save route' : 'Add route',
@@ -278,9 +276,8 @@ export function nodeForm(at = null) {
   const color = palette[f.lanes.length % palette.length];
   smallForm({
     title: 'Add a node',
-    description: 'A node is a lane of this flow: it holds cards and has its own playbook. Connect it with routes once it is on the canvas.',
     fields: `<label class="form-label" for="name-input">Node name</label><input class="form-input" id="name-input" name="name" maxlength="100" required autocomplete="off" placeholder="e.g. Critique">
-      <fieldset class="color-field"><legend>Node color</legend>${palette.map((item) => `<label class="color-option ${item}" title="${item}"><input type="radio" name="color" value="${item}" ${item === color ? 'checked' : ''}><span>${icon('check')}<span class="sr-only">${item}</span></span></label>`).join('')}</fieldset>`,
+      <fieldset class="color-field"><legend>Color</legend>${palette.map((item) => `<label class="color-option ${item}" title="${item}"><input type="radio" name="color" value="${item}" ${item === color ? 'checked' : ''}><span>${icon('check')}<span class="sr-only">${item}</span></span></label>`).join('')}</fieldset>`,
     submit: 'Add node',
     onSubmit: (data) => {
       addLane(f, { name: String(data.get('name')).trim(), color: String(data.get('color')), x: Math.round(spot.x / grid) * grid, y: Math.round(spot.y / grid) * grid });

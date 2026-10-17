@@ -25,7 +25,8 @@ function activityMarkup(entries, attemptId) {
 }
 
 // Preserve chronology, grouping consecutive tool/status items between replies.
-export function attemptMarkup(entries, attemptId, renderOutput, running = false) {
+// speaker names the provider that wrote the replies.
+export function attemptMarkup(entries, attemptId, renderOutput, running = false, speaker = 'Codex') {
   let html = ''; let activity = [];
   const flush = () => { if (activity.length) html += activityMarkup(activity, attemptId); activity = []; };
   for (const entry of entries) {
@@ -33,7 +34,7 @@ export function attemptMarkup(entries, attemptId, renderOutput, running = false)
     if (entry.kind === 'agentMessage' || entry.kind === 'notice' || imageKinds.has(entry.kind)) {
       flush();
       if (entry.kind === 'agentMessage') {
-        html += `<div class="chat-item chat-reply" data-item-sequence="${entry.sequence}"><span class="chat-speaker">Codex</span><div class="chat-reply-text">${escape(entry.text)}</div>${!entry.completed ? `<small>${running ? 'Writing…' : 'Partial reply'}</small>` : ''}</div>`;
+        html += `<div class="chat-item chat-reply" data-item-sequence="${entry.sequence}"><span class="chat-speaker">${escape(speaker)}</span><div class="chat-reply-text">${escape(entry.text)}</div>${!entry.completed ? `<small>${running ? 'Writing…' : 'Partial reply'}</small>` : ''}</div>`;
       } else if (imageKinds.has(entry.kind)) {
         html += `<div class="chat-item">${renderOutput(entry)}</div>`;
       } else html += `<div class="chat-item chat-notice">${escape(entry.text)}</div>`;

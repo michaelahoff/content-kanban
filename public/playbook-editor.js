@@ -1,13 +1,15 @@
 // The project's playbook folder: the map, one playbook per lane and shared
 // skills. A lane playbook is edited either as a settings form over its
 // Markdown instructions or as the whole Markdown file; the map and skills
-// are plain Markdown. The side panel explains what the saved settings will
-// do. Drafts stay here until Save and are the single source for both modes.
-import { $, escape, icon, toast, smallForm } from './ui.js';
+// are plain Markdown. A one-line summary over the editor says what the
+// settings will do, with errors and warnings only when something is wrong;
+// the longer explanations are help popovers. Drafts stay here until Save and
+// are the single source for both modes.
+import { $, escape, icon, toast, smallForm, help } from './ui.js';
 import { request } from './api.js';
 import { project, flow, flowOfLane, flowTemplate, loadPlaybooks, savePlaybook, deletePlaybook, previewLaneRun, checkPlaybookAssets, loadLibraryListing } from './state.js';
 import { renderBoard } from './board.js';
-import { parseDocument, playbookSettings, describeSettings, playbookTemplate, skillTemplate, setFields, skillName, withAssets, withBody, providerNames } from './playbook-format.js';
+import { parseDocument, playbookSettings, playbookTemplate, skillTemplate, setFields, skillName, withAssets, withBody, providerNames } from './playbook-format.js';
 import { deliveryDescription, parseSourceKey, sourceKey } from './library-format.js';
 import { libraryChoices, libraryPickerFields } from './library.js';
 import { contextFields } from './chat-context.js';
@@ -31,11 +33,8 @@ const modeKey = 'frameboard-playbook-mode';
 // Lane playbooks open as a form unless the user chose Markdown last time.
 const mode = () => { try { return localStorage.getItem(modeKey) === 'markdown' ? 'markdown' : 'form'; } catch { return 'form'; } };
 const setMode = (value) => { try { localStorage.setItem(modeKey, value); } catch { /* Optional display preference. */ } };
-// The form's help text stays hidden, so the sheet stays short, until Hints is
-// turned on; that choice is remembered too.
-const hintsKey = 'frameboard-playbook-hints';
-const hints = () => { try { return localStorage.getItem(hintsKey) === 'on'; } catch { return false; } };
-const setHints = (value) => { try { localStorage.setItem(hintsKey, value ? 'on' : 'off'); } catch { /* Optional display preference. */ } };
+// Empty form groups the user opened (Skills), until another document is chosen.
+let expanded = new Set();
 const emptyTemplate = { id: '', name: '', title: { label: 'Card title', max: 500 }, fields: [], imageRoles: [] };
 // The flow whose playbook folder is open: the board's, or the given lane's.
 let editing = null;
@@ -79,14 +78,14 @@ export async function openPlaybooks({ laneId = null } = {}) {
   selection = laneId ? { kind: 'lane', laneId } : { kind: 'map', path: 'MAP.md' };
   void loadModels();
   dialog.innerHTML = `<header class="playbook-header"><div><div class="playbook-breadcrumb">${escape(p.name)} ${icon('chevron')} ${escape(f.name)} ${icon('chevron')} Playbooks</div><h2 id="playbook-heading"></h2></div>${control('close', '<span class="sr-only">Close playbooks</span>', 'close', 'icon-button')}</header>
-    <div class="playbook-workspace"><nav class="playbook-nav" aria-label="Playbook documents"></nav><div class="playbook-main"></div><aside class="playbook-inspector" aria-label="What this document does"></aside></div>
+    <div class="playbook-workspace"><nav class="playbook-nav" aria-label="Playbook documents"></nav><div class="playbook-main"></div></div>
     <footer class="playbook-footer"><p id="playbook-status" role="status"></p><div class="playbook-footer-actions"></div></footer>`;
   render();
   dialog.showModal();
 }
 
 function render() {
-  renderNav(); renderMain(); renderInspector(); renderFooter();
+  renderNav(); renderMain(); renderFooter();
 }
 // The model choices come from the shared catalog, as in the card chat; the
 // form renders without them until they arrive, then once more with them.
@@ -115,8 +114,8 @@ function renderNav() {
     }).join('')}
     ${unattached().length ? `<span class="playbook-nav-heading">Not attached to a lane</span>${unattached().map((document) => item(`data-playbook-action="select" data-kind="file" data-path="${escape(document.path)}"`, escape(document.path.slice(6, -3)), unattachedMeta(document), selection.kind === 'file' && selection.path === document.path, dirty(document.path))).join('')}` : ''}
     <span class="playbook-nav-heading">Skills ${control('new-skill', '<span class="sr-only">New skill</span>', 'plus', 'icon-button', 'title="New skill"')}</span>
-    ${[...skills.map((document) => document.path), ...draftSkills].sort().map((path) => item(`data-playbook-action="select" data-kind="skill" data-path="${escape(path)}"`, escape(path.slice(7, -3)), '', selection.kind === 'skill' && selection.path === path, dirty(path))).join('') || '<p class="playbook-nav-empty">Shared know-how lanes can include.</p>'}
-    <div class="playbook-folder"><span>Files on this computer</span><code title="${escape(folder)}">${escape(folder)}</code>${control('copy-folder', 'Copy folder path', null, 'text-button')}</div>`;
+    ${[...skills.map((document) => document.path), ...draftSkills].sort().map((path) => item(`data-playbook-action="select" data-kind="skill" data-path="${escape(path)}"`, escape(path.slice(7, -3)), '', selection.kind === 'skill' && selection.path === path, dirty(path))).join('')}
+    <div class="playbook-folder">${control('copy-folder', 'Copy folder path', 'folder', 'text-button', `title="${escape(folder)}"`)}</div>`;
 }
 
 function heading() {
@@ -140,7 +139,7 @@ function renderMain() {
   const path = currentPath();
   if (selection.kind === 'lane' && !path) {
     const lane = editing.lanes.find((item) => item.id === selection.laneId);
-    main.innerHTML = `<div class="playbook-empty">${icon('playbook')}<h3>${escape(lane.name)} has no playbook yet</h3><p>A playbook is a Markdown file that says what should happen when a card enters this lane: the work to do, the fields an agent may change and anything to set straight away.</p>${control('create-lane', 'Create playbook', 'plus', 'button primary')}</div>`;
+    main.innerHTML = `<div class="playbook-empty"><p>No playbook for ${escape(lane.name)} yet ${help('How lane runs work', laneRunsHelp)}</p>${control('create-lane', 'Create playbook', 'plus', 'button primary')}</div>`;
     return;
   }
   // Focus, caret and scroll survive a re-render of the column.
@@ -149,7 +148,10 @@ function renderMain() {
   const scrollTop = main.scrollTop;
   const typedSkill = skillBox()?.value ?? '';
   const formable = selection.kind === 'lane' || selection.kind === 'file';
-  main.innerHTML = `${formable ? modesMarkup() : ''}${formable && mode() === 'form' ? formMarkup(path) : textareaMarkup(path)}`;
+  const previewCard = $('#playbook-preview-card', dialog)?.value;
+  main.innerHTML = `${toolbarMarkup(formable)}${formable ? '<div class="playbook-summary-slot"></div>' : ''}${formable && mode() === 'form' ? formMarkup(path) : textareaMarkup(path)}`;
+  renderSummary();
+  if (previewCard && $('#playbook-preview-card', dialog)) $('#playbook-preview-card', dialog).value = previewCard;
   if (typedSkill && skillBox()) skillBox().value = typedSkill;
   main.scrollTop = scrollTop;
   if (!focused) return;
@@ -160,18 +162,50 @@ function renderMain() {
 // A textarea drops one newline right after its tag, so each gets a spare one.
 const textareaMarkup = (path) => `<label class="sr-only" for="playbook-text">${escape(path)}</label><textarea id="playbook-text" class="playbook-text" spellcheck="false" maxlength="200000">\n${escape(textOf(path))}</textarea>`;
 const skillBox = () => $('#playbook-skill-name', dialog);
-const modesMarkup = () => `<div class="playbook-modes"><div role="group" aria-label="Editing mode">${[['form', 'Form'], ['markdown', 'Markdown']].map(([value, label]) => `<button type="button" class="chip" data-playbook-action="mode" data-mode="${value}" aria-pressed="${mode() === value}">${label}</button>`).join('')}</div>
-  ${mode() === 'form' ? `<button type="button" class="chip playbook-hints-toggle" id="playbook-hints" data-playbook-action="hints" aria-pressed="${hints()}">${icon('info')}Hints</button>` : ''}</div>`;
-// The form needs settings it can read; otherwise the errors and the Markdown.
+// The sticky bar over the document: the Form/Markdown toggle for lane
+// playbooks, or a one-line note for the map and skills; then Preview prompt
+// and the settings reference on the right.
+function toolbarMarkup(formable) {
+  const lead = formable ? `<div class="playbook-mode-group" role="group" aria-label="Editing mode">${[['form', 'Form'], ['markdown', 'Markdown']].map(([value, label]) => `<button type="button" class="chip" data-playbook-action="mode" data-mode="${value}" aria-pressed="${mode() === value}">${label}</button>`).join('')}</div>`
+    : `<p class="playbook-note">${noteMarkup()}</p>`;
+  const lane = selection.kind === 'lane' ? editing.lanes.find((item) => item.id === selection.laneId) : null;
+  const preview = lane?.cards.length ? `<label class="sr-only" for="playbook-preview-card">Card to preview the saved playbook with</label><select id="playbook-preview-card" class="form-input" title="Preview the saved playbook's prompt for this card">${lane.cards.map((card) => `<option value="${card.id}">${escape(card.title || 'Untitled card')}</option>`).join('')}</select>${control('preview', 'Preview', 'search', 'button small secondary', 'title="Preview prompt"')}` : '';
+  const tools = formable ? `${preview}${help('Playbook settings', referenceHelp())}` : '';
+  return `<div class="playbook-modes">${lead}${tools ? `<div class="playbook-tools">${tools}</div>` : ''}</div>`;
+}
+// The map's and a skill's one line, with the rest on demand.
+function noteMarkup() {
+  if (selection.kind === 'map') return `Read first by every lane run ${help('Flow map', '<p>Describe what this project makes, the lanes in order and the rules that hold everywhere. Each lane run starts with this file, so an agent always knows where it is.</p>')}`;
+  const name = selection.path.slice(7, -3);
+  const users = editing.lanes.filter((lane) => {
+    const document = laneDocument(lane.id);
+    return document && settingsOf(document.path).skills.includes(name);
+  });
+  return `${users.length ? `Used by ${escape(users.map((lane) => lane.name).join(', '))}` : 'Not used by any lane'} ${help('Skills', `<p>Shared know-how, such as a voice guide or a checklist. A lane includes this skill when its playbook mentions <code>skills/${escape(name)}.md</code> or lists <code>${escape(name)}</code> under <code>skills:</code>.</p>`)}`;
+}
+const laneRunsHelp = `<p>A playbook is a Markdown file that says what should happen when a card enters this lane: the work to do, the fields an agent may change and anything to set straight away.</p><ol>
+  <li>When a card enters the lane, any <code>set:</code> values apply at once. Undo last move reverses them.</li>
+  <li>If the playbook has instructions and <code>run: on-enter</code>, the card chat receives the flow map, this playbook, its skills and the card's hand-off notes.</li>
+  <li>The agent replies with a result block. Fields listed under <code>may_edit</code> update; other changes and lane moves wait for your review.</li></ol>`;
+function referenceHelp() {
+  const fields = setFields(template());
+  return `<p><code>run:</code> on-enter, manual or off</p><p><code>provider:</code> codex or claude · <code>model:</code> a model ID from Settings</p>
+    <p><code>conversation:</code> continue or fresh</p><p><code>context:</code> card fields to send: ${escape(contextFields(template()).map((field) => field.key).join(', '))}. Every card photo is always included; ${escape(imageRoles(template()).map((role) => role.aliases[0] ?? role.key).join(', '))} name their roles.</p>
+    <p><code>may_edit:</code> fields the agent changes directly</p><p><code>set:</code> one <code>field: value</code> per line, applied on entry. Use <code>|</code> for several lines. Fields: ${escape(fields.map((field) => field.key).join(', '))}</p>
+    <p><code>skills:</code> skill names to include</p><p><code>assets:</code> Library files and folders to send, in order, as <code>asset:&lt;id&gt;</code> or <code>folder:&lt;id&gt;</code>. A file named only in the instructions is not sent.</p>
+    <p><code>lane:</code> the lane this file belongs to. Lane IDs: ${editing.lanes.map((lane) => `${escape(lane.name)} <code>${escape(lane.id)}</code>`).join(', ')}</p>
+    <h3>Preview</h3><p>Preview shows the prompt the saved playbook would send for the chosen card. Unsaved changes are not in it.</p>`;
+}
+// The form needs settings it can read; otherwise the errors (in the summary) and the Markdown.
 function formMarkup(path) {
   const parsed = parseDocument(textOf(path));
-  if (parsed.errors.length) return `<div class="playbook-problems" role="alert"><strong>The settings could not be read</strong><ul>${parsed.errors.map((error) => `<li>${escape(error)}</li>`).join('')}</ul><p>The form is available once the settings parse. Fix them below.</p></div>${textareaMarkup(path)}`;
+  if (parsed.errors.length) return `<p class="playbook-fallback">Fix the settings below to use the form.</p>${textareaMarkup(path)}`;
   return `${renderSettingsForm(formContext(path))}<label class="playbook-body-label" for="playbook-body">Instructions</label><textarea id="playbook-body" class="playbook-text playbook-body" spellcheck="false" maxlength="200000" placeholder="What should happen when a card enters this lane? Markdown.">\n${escape(parsed.body)}</textarea>`;
 }
 function formContext(path) {
   const text = textOf(path); const parsed = parseDocument(text); const settings = playbookSettings(parsed, template());
   return { text, template: template(), document: parsed, settings, kind: selection.kind,
-    lanes: editing.lanes.map((item) => ({ id: item.id, name: item.name, taken: Boolean(laneDocument(item.id)) })), skillNames: skillNames(), models: enabledModels(), libraryMarkup: libraryMarkup(settings), hints: hints(), graph: editing.kind === 'graph' };
+    lanes: editing.lanes.map((item) => ({ id: item.id, name: item.name, taken: Boolean(laneDocument(item.id)) })), skillNames: skillNames(), models: enabledModels(), libraryMarkup: libraryMarkup(settings), expanded: [...expanded], graph: editing.kind === 'graph' };
 }
 // Refreshes the form alone, e.g. when a Library check completes or the
 // instructions mention another skill, unless the user is working in it.
@@ -188,61 +222,49 @@ function refreshForm() {
 function previewNote() {
   const path = previewing.path;
   if (!path) return '';
-  const reason = dirty(path) ? `Unsaved changes are not in this preview. It shows the saved ${escape(path)}.`
-    : previewing.newer ? `${escape(path)} changed on disk since you opened it. The preview and the editor now show the newer file.` : '';
+  const reason = dirty(path) ? `Saved ${escape(path)} · unsaved changes not included`
+    : previewing.newer ? `${escape(path)} changed on disk · showing the newer file` : '';
   return reason ? `<p class="playbook-unsaved-note" role="note"><i class="playbook-unsaved"></i>${reason}</p>` : '';
 }
-function list(items) { return items.length ? items.map((entry) => `<li>${entry}</li>`).join('') : '<li class="muted">None</li>'; }
-function renderInspector() {
-  const inspector = $('.playbook-inspector', dialog);
-  const path = currentPath();
-  if (selection.kind === 'map') {
-    inspector.innerHTML = `<h3>Read first by every lane run</h3><p class="field-help">Describe what this project makes, the lanes in order and the rules that hold everywhere. Each lane run starts with this file, so an agent always knows where it is.</p>`;
-    return;
-  }
-  if (selection.kind === 'file') {
-    inspector.innerHTML = `<h3>Not used by any lane</h3><p class="field-help">Choose a lane in the form, set <code>lane:</code> to a lane's ID in Markdown, or delete the file. Lane IDs: ${editing.lanes.map((lane) => `${escape(lane.name)} <code>${escape(lane.id)}</code>`).join(', ')}</p>`;
-    return;
-  }
-  if (selection.kind === 'skill') {
-    const name = selection.path.slice(7, -3);
-    const users = editing.lanes.filter((lane) => {
-      const document = laneDocument(lane.id);
-      return document && settingsOf(document.path).skills.includes(name);
-    });
-    inspector.innerHTML = `<h3>Shared know-how</h3><p class="field-help">A lane includes this skill when its playbook mentions <code>skills/${escape(name)}.md</code> or lists <code>${escape(name)}</code> under <code>skills:</code>.</p><h4>Used by</h4><ul>${list(users.map((lane) => escape(lane.name)))}</ul>`;
-    return;
-  }
-  if (!path) {
-    inspector.innerHTML = `<h3>How lane runs work</h3><ol class="playbook-steps"><li>When a card enters the lane, any <code>set:</code> values apply at once. Undo last move reverses them.</li><li>If the playbook has instructions and <code>run: on-enter</code>, the card chat receives the flow map, this playbook, its skills and the card's hand-off notes.</li><li>The agent replies with a result block. Fields listed under <code>may_edit</code> update; other changes and lane moves wait for your review.</li></ol>`;
-    return;
-  }
-  const settings = settingsOf(path);
+// The one-line summary of what the settings do, then errors and warnings.
+const listFormat = (items) => new Intl.ListFormat('en', { style: 'narrow', type: 'conjunction' }).format(items);
+function summaryLine(settings, sendsAll) {
   const fields = setFields(template());
   const label = (key) => fields.find((field) => field.key === key)?.label ?? key;
-  const knownSkills = new Set(skillNames());
-  const roleWords = new Intl.ListFormat('en', { type: 'conjunction' }).format(imageRoles(template()).map((role) => role.label.toLowerCase()));
-  const lane = editing.lanes.find((item) => item.id === selection.laneId);
-  inspector.innerHTML = `<h3>${escape(describeSettings(settings, template()))}</h3>
-    ${settings.errors.length ? `<div class="playbook-problems" role="alert"><strong>Fix before this lane can run</strong><ul>${settings.errors.map((error) => `<li>${escape(error)}</li>`).join('')}</ul></div>` : ''}
-    ${settings.warnings.length ? `<ul class="playbook-warnings">${settings.warnings.map((warning) => `<li>${escape(warning)}</li>`).join('')}</ul>` : ''}
-    <dl class="playbook-facts">
-      <dt>When</dt><dd>${!settings.instructions ? 'No instructions, so no agent runs' : settings.run === 'on-enter' ? 'Each time a card enters this lane' : settings.run === 'manual' ? 'When you choose Run playbook on a card' : 'Turned off'}</dd>
-      <dt>Agent</dt><dd>${settings.provider ? providerNames[settings.provider] : 'The card chat’s provider'}${settings.model ? ` · ${escape(settings.model)}` : ' · its selected or default model'}</dd>
-      <dt>Conversation</dt><dd>${settings.conversation === 'fresh' ? 'Starts fresh context each run' : 'Continues the card chat'}</dd>
-      <dt>Sends</dt><dd>${escape([...settings.selections.fields.map(label), `All card photos (with ${roleWords} labels)`, ...(settings.assets.length ? [`then ${settings.assets.length} Library source${settings.assets.length === 1 ? '' : 's'} listed below`] : []), 'then the card\'s own Library files'].join(', '))}</dd>
-      <dt>May edit</dt><dd>${escape(settings.mayEdit.map(label).join(', ') || 'Nothing directly; changes become proposals')}</dd>
-    </dl>
-    <h4>Sets on entry</h4><ul>${list(Object.entries(settings.set).map(([key, value]) => `<strong>${escape(label(key))}</strong> ${value ? `= ${escape(value.length > 80 ? `${value.slice(0, 80)}…` : value)}` : '(cleared)'}`))}</ul>
-    <h4>Skills</h4><ul>${list(settings.skills.map((name) => `${escape(name)}${knownSkills.has(name) ? '' : ' <span class="playbook-missing">missing</span>'}`))}</ul>
-    ${libraryMarkup(settings)}
-    <details class="playbook-reference"><summary>Settings reference</summary>
-      <p><code>run:</code> on-enter, manual or off</p><p><code>provider:</code> codex or claude · <code>model:</code> a model ID from Settings</p>
-      <p><code>conversation:</code> continue or fresh</p><p><code>context:</code> card fields to send: ${escape(contextFields(template()).map((field) => field.key).join(', '))}. Every card photo is always included; ${escape(imageRoles(template()).map((role) => role.aliases[0] ?? role.key).join(', '))} name their roles.</p>
-      <p><code>may_edit:</code> fields the agent changes directly</p><p><code>set:</code> one <code>field: value</code> per line, applied on entry. Use <code>|</code> for several lines. Fields: ${escape(fields.map((field) => field.key).join(', '))}</p>
-      <p><code>skills:</code> skill names to include</p><p><code>assets:</code> Library files and folders to send, in order, as <code>asset:&lt;id&gt;</code> or <code>folder:&lt;id&gt;</code>. Add Library files writes them for you. A file named only in the instructions is not sent.</p></details>
-    ${lane?.cards.length ? `<div class="playbook-try"><label class="form-label" for="playbook-preview-card">Preview the saved playbook's prompt for</label><select id="playbook-preview-card" class="form-input">${lane.cards.map((card) => `<option value="${card.id}">${escape(card.title || 'Untitled card')}</option>`).join('')}</select>${control('preview', 'Preview prompt', 'search', 'button small secondary')}</div>` : ''}`;
+  const runs = settings.instructions && settings.run !== 'off';
+  const parts = [!settings.instructions ? 'No instructions' : { 'on-enter': 'On entry', manual: 'Manual', off: 'Off' }[settings.run]];
+  if (runs) {
+    parts.push(`${settings.provider ? providerNames[settings.provider] : 'Chat’s agent'}${settings.model ? ` ${settings.model}` : ''}`);
+    parts.push(settings.conversation === 'fresh' ? 'fresh context' : 'continues chat');
+    const total = contextFields(template()).length + imageRoles(template()).length;
+    const sent = settings.selections.fields.length + settings.selections.roles.length;
+    parts.push(sendsAll ? 'sends all' : `sends ${sent} of ${total}`);
+    parts.push(settings.mayEdit.length ? `may edit ${listFormat(settings.mayEdit.map(label))}` : 'edits nothing');
+  }
+  const set = Object.keys(settings.set);
+  if (set.length) parts.push(`sets ${listFormat(set.map(label))}`);
+  if (runs && settings.skills.length) parts.push(`${settings.skills.length} skill${settings.skills.length === 1 ? '' : 's'}`);
+  if (runs && settings.assets.length) parts.push(`${settings.assets.length} Library source${settings.assets.length === 1 ? '' : 's'}`);
+  if (settings.routes.length) parts.push(`${settings.routes.length} route${settings.routes.length === 1 ? '' : 's'}${settings.advance === 'auto' ? ', auto' : ''}`);
+  return parts.join(' · ');
 }
+function renderSummary() {
+  const slot = $('.playbook-summary-slot', dialog);
+  const path = currentPath();
+  if (!slot || !path) return;
+  const settings = settingsOf(path);
+  const knownSkills = new Set(skillNames());
+  const missing = settings.skills.filter((name) => !knownSkills.has(name));
+  const warnings = [...(selection.kind === 'file' ? [saved.get(path)?.laneId ? `Not attached · ${unattachedMeta(saved.get(path))}` : 'Not attached to a lane'] : []),
+    ...settings.warnings, ...(missing.length ? [`Missing skill${missing.length === 1 ? '' : 's'}: ${missing.join(', ')}`] : [])];
+  slot.innerHTML = `<p class="playbook-summary">${escape(settings.errors.length ? 'Has errors' : summaryLine(settings, parseDocument(textOf(path)).data.context === undefined))}</p>
+    ${settings.errors.length ? `<div class="playbook-problems" role="alert"><strong>Fix before this lane can run</strong><ul>${settings.errors.map((error) => `<li>${escape(error)}</li>`).join('')}</ul></div>` : ''}
+    ${warnings.length ? `<ul class="playbook-warnings">${warnings.map((warning) => `<li>${escape(warning)}</li>`).join('')}</ul>` : ''}
+    ${mode() === 'markdown' && !parseDocument(textOf(path)).errors.length ? libraryLine(settings) : ''}`;
+}
+// In Markdown the form's Library row is not there, so the picker and the
+// chosen sources sit under the summary instead.
+const libraryLine = (settings) => `<div class="playbook-library" role="group" aria-label="Library files">${libraryMarkup(settings)}<button type="button" class="playbook-add" data-playbook-action="add-assets">${icon('plus')}Library files</button></div>`;
 
 // The draft's Library sources in order, each named by its current path or
 // shown unresolved with its ID and reason. Unresolved sources can be saved;
@@ -253,26 +275,26 @@ function resolution(keys) {
   if (!resolutions.has(key)) {
     resolutions.set(key, { loading: true });
     checkPlaybookAssets(editing, keys).then((result) => resolutions.set(key, result), (error) => resolutions.set(key, { error: error.message }))
-      .finally(() => { if (dialog.open && !previewing) { renderInspector(); refreshForm(); } });
+      .finally(() => { if (dialog.open && !previewing) { renderSummary(); refreshForm(); } });
   }
   return resolutions.get(key);
 }
+// Library sources as chips in send order; empty when there are none.
 function libraryMarkup(settings) {
   const keys = settings.assets.map(sourceKey);
+  if (!keys.length) return '';
   const checked = resolution(keys);
   const items = settings.assets.map((source, index) => {
     const key = keys[index]; const noun = source.kind === 'folder' ? 'folder' : 'file';
     const found = checked.selections?.find((entry) => sourceKey(entry) === key);
     const problem = checked.problems?.find((entry) => entry.key === key);
     const count = found && noun === 'folder' && checked.files.filter((file) => file.sources.some((entry) => entry.kind === 'folder' && entry.id === source.id)).length;
-    const name = found ? `${escape(found.path)}${noun === 'folder' ? ` <small>· ${count ? `${count} file${count === 1 ? '' : 's'}` : 'no files'}</small>` : ''}`
-      : problem ? `<strong class="playbook-missing">Unresolved ${noun}</strong> <code>${escape(key)}</code> <small>${escape(problem.reason)}</small>` : `<code>${escape(key)}</code>`;
-    return `<li><span>${name}</span>${control('remove-asset', `Remove<span class="sr-only"> ${escape(found?.path ?? key)}</span>`, null, 'text-button', `data-key="${escape(key)}"`)}</li>`;
+    const name = found ? `${escape(found.path)}${noun === 'folder' ? ` <small>${count ? `${count} file${count === 1 ? '' : 's'}` : 'empty'}</small>` : ''}`
+      : problem ? `<strong class="playbook-missing">Unresolved ${noun}</strong> <code>${escape(key)}</code>` : `<code>${escape(key)}</code>`;
+    return `<li class="${problem ? 'unresolved' : ''}" ${problem ? `title="${escape(problem.reason)}"` : ''}><span>${name}</span>${control('remove-asset', `<span class="sr-only">Remove ${escape(found?.path ?? key)}</span>`, 'close', 'icon-button', `data-key="${escape(key)}" title="Remove"`)}</li>`;
   });
-  return `<h4>Library files</h4><p class="field-help">Sent after the card photos as reference material, in this order, followed by any Library files on the card itself. Naming a file in the instructions does not send it.</p>
-    ${items.length ? `<ol class="playbook-assets">${items.join('')}</ol>` : '<p class="field-help">None. Runs send the card, all its photos, its own Library files and the playbook documents.</p>'}
-    ${checked.error ? `<p class="playbook-error">Library files could not be checked: ${escape(checked.error)}</p>` : checked.problems?.length ? '<p class="playbook-missing">Runs are refused until every unresolved source is removed or replaced.</p>' : ''}
-    ${control('add-assets', 'Add Library files…', 'plus', 'button small secondary')}`;
+  return `<ol class="playbook-assets" aria-label="Library files, in send order">${items.join('')}</ol>
+    ${checked.error ? `<p class="playbook-missing">Couldn't check Library files: ${escape(checked.error)}</p>` : checked.problems?.length ? '<p class="playbook-missing">Remove or replace unresolved sources to run.</p>' : ''}`;
 }
 // The picker edits the same draft as the Markdown: only the assets: setting
 // changes. A draft whose settings cannot be read is left for raw editing.
@@ -288,7 +310,7 @@ async function pickAssets() {
   const listing = await loadLibraryListing(project());
   resolutions = new Map();
   const available = libraryChoices(listing, new Set(draftAssets(path).map(sourceKey)));
-  smallForm({ title: 'Add Library files', description: available.length ? 'Chosen files and folders join the end of this playbook\'s assets: list. Each run sends their current versions.' : 'Everything in the Library is already selected, or the Library is empty.',
+  smallForm({ title: 'Add Library files', description: available.length ? 'Added to the end of the list. Runs send their current versions.' : 'Nothing left to add.',
     fields: libraryPickerFields(available),
     submit: 'Add', onSubmit: async (data) => {
       // The draft may have changed while the picker was open.
@@ -302,7 +324,7 @@ function renderFooter() {
   const status = $('#playbook-status');
   const unsaved = [...drafts.keys()].filter(dirty);
   status.textContent = busy ? 'Saving…' : previewing ? 'Previews use saved files.' : !path ? ''
-    : conflicts.has(path) && dirty(path) ? 'This file changed on disk. Your draft is kept: Revert shows the newer file, Save replaces it.'
+    : conflicts.has(path) && dirty(path) ? 'File changed on disk · Revert loads it, Save overwrites it'
       : dirty(path) ? 'Unsaved changes · Ctrl+S saves' : saved.has(path) ? `Saved · ${path}` : 'Not saved yet';
   status.classList.toggle('playbook-dirty', Boolean(path && dirty(path)));
   const deletable = path && saved.has(path) && path !== 'MAP.md';
@@ -342,12 +364,12 @@ async function reloadFromDisk() {
   resolutions = new Map();
   for (const path of drafts.keys()) if (dirty(path) && before.get(path) !== saved.get(path)?.hash) conflicts.add(path);
   const path = currentPath();
-  if (path && dirty(path)) { renderNav(); renderInspector(); renderFooter(); } else render();
+  if (path && dirty(path)) { renderNav(); renderSummary(); renderFooter(); } else render();
 }
 
 function select(next) {
   flushPending();
-  previewing = null;
+  previewing = null; expanded = new Set();
   selection = next;
   render();
   $('#playbook-text')?.focus();
@@ -374,7 +396,7 @@ function formChange(target, action, data) {
   // Typed text leaves its control in place: the rest refreshes now and the
   // form itself once the keyboard has left it, so a click that caused the
   // blur still lands on the control it was aimed at.
-  if (typedActions.includes(action)) { renderNav(); renderInspector(); renderFooter(); setTimeout(refreshForm, 0); } else render();
+  if (typedActions.includes(action)) { renderNav(); renderSummary(); renderFooter(); setTimeout(refreshForm, 0); } else render();
   return true;
 }
 // Writes typed text (a set-row value) now, instead of after the pause.
@@ -401,7 +423,7 @@ dialog.addEventListener('input', (event) => {
     return;
   } else return;
   clearTimeout(dialog.inspectTimer);
-  dialog.inspectTimer = setTimeout(() => { renderNav(); renderInspector(); renderFooter(); refreshForm(); }, 150);
+  dialog.inspectTimer = setTimeout(() => { renderNav(); renderSummary(); renderFooter(); refreshForm(); }, 150);
   renderFooter();
 });
 // Selects and checkboxes write when their value is committed.
@@ -421,11 +443,11 @@ dialog.addEventListener('click', async (event) => {
   const target = event.target.closest('[data-playbook-action]');
   if (!target) return;
   const action = target.dataset.playbookAction;
-  if (busy && !['select', 'copy-folder', 'close', 'mode', 'hints'].includes(action)) return;
+  if (busy && !['select', 'copy-folder', 'close', 'mode', 'show-skills'].includes(action)) return;
   flushPending();
   try {
     if (action === 'mode') { setMode(target.dataset.mode); renderMain(); $('#playbook-text')?.focus(); return; }
-    if (action === 'hints') { setHints(!hints()); renderMain(); return; }
+    if (action === 'show-skills') { expanded.add('skills'); renderMain(); skillBox()?.focus(); return; }
     // Form buttons; the form's inputs and selects are handled on change.
     if (action.startsWith('form-')) {
       if (target.tagName !== 'BUTTON') return;
@@ -454,7 +476,7 @@ dialog.addEventListener('click', async (event) => {
       $('#playbook-text')?.focus();
     }
     if (action === 'new-skill') {
-      smallForm({ title: 'New skill', description: 'Skills are shared Markdown files a lane playbook can include, such as a voice guide or a checklist.',
+      smallForm({ title: 'New skill', description: 'Shared Markdown a lane can include, such as a voice guide.',
         fields: '<label class="form-label" for="skill-name">Skill name</label><input class="form-input" id="skill-name" name="skill" maxlength="80" pattern="[A-Za-z0-9][A-Za-z0-9_\\-]*" placeholder="voice" required autocomplete="off">',
         submit: 'Create skill', onSubmit: async (data) => {
           const name = String(data.get('skill')).trim().toLowerCase();
@@ -468,7 +490,7 @@ dialog.addEventListener('click', async (event) => {
     }
     if (action === 'delete') {
       const path = currentPath();
-      smallForm({ title: `Delete ${path}?`, description: selection.kind === 'lane' ? 'The lane keeps its cards. Cards entering it will no longer run anything until you create a new playbook.' : 'Lanes that mention this skill will include a note that it is missing.',
+      smallForm({ title: `Delete ${path}?`, description: selection.kind === 'lane' ? 'The lane keeps its cards; nothing runs there until a new playbook is created.' : 'Lanes that mention it will note that it is missing.',
         submit: 'Delete file', danger: true, onSubmit: async () => {
           await deletePlaybook(editing, path, saved.get(path).hash);
           saved.delete(path); drafts.delete(path);

@@ -1,9 +1,9 @@
 // The card template editor: a workspace dialog that manages the templates
 // cards are built from. The nav lists every template, the form edits one
-// draft at a time (kept in memory until Save) and the side column explains
-// what the settings do. A field's key is the identity card values are
+// draft at a time (kept in memory until Save). Fields list one row each;
+// one field at a time opens to show its settings. A field's key is the identity card values are
 // stored by, so keys lock once a saved template has cards.
-import { $, escape, icon, toast, smallForm } from './ui.js';
+import { $, escape, icon, toast, smallForm, help } from './ui.js';
 import { state, loadTemplates, createTemplate, updateTemplate, deleteTemplate } from './state.js';
 import { renderBoard } from './board.js';
 import { validateTemplate, fieldKeyFrom, youtubeVideoTemplate, controls, maxFields, maxImageRoles, maxFieldLength } from './card-template.js';
@@ -15,7 +15,13 @@ const dialog = $('#template-dialog');
 // draft whose saved copy changed in another tab since.
 let selected = null; let draft = null; let base = ''; let revision = null; let lockedKeys = { fields: new Set(), imageRoles: new Set() };
 let busy = false; let stale = false; let problems = [];
+// The index of the field whose settings are shown, or null when all are collapsed.
+let openField = null;
 const control = (action, label, symbol, cls = 'button secondary', attrs = '') => `<button type="button" class="${cls}" data-template-action="${action}" ${attrs}>${symbol ? icon(symbol) : ''}${label}</button>`;
+const iconControl = (action, label, symbol, attrs = '', tip = label) => `<button type="button" class="icon-button template-icon" data-template-action="${action}" aria-label="${escape(label)}" title="${escape(tip)}" ${attrs}>${symbol}</button>`;
+const lockIcon = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>';
+const lockedTip = 'Locked: cards store values by this key.';
+const lock = (row) => row.locked ? `<span class="template-lock" title="${lockedTip}" role="img" aria-label="${lockedTip}">${lockIcon}</span>` : '';
 const controlLabel = { text: 'Text', textarea: 'Text area', url: 'URL' };
 const defaultMax = { text: 500, url: 4096, textarea: 200000 };
 const plural = (count, noun) => `${count} ${noun}${count === 1 ? '' : 's'}`;
@@ -41,14 +47,14 @@ function load(templateId, fallback = null) {
   draft = template ? toDraft(template, lock) : blank();
   lockedKeys = { fields: new Set(lock ? draft.fields.map((field) => field.key) : []), imageRoles: new Set(lock ? draft.imageRoles.map((role) => role.key) : []) };
   base = JSON.stringify(draft);
-  problems = []; stale = false;
+  problems = []; stale = false; openField = null;
 }
 // A new template, blank or copied. A copy counts as unsaved from the start.
 function startDraft(definition, { dirty = false } = {}) {
   selected = null; revision = null; lockedKeys = { fields: new Set(), imageRoles: new Set() };
   draft = toDraft(definition);
   base = dirty ? '' : JSON.stringify(draft);
-  problems = []; stale = false;
+  problems = []; stale = false; openField = null;
 }
 
 export async function openTemplates({ templateId = null } = {}) {
@@ -64,23 +70,22 @@ export async function openTemplates({ templateId = null } = {}) {
   const kept = Boolean(draft && isDirty());
   try { await loadTemplates(); } catch { /* Stale counts at worst. */ }
   if (!kept) load(templateId && state.templates.some((template) => template.id === templateId) ? templateId : state.templates[0]?.id ?? null);
-  dialog.innerHTML = `<header class="template-header"><div><div class="template-breadcrumb">Workspace ${icon('chevron')} Card templates</div><h2 id="template-heading"></h2></div>${control('close', '<span class="sr-only">Close card templates</span>', 'close', 'icon-button')}</header>
-    <div class="template-workspace"><nav class="template-nav" aria-label="Card templates"></nav><div class="template-main"></div><aside class="template-help" aria-label="About card templates">${helpMarkup}</aside></div>
+  dialog.innerHTML = `<header class="template-header"><div><div class="template-breadcrumb">Workspace ${icon('chevron')} Card templates</div><div class="template-title"><h2 id="template-heading"></h2>${help('card templates', helpMarkup)}</div></div>${control('close', '<span class="sr-only">Close card templates</span>', 'close', 'icon-button')}</header>
+    <div class="template-workspace"><nav class="template-nav" aria-label="Card templates"></nav><div class="template-main"></div></div>
     <footer class="template-footer"><p id="template-status" role="status"></p><div class="template-footer-actions"></div></footer>`;
   render();
   dialog.showModal();
   if (kept) { templatesChanged(); toast('Your unsaved template changes were kept.'); }
 }
 
-const helpMarkup = `<h3>What a template is</h3>
-  <p>A card template is the set of text fields and image roles a card carries. Each project picks the template for its new cards in Project settings; a card keeps the template it was created with.</p>
-  <h4>Keys and labels</h4>
+const helpMarkup = `<p>A card template is the set of text fields and image roles a card carries. Each project picks the template for its new cards in Project settings; a card keeps the template it was created with.</p>
+  <h3>Keys and labels</h3>
   <p>Every field has a key, such as <code>script</code>, that card values, lane playbooks and chats refer to. Labels, controls and limits can change at any time; a key is permanent once cards use the template.</p>
-  <h4>Hidden fields</h4>
+  <h3>Hidden fields</h3>
   <p>A field hidden from the editor stays out of search, chats and lane results, but a lane playbook can still fill it with <code>set:</code>. The YouTube video template's Prompt works this way.</p>
-  <h4>Image roles</h4>
+  <h3>Image roles</h3>
   <p>Roles label a card's images for agents, such as Original or Inspiration. Every card also has a display image, which playbooks call <code>display</code>.</p>
-  <h4>Removing things</h4>
+  <h3>Removing things</h3>
   <p>A field that cards hold text in cannot be removed: hide it from the editor instead. Its values stay stored and show again if the key comes back. A template can be deleted once no card and no project uses it, and the workspace keeps at least one.</p>`;
 
 function render() {
@@ -89,47 +94,68 @@ function render() {
 }
 
 function renderNav() {
-  const item = (attrs, label, meta, active, unsaved) => `<button type="button" class="template-nav-item ${active ? 'active' : ''}" ${attrs} ${active ? 'aria-current="true"' : ''}><span>${label}</span>${unsaved ? '<i class="template-unsaved" title="Unsaved changes"></i>' : ''}<small>${meta}</small></button>`;
+  const item = (attrs, label, meta, active, unsaved, title = '') => `<button type="button" class="template-nav-item ${active ? 'active' : ''}" ${attrs} ${active ? 'aria-current="true"' : ''} ${title ? `title="${escape(title)}"` : ''}><span>${label}</span>${unsaved ? '<i class="template-unsaved" title="Unsaved changes"></i>' : ''}<small>${meta}</small></button>`;
+  const meta = (template) => [template.builtin ? 'Built in' : '', plural(template.cardCount ?? 0, 'card')].filter(Boolean).join(' · ');
   $('.template-nav', dialog).innerHTML = `<span class="template-nav-heading">Templates</span>
-    ${state.templates.map((template) => item(`data-template-action="select" data-id="${escape(template.id)}"`, escape(template.name), `${plural(template.cardCount ?? 0, 'card')} · ${plural(template.projectCount ?? 0, 'project')}${template.builtin ? ' · Built in' : ''}`, template.id === selected, template.id === selected && isDirty())).join('')}
-    ${selected === null ? item('', escape(heading()), 'Not saved yet', true, isDirty()) : ''}
+    ${state.templates.map((template) => item(`data-template-action="select" data-id="${escape(template.id)}"`, escape(template.name), meta(template), template.id === selected, template.id === selected && isDirty(), `${plural(template.cardCount ?? 0, 'card')} · ${plural(template.projectCount ?? 0, 'project')}`)).join('')}
+    ${selected === null ? item('', escape(heading()), 'Not saved', true, isDirty()) : ''}
     <div class="template-nav-actions">${control('new', 'New template', 'plus', 'button small secondary')}${control('duplicate', 'Duplicate', null, 'button small secondary', selected === null ? 'disabled' : '')}</div>`;
 }
 
-const rowTitle = (list, index) => `${list === 'fields' ? 'Field' : 'Image role'} ${index + 1}${draft[list][index].key ? ` · <code>${escape(draft[list][index].key)}</code>` : ''}`;
+// A field's collapsed summary: label, key, control and the options it has on.
+function rowTitle(list, index) {
+  const row = draft[list][index];
+  const label = row.label.trim() ? `<span class="template-summary-label">${escape(row.label)}</span>` : '<span class="template-summary-label template-untitled">Untitled field</span>';
+  const tags = [row.editor === false && 'hidden', row.placement === 'header' && 'header', row.copy && 'copy', row.countWords && 'words', row.youtube && 'lookup'].filter(Boolean);
+  return `${label}${row.key ? `<code>${escape(row.key)}</code>` : ''}${lock(row)}<span class="template-summary-meta"><span class="template-control">${controlLabel[row.control] ?? row.control}</span>${tags.map((tag) => `<span class="template-tag">${tag}</span>`).join('')}</span>`;
+}
+function refreshTitle(rowNode) {
+  const node = $('.template-row-title', rowNode);
+  if (node) node.innerHTML = rowTitle(rowNode.dataset.list, Number(rowNode.dataset.index));
+}
 // A field whose key cards store values by cannot be removed, only hidden.
-const rowActions = (index, count, name, locked = false) => [['move-up', 'Move up', index === 0, ''], ['move-down', 'Move down', index === count - 1, ''], ['remove', 'Remove', locked, locked ? 'title="Cards store values by this key. Hide it from the editor instead."' : '']]
-  .map(([action, label, disabled, title]) => control(action, `${label}<span class="sr-only"> ${escape(name)}</span>`, null, `text-button${action === 'remove' ? ' danger' : ''}`, `${disabled ? 'disabled' : ''} ${title}`)).join('');
-const keyHint = (row, rule) => `<small class="template-lock">${row.locked ? 'Locked: cards store values by this key.' : rule}</small>`;
+const rowActions = (index, count, name, locked = false) => [
+  iconControl('move-up', `Move up ${name}`, icon('down', 'template-up'), index === 0 ? 'disabled' : '', 'Move up'),
+  iconControl('move-down', `Move down ${name}`, icon('down'), index === count - 1 ? 'disabled' : '', 'Move down'),
+  iconControl('remove', `Remove ${name}`, icon('trash'), locked ? 'disabled' : '', locked ? 'Cards store values by this key. Hide it from the editor instead.' : 'Remove'),
+].join('');
 const check = (name, label, checked, disabled = false, title = '') => `<label class="template-check" ${title ? `title="${escape(title)}"` : ''}><input type="checkbox" name="${name}" ${checked ? 'checked' : ''} ${disabled ? 'disabled' : ''}>${label}</label>`;
+const keyInput = (row, max, placeholder, rule) => `<input class="form-input template-key" name="key" value="${escape(row.key)}" maxlength="${max}" placeholder="${placeholder}" autocomplete="off" spellcheck="false" title="${row.locked ? lockedTip : rule}" ${row.locked ? 'disabled' : ''}>`;
 
 function fieldMarkup(field, index, count) {
   const url = field.control === 'url';
-  return `<li class="template-row" data-list="fields" data-index="${index}">
-    <div class="template-row-head"><span class="template-row-title">${rowTitle('fields', index)}</span><div class="template-row-actions">${rowActions(index, count, field.label || `field ${index + 1}`, Boolean(field.locked))}</div></div>
-    <div class="template-grid">
-      <label class="template-field"><span>Label</span><input class="form-input" name="label" value="${escape(field.label)}" maxlength="100" placeholder="e.g. Hook" autocomplete="off"></label>
-      <label class="template-field"><span>Key</span><input class="form-input" name="key" value="${escape(field.key)}" maxlength="60" placeholder="e.g. hook" autocomplete="off" spellcheck="false" ${field.locked ? 'disabled' : ''}>${keyHint(field, 'Letters and numbers, camelCase. Permanent once cards use it.')}</label>
-      <label class="template-field"><span>Control</span><select class="form-input" name="control">${controls.map((option) => `<option value="${option}" ${field.control === option ? 'selected' : ''}>${controlLabel[option]}</option>`).join('')}</select></label>
-      <label class="template-field"><span>Max length</span><input class="form-input template-number" type="number" name="max" value="${escape(field.max ?? '')}" min="1" max="${maxFieldLength}" step="1"></label>
-      <label class="template-field template-wide"><span>Placeholder</span><input class="form-input" name="placeholder" value="${escape(field.placeholder ?? '')}" maxlength="500" placeholder="Shown while the field is empty" autocomplete="off"></label>
-      ${url ? `<label class="template-field"><span>Video label</span><input class="form-input" name="videoLabel" value="${escape(field.videoLabel ?? '')}" maxlength="100" placeholder="e.g. original video" autocomplete="off"></label>` : ''}
+  const open = openField === index;
+  const name = field.label || `field ${index + 1}`;
+  return `<li class="template-row ${open ? 'open' : ''}" data-list="fields" data-index="${index}">
+    <div class="template-row-head">
+      <button type="button" class="template-row-toggle" data-template-action="toggle" aria-expanded="${open}" ${open ? `aria-controls="template-field-${index}"` : ''} title="${open ? 'Collapse' : 'Edit'}">${icon('chevron', 'template-caret')}<span class="template-row-title">${rowTitle('fields', index)}</span></button>
+      <div class="template-row-actions">${rowActions(index, count, name, Boolean(field.locked))}</div>
     </div>
-    <div class="template-checks">
-      ${check('header', 'Header', field.placement === 'header')}
-      ${check('copy', 'Copy button', field.copy)}
-      ${check('countWords', 'Word count', field.countWords)}
-      ${check('hidden', 'Hidden from editor', field.editor === false)}
-      ${check('youtube', 'YouTube lookup', field.youtube, !url, url ? '' : 'Only a URL field can look up a YouTube video')}
-    </div></li>`;
+    ${open ? `<div class="template-row-body" id="template-field-${index}">
+      <div class="template-pair">
+        <label class="template-field"><span>Label</span><input class="form-input" name="label" value="${escape(field.label)}" maxlength="100" placeholder="e.g. Hook" autocomplete="off"></label>
+        <label class="template-field"><span>Key ${lock(field)}</span>${keyInput(field, 60, 'e.g. hook', 'Letters and numbers, camelCase. Permanent once cards use it.')}</label>
+      </div>
+      <div class="template-pair">
+        <div class="template-field"><span id="template-control-${index}">Control</span><div class="template-segments" role="radiogroup" aria-labelledby="template-control-${index}">${controls.map((option) => `<label class="chip"><input type="radio" name="control" value="${option}" ${field.control === option ? 'checked' : ''}>${controlLabel[option]}</label>`).join('')}</div></div>
+        <label class="template-field"><span>Max length</span><input class="form-input template-number" type="number" name="max" value="${escape(field.max ?? '')}" min="1" max="${maxFieldLength}" step="1"></label>
+      </div>
+      <label class="template-field"><span>Placeholder</span><input class="form-input" name="placeholder" value="${escape(field.placeholder ?? '')}" maxlength="500" placeholder="Shown while the field is empty" autocomplete="off"></label>
+      <div class="template-field"><span id="template-options-${index}">Options</span><div class="template-checks" role="group" aria-labelledby="template-options-${index}">
+        ${check('header', 'Header', field.placement === 'header')}
+        ${check('copy', 'Copy button', field.copy)}
+        ${check('countWords', 'Word count', field.countWords)}
+        ${check('hidden', 'Hidden', field.editor === false, false, 'Hidden from the card editor')}
+        ${url ? check('youtube', 'YouTube lookup', field.youtube) : ''}
+      </div></div>
+      ${url ? `<label class="template-field"><span>Video label</span><input class="form-input" name="videoLabel" value="${escape(field.videoLabel ?? '')}" maxlength="100" placeholder="e.g. original video" autocomplete="off"></label>` : ''}
+    </div>` : ''}</li>`;
 }
 function roleMarkup(role, index, count) {
-  return `<li class="template-row" data-list="imageRoles" data-index="${index}">
-    <div class="template-row-head"><span class="template-row-title">${rowTitle('imageRoles', index)}</span><div class="template-row-actions">${rowActions(index, count, role.label || `image role ${index + 1}`)}</div></div>
-    <div class="template-grid">
-      <label class="template-field"><span>Label</span><input class="form-input" name="label" value="${escape(role.label)}" maxlength="50" placeholder="e.g. Thumbnail draft" autocomplete="off"></label>
-      <label class="template-field"><span>Key</span><input class="form-input" name="key" value="${escape(role.key)}" maxlength="30" placeholder="e.g. thumbnail" autocomplete="off" spellcheck="false" ${role.locked ? 'disabled' : ''}>${keyHint(role, 'Lowercase letters and numbers. Permanent once cards use it.')}</label>
-    </div></li>`;
+  return `<li class="template-row template-role" data-list="imageRoles" data-index="${index}">
+    <input class="form-input" name="label" value="${escape(role.label)}" maxlength="50" placeholder="Label, e.g. Thumbnail draft" aria-label="Image role label" autocomplete="off">
+    <span class="template-role-key">${keyInput(role, 30, 'key', 'Lowercase letters and numbers. Permanent once cards use it.').replace('name="key"', 'name="key" aria-label="Image role key"')}${lock(role)}</span>
+    <div class="template-row-actions">${rowActions(index, count, role.label || `image role ${index + 1}`)}</div></li>`;
 }
 
 // Where the keyboard is, so a re-render can put it back: a control's name
@@ -145,7 +171,7 @@ function focusState() {
 function restoreFocus(saved) {
   if (!saved) return;
   const scope = saved.list ? $(`[data-list="${saved.list}"][data-index="${saved.index}"]`, dialog) : $('.template-main', dialog);
-  let node = scope && ($(`[name="${saved.name}"]`, scope) ?? $(`[data-template-action="${saved.name}"]`, scope));
+  let node = scope && ($(`[name="${saved.name}"]:checked`, scope) ?? $(`[name="${saved.name}"]`, scope) ?? $(`[data-template-action="${saved.name}"]`, scope));
   // A row moved to an end loses that direction's button: take the next one.
   if (node?.disabled) node = $('[data-template-action]:not(:disabled)', node.parentElement);
   if (!node) return;
@@ -162,13 +188,13 @@ function renderMain(focus = focusState()) {
       <label class="template-field"><span>Title max length</span><input class="form-input template-number" type="number" name="titleMax" value="${escape(draft.title.max ?? '')}" min="1" max="10000" step="1"></label>
     </div></section>
     <section class="template-section" aria-labelledby="template-fields-heading">
-      <div class="template-section-head"><h3 id="template-fields-heading">Fields</h3><p class="field-help">The text a card carries besides its title, in the order the editor shows them.</p></div>
-      ${draft.fields.length ? `<ol class="template-rows">${draft.fields.map((field, index) => fieldMarkup(field, index, draft.fields.length)).join('')}</ol>` : '<p class="template-empty">No fields yet. Cards of this template have a title and images only.</p>'}
-      <div class="template-section-actions">${control('add-field', 'Add field', 'plus', 'button small secondary', draft.fields.length >= maxFields ? 'disabled' : '')}${current()?.builtin ? control('restore-builtin', 'Restore built-in fields', null, 'text-button') : ''}</div>
+      <div class="template-section-head"><h3 id="template-fields-heading">Fields</h3></div>
+      ${draft.fields.length ? `<ol class="template-rows">${draft.fields.map((field, index) => fieldMarkup(field, index, draft.fields.length)).join('')}</ol>` : '<p class="template-empty">No fields. Cards have a title and images only.</p>'}
+      <div class="template-section-actions">${control('add-field', 'Add field', 'plus', 'button small secondary', draft.fields.length >= maxFields ? 'disabled' : '')}</div>
     </section>
     <section class="template-section" aria-labelledby="template-roles-heading">
-      <div class="template-section-head"><h3 id="template-roles-heading">Image roles</h3><p class="field-help">Labels for a card's images besides the display image, so agents know which is which.</p></div>
-      ${draft.imageRoles.length ? `<ol class="template-rows">${draft.imageRoles.map((role, index) => roleMarkup(role, index, draft.imageRoles.length)).join('')}</ol>` : '<p class="template-empty">No extra roles. Every card still has a display image.</p>'}
+      <div class="template-section-head"><h3 id="template-roles-heading">Image roles</h3></div>
+      ${draft.imageRoles.length ? `<ol class="template-rows">${draft.imageRoles.map((role, index) => roleMarkup(role, index, draft.imageRoles.length)).join('')}</ol>` : '<p class="template-empty">No extra roles. Cards still have a display image.</p>'}
       <div class="template-section-actions">${control('add-role', 'Add image role', 'plus', 'button small secondary', draft.imageRoles.length >= maxImageRoles ? 'disabled' : '')}</div>
     </section>`;
   restoreFocus(focus);
@@ -178,12 +204,14 @@ function renderFooter() {
   const status = $('#template-status', dialog);
   const dirty = isDirty();
   status.textContent = busy ? 'Saving…' : problems.length ? `${plural(problems.length, 'problem')} to fix before saving`
-    : stale ? 'This template changed in another tab. Your draft is kept: Revert loads the newer version, Save replaces it.'
+    : stale ? 'Changed in another tab · Revert loads it, Save replaces it'
       : dirty ? 'Unsaved changes · Ctrl+S saves' : selected ? 'Saved' : 'Not saved yet';
   status.classList.toggle('template-dirty', !busy && !problems.length && (dirty || stale));
   status.classList.toggle('template-invalid', !busy && problems.length > 0);
   const disabled = busy ? 'disabled' : '';
-  $('.template-footer-actions', dialog).innerHTML = `${selected ? control('delete', 'Delete', 'trash', 'text-button danger', disabled) : ''}${selected && dirty ? control('revert', 'Revert', null, 'button secondary', disabled) : ''}${control('close', dirty ? 'Cancel' : 'Close', null, 'button secondary', disabled)}${control('save', 'Save', 'check', 'button primary', busy || (selected && !dirty) ? 'disabled' : '')}`;
+  const extras = `${current()?.builtin ? control('restore-builtin', 'Restore built-in fields', 'undo', 'text-button', disabled) : ''}${selected ? control('delete', 'Delete template', 'trash', 'text-button danger', disabled) : ''}`;
+  const more = extras ? `<details class="template-more"><summary class="icon-button" aria-label="More template actions" title="More">${icon('more')}</summary><div class="template-menu">${extras}</div></details>` : '';
+  $('.template-footer-actions', dialog).innerHTML = `${more}${selected && dirty ? control('revert', 'Revert', null, 'button secondary', disabled) : ''}${control('close', dirty ? 'Cancel' : 'Close', null, 'button secondary', disabled)}${control('save', 'Save', 'check', 'button primary', busy || (selected && !dirty) ? 'disabled' : '')}`;
 }
 
 // Applies a control's value to the draft. Returns true when other controls
@@ -200,7 +228,7 @@ function applyEdit(target) {
     return false;
   }
   const { list } = rowNode.dataset; const index = Number(rowNode.dataset.index); const row = draft[list][index];
-  if (name === 'label' || name === 'key') { row[name] = text; $('.template-row-title', rowNode).innerHTML = rowTitle(list, index); }
+  if (name === 'label' || name === 'key') row[name] = text;
   if (name === 'placeholder' || name === 'videoLabel') row[name] = text || undefined;
   if (name === 'max') row.max = number;
   if (name === 'control') {
@@ -213,6 +241,7 @@ function applyEdit(target) {
   if (name === 'header') row.placement = target.checked ? 'header' : undefined;
   if (name === 'hidden') row.editor = target.checked ? false : undefined;
   if (['copy', 'countWords', 'youtube'].includes(name)) row[name] = target.checked || undefined;
+  refreshTitle(rowNode);
   return false;
 }
 
@@ -286,13 +315,13 @@ if (dialog) {
   // Typing updates the draft in place; only the nav and footer re-render.
   dialog.addEventListener('input', (event) => {
     const { target } = event;
-    if (!draft || !target.name || target.type === 'checkbox' || target.tagName === 'SELECT') return;
+    if (!draft || !target.name || ['checkbox', 'radio'].includes(target.type) || target.tagName === 'SELECT') return;
     applyEdit(target);
     renderNav(); renderFooter();
   });
   dialog.addEventListener('change', (event) => {
     const { target } = event;
-    if (!draft || !target.name || !(target.type === 'checkbox' || target.tagName === 'SELECT')) return;
+    if (!draft || !target.name || !(['checkbox', 'radio'].includes(target.type) || target.tagName === 'SELECT')) return;
     if (applyEdit(target)) renderMain();
     renderNav(); renderFooter();
   });
@@ -307,12 +336,13 @@ if (dialog) {
     if (!row || row.locked || row.key || !row.label.trim()) return;
     row.key = rowNode.dataset.list === 'fields' ? fieldKeyFrom(row.label) : fieldKeyFrom(row.label).toLowerCase().slice(0, 30);
     $('[name="key"]', rowNode).value = row.key;
-    $('.template-row-title', rowNode).innerHTML = rowTitle(rowNode.dataset.list, Number(rowNode.dataset.index));
+    refreshTitle(rowNode);
   });
   dialog.addEventListener('click', (event) => {
     const target = event.target.closest('[data-template-action]');
     if (!target || !draft) return;
     const action = target.dataset.templateAction;
+    target.closest('details')?.removeAttribute('open');
     if (action === 'close') return close();
     if (busy) return;
     if (action === 'select' && target.dataset.id !== selected) guard(() => { load(target.dataset.id); render(); });
@@ -325,13 +355,20 @@ if (dialog) {
       draft.title = { ...youtubeVideoTemplate.title };
       draft.fields = youtubeVideoTemplate.fields.map((field) => fieldRow(field, lockedKeys.fields.has(field.key)));
       draft.imageRoles = youtubeVideoTemplate.imageRoles.map((role) => roleRow(role, lockedKeys.imageRoles.has(role.key)));
+      openField = null;
       renderMain(); renderNav(); renderFooter();
       toast('Built-in fields restored. Save to keep them.');
     }
     if (action === 'add-field' || action === 'add-role') {
       const list = action === 'add-field' ? 'fields' : 'imageRoles';
       draft[list].push(list === 'fields' ? fieldRow({ max: defaultMax.text }) : roleRow());
+      if (list === 'fields') openField = draft.fields.length - 1;
       renderMain({ name: 'label', list, index: draft[list].length - 1 }); renderNav(); renderFooter();
+    }
+    if (action === 'toggle') {
+      const index = Number(target.closest('[data-list]').dataset.index);
+      openField = openField === index ? null : index;
+      renderMain({ name: 'toggle', list: 'fields', index });
     }
     if (['move-up', 'move-down', 'remove'].includes(action)) {
       const rowNode = target.closest('[data-list]');
@@ -340,6 +377,11 @@ if (dialog) {
       const to = action === 'move-up' ? index - 1 : index + 1;
       if (action !== 'remove') rows.splice(to, 0, row);
       const at = action === 'remove' ? Math.min(index, rows.length - 1) : to;
+      // The open field stays open wherever it moves.
+      if (list === 'fields' && openField !== null) {
+        if (action === 'remove') openField = openField === index ? null : openField > index ? openField - 1 : openField;
+        else openField = openField === index ? to : openField === to ? index : openField;
+      }
       renderMain(rows.length ? { name: action, list, index: at } : null);
       if (!rows.length) $(`[data-template-action="${list === 'fields' ? 'add-field' : 'add-role'}"]`, dialog)?.focus();
       renderNav(); renderFooter();
