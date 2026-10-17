@@ -1,20 +1,22 @@
 import { createHash } from 'node:crypto';
-import { cardInstructions, configurationDiscovery as codexDiscovery, compileConfiguration as codexCompile, queuedConfigurationDecision as codexDecision, openConfiguredThread as codexOpen } from './codex-configuration.js';
+import { roleInstructions, configurationDiscovery as codexDiscovery, compileConfiguration as codexCompile, queuedConfigurationDecision as codexDecision, openConfiguredThread as codexOpen } from './codex-configuration.js';
 
 export async function configurationDiscovery(adapter, options, provider = 'codex') {
   return provider === 'codex' ? codexDiscovery(adapter, options) : adapter.discover(options);
 }
-export function compileConfiguration(selection, discovery, dynamicTools = [], provider = 'codex') {
-  if (provider === 'codex') return codexCompile(selection, discovery, dynamicTools);
-  const value = { provider, workspace: discovery.cwd, harness: discovery.harness.userAgent, selected: [], inventory: [],
-    instructions: selection.instructions ?? '', nativeOptions: { developerInstructions: [cardInstructions, selection.instructions].filter(Boolean).join('\n\n'), permissionMode: 'bypassPermissions', dynamicTools: structuredClone(dynamicTools) },
+// `role` names the agent's guidance (codex-configuration.js roleInstructions):
+// a card chat or lane run by default, or a project chat's flow builder.
+export function compileConfiguration(selection, discovery, dynamicTools = [], provider = 'codex', role = 'card') {
+  if (provider === 'codex') return codexCompile(selection, discovery, dynamicTools, role);
+  const value = { provider, workspace: discovery.cwd, harness: discovery.harness.userAgent, selected: [], inventory: [], ...(role === 'card' ? {} : { role }),
+    instructions: selection.instructions ?? '', nativeOptions: { developerInstructions: [roleInstructions[role] ?? roleInstructions.card, selection.instructions].filter(Boolean).join('\n\n'), permissionMode: 'bypassPermissions', dynamicTools: structuredClone(dynamicTools) },
     ...(discovery.protection ? { protection: discovery.protection } : {}), supported: discovery.protection?.supported !== false, reasons: discovery.protection?.supported === false ? [discovery.protection.reason] : [] };
   return { ...value, id: createHash('sha256').update(JSON.stringify(value)).digest('hex') };
 }
 export function queuedConfigurationDecision(frozen, selection, discovery) {
   if (selection.enabled === false) return { status: 'held', reason: 'This provider is disabled in Settings. Enable it before sending more prompts.' };
   if (frozen.provider === 'codex') return codexDecision(frozen, selection, discovery);
-  const current = compileConfiguration(selection, discovery, frozen.nativeOptions.dynamicTools ?? [], frozen.provider);
+  const current = compileConfiguration(selection, discovery, frozen.nativeOptions.dynamicTools ?? [], frozen.provider, frozen.role ?? 'card');
   if (!current.supported) return { status: 'held', reason: current.reasons.join(' ') };
   return current.id === frozen.id ? { status: 'ready' } : { status: 'held', reason: 'Claude guidance changed. Cancel or resubmit this prompt with the current settings.' };
 }

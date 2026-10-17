@@ -1,0 +1,28 @@
+# A project chat builds and changes flows through Frameboard tools
+
+Setting up a flow by hand means naming lanes, writing a playbook per lane, choosing routes, making a card template and a flow map. The user wants to describe the process instead ("a process for drafting emails to leads: research, draft, I review, send") and have it set up, and to come back to the same chat later to change it without opening each card, lane or file. Each project now has a **Chat** tab: a conversation with the **flow builder**, an agent role that reads the project and creates or changes its flows, lanes, lane playbooks, card templates, skills and example cards.
+
+- The builder acts only through tools (`flow-builder-tools.js`, implemented in `flow-builder.js`): `read_project`, `read_flow`, `read_template`, `create_flow`, `update_flow`, `delete_flow`, `create_lane`, `update_lane`, `delete_lane`, `write_playbook`, `set_routes`, `write_map`, `write_skill`, `delete_skill`, `create_template`, `update_template`, `delete_template` and `create_cards`. They reach the agent the way card tools do: as Codex dynamic tools and as the Claude SDK-hosted `frameboard` MCP server (ADR 0008). Every tool goes through the store methods the board uses, so playbook files, template rules, the activity log and other tabs see the builder's changes as they would a user's.
+- `create_flow` takes a whole flow in one call (lanes in order with their playbooks, a map, skills) and checks everything against the planned lanes and the card template before it writes anything, so a problem means nothing changed. With a `flowId` it rebuilds an existing flow that holds no cards, which is how a project's untouched starter flow becomes the one the user asked for instead of being joined by a second flow. Route, `creates:` and `template:` names are written as IDs, so lanes and templates can be renamed afterwards.
+- A project chat is its own small durable state (`store-project-chats.js`): one chat per project, conversations (one native session each, with the configuration frozen at its first turn so later turns resume it), the turns the user sent and their transcript items. `project-chat.js` runs one turn at a time per project through the same adapters, `compileConfiguration` and `openConfiguredThread` as card chats, with a new configuration **role** (`builder`) that supplies the builder's guidance in place of the card instructions. Card configurations carry no role, so their identities and resumable conversations are unchanged.
+- A turn's text is the user's message under a short summary of the project (its flows, lanes and IDs), so a simple request needs no `read_project` call. The builder's guidance tells it to ask a few questions when only a goal is given, to build in one call when the stages are named, and to summarize what exists afterwards.
+- Nothing resumes after a restart: an unfinished turn ends as interrupted and the next message continues the same native conversation. Stop interrupts the native turn. Fresh context starts a new native conversation and keeps the old one as history. Codex approval requests are declined with a note: the builder needs no commands or file changes.
+- The browser reloads the project's flows, lanes, templates and cards as the builder's writing tools run, so the sidebar and the board change while the reply streams.
+
+## Why a separate chat and role, not a card chat
+
+A card chat belongs to one card, sends card context and holds card-tool authority; its queue, proposals, Library inputs and lane-run result handling are all about one card. The builder works on the project's structure, needs none of that, and must not be able to edit cards' content. A separate store and worker keep the two authorities apart and keep card chats untouched. The native transports and configuration freezing are shared, so the builder runs inside the same retained-data boundary with the same provider settings.
+
+## Considered options
+
+- **A manifest the agent returns at the end** (like `scripts/demo-flows.mjs` installs). Deterministic, but one-shot: a later change would mean regenerating the whole flow, and the agent could not read what the user changed by hand. Tools let it inspect and make small changes.
+- **Granular tools only.** A flow of six lanes would take a dozen calls with partial states in between. `create_flow` keeps the common case to one checked call; the granular tools serve later changes.
+- **Letting the builder edit cards too.** Left out: cards are worked on by lane runs under the authority rules of ADR 0003; the builder only creates example cards.
+- **Deleting lanes and flows with cards.** The tools refuse unless the cards are moved (`moveCardsTo`), and the guidance says to ask the user. The board's own delete stays the way to lose cards on purpose.
+
+## Consequences
+
+- `compileConfiguration` and `queuedConfigurationDecision` take a role; a frozen configuration with `role: 'builder'` recompiles with the builder's guidance.
+- Schema version 25 adds `project_chats`, `project_chat_conversations`, `project_chat_turns`, `project_chat_items` and `project_chat_tool_calls`. Backups include them with the database.
+- The builder's changes are activity entries with actor `automation:project-chat:<turn ID>`; `tool_called` entries say which tool ran.
+- Exporting a flow on its own (ADR 0006) gains a second producer of flows that already write IDs into `routes:` and `creates:`.

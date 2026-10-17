@@ -25,6 +25,9 @@ function editableComposer(item) {
 }
 const activityListeners = new Set();
 export function onActivity(listener) { activityListeners.add(listener); }
+// Streaming deltas of other chats (the project chat) arrive on the same stream.
+const deltaListeners = new Set();
+export function onDelta(listener) { deltaListeners.add(listener); }
 let modelCatalog = []; let catalogLoading = null; let catalogRefreshPending = false;
 let selected = null; let navigation; let activity = []; let events = null; let activityTimer = null; let refreshTimer = null; let clockTimer;
 let hidden = preference('frameboard-chat-hidden') === 'true';
@@ -691,7 +694,11 @@ function connect(cursor) {
     if (entry.entity === 'chat' || entry.entity === 'card' || entry.entity === 'project') scheduleActivity();
     if ((entry.entity === 'chat' || entry.entity === 'card') && entry.entityId === selected) scheduleRefresh();
   });
-  events.addEventListener('delta', (event) => applyDelta(JSON.parse(event.data)));
+  events.addEventListener('delta', (event) => {
+    const delta = JSON.parse(event.data);
+    if (!delta.projectId) return applyDelta(delta);
+    for (const listener of deltaListeners) { try { listener(delta); } catch (error) { console.error(error); } }
+  });
   events.addEventListener('resync', () => { scheduleActivity(); scheduleRefresh(); });
   events.addEventListener('error', () => { reconnecting = true; });
   events.addEventListener('open', () => { if (reconnecting) { reconnecting = false; scheduleActivity(); scheduleRefresh(); } });

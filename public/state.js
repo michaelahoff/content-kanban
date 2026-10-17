@@ -150,6 +150,30 @@ export async function loadCards(projectId) {
   p.loaded = true;
 }
 
+// Takes the server's view of one project's flows, lanes and cards after
+// something else changed them (the project chat's flow builder, another
+// tab). Lane and card objects are kept where they exist, so unsaved edits
+// and open editors survive; a card with no local draft takes its saved state.
+export async function reloadProject(p) {
+  const { projects, flows, templates } = await request('/api/workspace');
+  if (templates) applyTemplates(templates);
+  const summary = projects.find((item) => item.id === p.id);
+  if (summary) p.cardCount = summary.cardCount;
+  const lanes = new Map(lanesOf(p).map((lane) => [lane.id, lane]));
+  const known = new Map(lanesOf(p).flatMap((lane) => lane.cards).map((card) => [card.id, card]));
+  const cards = p.loaded ? (await request(`${url('projects', p.id)}/cards`)).cards : null;
+  p.flows = flows.filter((entry) => entry.projectId === p.id).map(({ stages, ...rest }) => ({ ...rest, lanes: stages.map((stage) => {
+    const lane = Object.assign(lanes.get(stage.id) ?? toLane(stage), { name: stage.name, color: stage.color, position: stage.position, x: stage.x, y: stage.y, playbook: stage.playbook, flowId: stage.flowId });
+    if (cards) lane.cards = cards.filter((card) => card.stageId === stage.id).map((saved) => {
+      const local = known.get(saved.id);
+      if (!local) { rememberSaved(saved); return saved; }
+      if (!dirty.has(local.id)) { Object.assign(local, saved); rememberSaved(local); } else local.stageId = saved.stageId;
+      return local;
+    });
+    return lane;
+  }) }));
+}
+
 // Copies server-assigned timestamps onto the local card.
 function adopt(card, saved, contentSaved = false) {
   if (!dirty.has(card.id)) card.updatedAt = saved.updatedAt;

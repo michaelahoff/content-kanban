@@ -7,8 +7,16 @@ Frameboard is a content planning board. This glossary records the shared languag
 **Card chat**:
 A persistent conversation history associated with a single content card. Each card has one card chat, which receives manual prompts and lane runs and retains earlier conversations when fresh context is started.
 
+**Project chat**:
+A project's conversation with the flow builder, in the Chat tab beside its board and Library. Each message is one turn of the chosen provider; the conversation continues until fresh context is started. It is separate from card chats and holds no authority over cards' content.
+_Avoid_: Project assistant, setup wizard
+
+**Flow builder**:
+The agent role behind the project chat: it reads a project and creates or changes its flows, lanes, lane playbooks, card templates, skills and example cards through Frameboard tools, asking the user what it needs to know first. It never works on a card's content; lane runs do that.
+_Avoid_: Builder agent, flow generator
+
 **Fresh context**:
-A new primary agent conversation within a card chat, started by changing its primary provider or explicitly discarding the current working context. Earlier conversations remain in the card chat's history.
+A new primary agent conversation within a card chat, started by changing its primary provider or explicitly discarding the current working context. Earlier conversations remain in the card chat's history. A project chat has fresh context too: a new native conversation, with the earlier one kept as history.
 
 **Previous conversation**:
 The retained messages and generated versions from a card chat conversation that ended when fresh context was started.

@@ -19,6 +19,7 @@ import { createRetainedStorage } from './retained-storage.js';
 import { createLibrary, deliverableVersions } from './library.js';
 import { savedOutputsMigration, createSavedOutputStore } from './store-saved-outputs.js';
 import { libraryDraftsMigration, createDraftStore } from './store-drafts.js';
+import { projectChatsMigration, createProjectChatStore } from './store-project-chats.js';
 import { uniqueSources } from './public/library-format.js';
 
 export const imageIdPattern = /^[a-f0-9-]{36}\.(png|jpg|webp|gif|avif)$/;
@@ -355,7 +356,7 @@ const migrations = [`
   -- What each delivery attempt actually did with a submission's inputs.
   ALTER TABLE chat_attempts ADD COLUMN delivery TEXT;
 `, foldersMigration, savedOutputsMigration, templatesMigration, schemaRepairMigration, projectFlowsMigration, cardLibraryMigration, graphFlowsMigration,
-  createdCardsMigration];
+  createdCardsMigration, projectChatsMigration];
 
 // Delivery was already v16 on an earlier feature branch, so the released v17
 // entry (this index) runs only where that column is still missing.
@@ -861,6 +862,8 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
   }
 
   const chats = createChatStore({ all, get, run, transaction, retainedCard, requireCard, recordChange, now, templateFor: templates.forCard });
+  // A project's chat with the flow builder (store-project-chats.js).
+  const projectChats = createProjectChatStore({ all, get, run, transaction, recordChange, now, requireProject });
 
   const protection = createProtectionStore({ all, get, run, transaction, requireCard, retainedCard, recordChange, now, templateFor: templates.forCard,
     laneEntry: (cardId) => api.laneRuns.entry(cardId),
@@ -887,6 +890,7 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
     templates,
     transaction,
     chats,
+    projectChats,
     protection,
     images,
     savedOutputs,

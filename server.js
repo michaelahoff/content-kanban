@@ -11,6 +11,7 @@ import { configurationDiscovery, compileConfiguration, mandatoryBehavior } from 
 import { createChatService } from './chat-service.js';
 import { createChatWorker } from './chat-worker.js';
 import { createLaneRunner } from './lane-runner.js';
+import { createProjectChat } from './project-chat.js';
 import { createEventStream } from './event-stream.js';
 import { imageFormat, storeImage, verifiedImage, maxImageBytes } from './image-files.js';
 import { lockDataDirectory } from './data-lock.js';
@@ -125,7 +126,7 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
   onCardEvent, codexAdapter, claudeAdapter, providerBackoffMs, streamReplayLimit, backupCheckpoint, retainedCheckpoint, publisher: givenPublisher } = {}) {
   const lock = await lockDataDirectory(dataDir);
   dataDir = lock.dataDir;
-  let store; let worker; let stream; let lanes; let maintenance;
+  let store; let worker; let stream; let lanes; let maintenance; let projectChat;
   try {
     const imagesDir = path.join(dataDir, 'images');
     await mkdir(imagesDir, { recursive: true });
@@ -155,17 +156,19 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
     // Tests give their own, such as one with a stand-in rsync.
     const publisher = givenPublisher ?? createPublisher({ dataDir });
     lanes = createLaneRunner({ store, service: chat, providers, ctx: currentUser(), paused, publisher });
+    // The project chat: the flow builder, one native turn per message.
+    projectChat = createProjectChat({ store, adapters, providers, ctx: currentUser(), dataDir, paused, onDelta: (delta) => stream.delta(currentUser().workspaceId, delta) });
     // Native files are collected from the home the harness reports in use.
     const codexHome = async () => {
       try { return (await codex.discover({})).harness.codexHome; }
       catch { return process.env.CODEX_HOME || path.join(homedir(), '.codex'); }
     };
-    maintenance = createMaintenance({ store, ctx: currentUser(), worker, lanes, dataDir, codexHome,
+    maintenance = createMaintenance({ store, ctx: currentUser(), worker, lanes, projectChat, dataDir, codexHome,
       settle: async () => { await chat.drain(); await providers.drain(); },
       exportWorkspace: (options) => createBackup({ ...options, checkpoint: backupCheckpoint }) });
     // Running work may finish during maintenance: Stop and request answers stay
     // available. Every other mutating route, including new ones, is refused.
-    const finishesRunningWork = (pathname) => /^\/api\/cards\/[^/]+\/chat\/(stop|answer)$/.test(pathname);
+    const finishesRunningWork = (pathname) => /^\/api\/(cards\/[^/]+\/chat\/(stop|answer)|projects\/[^/]+\/chat\/stop)$/.test(pathname);
     lanes.wake();
     const flowFor = (ctx, flowId) => {
       const flow = store.workspace(ctx).flows.find((entry) => entry.id === flowId);
@@ -231,6 +234,12 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
       ['POST', /^\/api\/projects$/, async (ctx, req) => store.createProject(ctx, await read(req)), 201],
       ['PATCH', /^\/api\/projects\/([^/]+)$/, async (ctx, req, id) => store.updateProject(ctx, id, await read(req))],
       ['DELETE', /^\/api\/projects\/([^/]+)$/, (ctx, req, id) => (store.deleteProject(ctx, id), { ok: true })],
+      // The project chat (project-chat.js): messages to the flow builder.
+      ['GET', /^\/api\/projects\/([^/]+)\/chat$/, (ctx, req, id) => (projectChat.flush(id), store.projectChats.snapshot(ctx, id))],
+      ['PUT', /^\/api\/projects\/([^/]+)\/chat$/, async (ctx, req, id) => store.projectChats.saveSettings(ctx, id, await read(req))],
+      ['POST', /^\/api\/projects\/([^/]+)\/chat\/turns$/, async (ctx, req, id) => codexAction(async () => projectChat.send(ctx, id, await read(req))), 201],
+      ['POST', /^\/api\/projects\/([^/]+)\/chat\/stop$/, (ctx, req, id) => projectChat.stop(ctx, id)],
+      ['POST', /^\/api\/projects\/([^/]+)\/chat\/fresh$/, (ctx, req, id) => projectChat.fresh(ctx, id)],
       ['POST', /^\/api\/projects\/([^/]+)\/archive$/, (ctx, req, id) => store.archiveProject(ctx, id)],
       ['POST', /^\/api\/projects\/([^/]+)\/unarchive$/, (ctx, req, id) => store.unarchiveProject(ctx, id)],
       ['GET', /^\/api\/projects\/([^/]+)\/library$/, (ctx, req, id) => store.library.list(ctx, id)],
@@ -433,7 +442,7 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
     server.close = (callback) => {
       if (!closing) {
         const exporting = maintenance.close();
-        worker.close(); lanes.close(); stream.close();
+        worker.close(); lanes.close(); projectChat.close(); stream.close();
         const stopped = Promise.all([codex.close(), claude.close()]).catch((error) => console.error(error));
         closing = new Promise((resolve) => close(resolve)).then(async (error) => {
           await stopped;
@@ -453,7 +462,7 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
     };
     return server;
   } catch (error) {
-    worker?.close(); lanes?.close(); stream?.close(); store?.close(); lock.release();
+    worker?.close(); lanes?.close(); projectChat?.close(); stream?.close(); store?.close(); lock.release();
     throw error;
   }
 }

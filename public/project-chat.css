@@ -1,0 +1,29 @@
+/* The project chat tab: a transcript with the flow builder above a composer,
+   using the card chat's transcript and composer styles (chat.css). */
+@layer board {
+  .project-chat { display: flex; flex-direction: column; flex: 1; min-height: 0; width: min(100% - 64px, 920px); margin: 0 32px 20px; height: calc(100dvh - 190px); }
+  .project-chat-head { display: flex; align-items: flex-start; gap: 12px; padding: 18px 2px 10px; }
+  .project-chat-head h2 { margin: 0 0 4px; font-family: var(--body-font); font-size: 18px; font-weight: 600; }
+  .project-chat-sub { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.6; max-width: 70ch; }
+  .project-chat-sub .help-button { width: 22px; height: 22px; padding: 3px; vertical-align: middle; }
+  .project-chat-head > .icon-button { margin-left: auto; flex-shrink: 0; }
+  .project-chat .chat-transcript { border: 1px solid var(--border); border-radius: 14px 14px 0 0; background: var(--surface); }
+  .project-chat #project-chat-progress { border-inline: 1px solid var(--border); }
+  .project-chat #project-chat-progress[hidden] { display: none; }
+  .project-chat-composer { border: 1px solid var(--border); border-top: 0; border-radius: 0 0 14px 14px; max-height: none; }
+  .project-chat-composer[hidden] { display: none; }
+  #project-chat-error { padding: 10px 14px; margin-bottom: 8px; border: 1px solid var(--danger-line); border-radius: 12px; background: var(--danger-wash); color: var(--danger); font-size: 13px; overflow-wrap: anywhere; }
+  #project-chat-error[hidden] { display: none; }
+  #project-chat-prompt { width: 100%; min-height: 96px; max-height: 320px; resize: vertical; background: var(--field); border: 1px solid var(--field-border); border-radius: 12px; color: var(--text); font: inherit; font-size: 14px; line-height: 1.6; padding: 12px 14px; }
+  .project-chat-key { margin-right: auto; margin-top: 0; white-space: nowrap; }
+  #project-chat-provider { flex: 0 1 90px; }
+  #project-chat-model { flex: 1 1 100px; max-width: 220px; }
+  .project-chat-empty { max-width: 62ch; margin: 24px auto; color: var(--muted); font-size: 14px; line-height: 1.6; display: grid; gap: 10px; }
+  .project-chat-example { text-align: left; padding: 10px 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--raised); color: var(--text); font: inherit; font-size: 13px; line-height: 1.5; cursor: pointer; }
+  .project-chat-example:hover { background: var(--raised-hover); }
+  .project-chat-dot { width: 8px; height: 8px; min-width: 0; padding: 0; border-radius: 50%; background: var(--info); animation: chat-working 2s ease-in-out infinite; }
+}
+@layer responsive {
+  @media (max-width: 1200px) { .project-chat { margin-inline: 24px; width: calc(100% - 48px); } }
+  @media (max-width: 620px) { .project-chat { margin-inline: 12px; width: calc(100% - 24px); height: calc(100dvh - 230px); } .project-chat-key { display: none; } }
+}
