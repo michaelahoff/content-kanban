@@ -113,6 +113,29 @@ _Avoid_: Artifact, attachment
 An exact retained snapshot of something a card chat produced, kept only by an explicit save: reply text saved with Save as document, a document a lane result declares with its exact text, or a finished file (including a rendered image) in the card workspace that a lane result or the user's Save output names by its path. A file is saved only from a response that could write files, never by scanning the workspace or because a reply mentions it, and a failed file save can be retried only with the exact bytes first verified. It records its card chat, conversation, submission, delivery attempt, actual provider and creation method, and keeps the context that was supplied apart from any derivation the agent declared; what is not known stays unknown. Saving is separate from producing it and from any card effect. A stopped, archived or restored attempt cannot save one, though the user can still save its retained text. Saved outputs outlive the card workspace, the card, fresh context and archive. Only the user can promote one into the Project Library. A saved output can be reused, as its exact version, in later prompts of its own card chat, including after fresh context; other cards reuse it only once the user saves it to the Library. Reusing it never adopts, applies or promotes it.
 _Avoid_: Artifact, attachment, export
 
+**Created card**:
+A card that a lane run created, under its playbook's `creates:` setting, placed in the lane and given the template that setting names. It records the card whose run created it as its origin card. A created card goes through its lane's playbook on its own, as if it had been moved there.
+_Avoid_: Child card, spawned card, subtask
+
+**Origin card**:
+The card whose lane run created a created card. The editor shows a card's origin and the cards it created.
+_Avoid_: Parent card
+
+**Lane action**:
+Work Frameboard does itself when a card enters a lane, named by the playbook's `action:` setting, in place of an agent run. It is requested, shown and cancelled as a lane run. The first action is publish.
+_Avoid_: Hook, automation step, script
+
+**Publish target**:
+Where a publish action sends a card's saved outputs: a site folder Frameboard serves under `/sites/`, or a remote `user@host:/path` sent with rsync. Set with `publish.to`.
+_Avoid_: Deploy target, destination server
+
+**Transcript field**:
+The one text area of a card template marked `transcript`, which the YouTube lookup fills with the video's captions as plain text. Frameboard fetches captions only; it never transcribes audio.
+_Avoid_: Subtitles field, captions
+
+**Preview**:
+A saved output, Library file or published page shown inline from the app: images as images, text as text, and HTML as a sandboxed page that cannot reach the app or the network. Opening a preview is not the same as adopting, promoting or publishing the file.
+
 **Project Library**:
 A project's collection of project assets, shown in its Library tab beside the board. Selecting assets for prompts is separate from keeping them in the Library.
 

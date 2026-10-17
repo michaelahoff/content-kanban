@@ -103,18 +103,31 @@ export const folderHolders = ({ folders, assets }, folderId) => [
   ...assets.filter((asset) => asset.folderId === folderId).map((asset) => ({ kind: 'asset', id: asset.id, filename: asset.filename })),
 ];
 
-// Only these types are shown inline: images by the browser, text as plain text.
+// Only these types are shown inline: images by the browser, text as plain
+// text, and HTML as a sandboxed page (a mockup or a rendered post).
 const previewTypes = {
   png: ['image', 'image/png'], jpg: ['image', 'image/jpeg'], jpeg: ['image', 'image/jpeg'], gif: ['image', 'image/gif'], webp: ['image', 'image/webp'], avif: ['image', 'image/avif'],
-  ...Object.fromEntries(['txt', 'md', 'markdown', 'csv', 'tsv', 'json', 'srt', 'vtt', 'yaml', 'yml', 'log'].map((extension) => [extension, ['text', 'text/plain; charset=utf-8']])),
+  svg: ['image', 'image/svg+xml'], html: ['html', 'text/html; charset=utf-8'], htm: ['html', 'text/html; charset=utf-8'],
+  ...Object.fromEntries(['txt', 'md', 'markdown', 'csv', 'tsv', 'json', 'srt', 'vtt', 'yaml', 'yml', 'log', 'css', 'js', 'mjs'].map((extension) => [extension, ['text', 'text/plain; charset=utf-8']])),
 };
 export function previewType(filename) {
   const found = previewTypes[splitExtension(filename)[1].toLowerCase()];
   return found ? { kind: found[0], type: found[1] } : null;
 }
 // A version saved from the document editor is UTF-8 text whatever the file is
-// named; uploaded bytes go by extension.
-export const assetPreview = (filename, version) => version?.written ? { kind: 'text', type: 'text/plain; charset=utf-8' } : previewType(filename);
+// named, except that a document named .html renders as a page; uploaded bytes
+// go by extension.
+export function assetPreview(filename, version) {
+  const found = previewType(filename);
+  return version?.written && found?.kind !== 'html' ? { kind: 'text', type: 'text/plain; charset=utf-8' } : found;
+}
+// The Content-Security-Policy an inline preview is served with. Everything is
+// sandboxed into an opaque origin. An HTML page may use its own inline styles
+// and scripts, images, media and fonts, but cannot fetch anything, submit a
+// form, frame another page or reach this app's API.
+export const previewPolicy = (kind) => (kind === 'html'
+  ? "default-src 'none'; img-src 'self' data: blob: https:; media-src data: blob: https:; style-src 'unsafe-inline' https:; font-src data: https:; script-src 'unsafe-inline'; connect-src 'none'; form-action 'none'; frame-src 'none'; frame-ancestors 'self'; sandbox allow-scripts"
+  : kind === 'image' ? "default-src 'none'; frame-ancestors 'self'; sandbox" : "default-src 'none'; sandbox");
 
 // Common general-file formats, recognized by signature parts ([offset, bytes])
 // that must all match, for honest descriptions. `media` names a modality no
