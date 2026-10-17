@@ -4,7 +4,7 @@ import { $, escape, icon, button, iconButton, imageURL, wordCount, lastEditedMar
 import { state, locateCard, templateOf, cardChanged, flushCards, onCardFieldsChange, beginCardEditing, endCardEditing } from './state.js';
 import { renderBoard, renderStatus, archivedNotice } from './board.js';
 import { request } from './api.js';
-import { fieldInputId, editorFields } from './card-template.js';
+import { fieldInputId, editorFields, transcriptField } from './card-template.js';
 import { mountChat, unmountChat } from './chat.js';
 import { cardPlaybookMarkup, notesMarkup, mountCardPlaybook, renderBar } from './card-playbook.js';
 import { cardLibraryMarkup, mountCardLibrary, renderCardLibrary } from './card-library.js';
@@ -85,7 +85,7 @@ const youtubePattern = /^https?:\/\/(www\.|m\.|music\.)?(youtube\.com|youtube-no
 // The link row under a YouTube-flagged field: the lookup button and the open link.
 export function originalVideoMarkup(card, field) {
   const value = (card.fields[field.key] ?? '').trim();
-  const fetchButton = youtubePattern.test(value) ? button('fetch-youtube', 'Get title & thumbnail', 'download', 'button small primary', `data-field="${escape(field.key)}"`) : '';
+  const fetchButton = youtubePattern.test(value) ? button('fetch-youtube', transcriptField(templateOf(card)) ? 'Get title, thumbnail & transcript' : 'Get title & thumbnail', 'download', 'button small primary', `data-field="${escape(field.key)}"`) : '';
   return `${fetchButton}${videoLinkMarkup(value, field.videoLabel || field.label)}`;
 }
 // The template's field flagged for YouTube lookups, if it has one.
@@ -95,6 +95,21 @@ const youtubeField = (template) => template.fields.find((field) => field.youtube
 function laneOptions(p, current) {
   const options = (lanes) => lanes.map((item) => `<option value="${item.id}" ${item.id === current.id ? 'selected' : ''}>${escape(item.name)}</option>`).join('');
   return p.flows.length > 1 ? p.flows.map((f) => `<optgroup label="${escape(f.name)}">${options(f.lanes)}</optgroup>`).join('') : options(p.flows[0].lanes);
+}
+// Where a card came from and what it made. A lane run that creates cards gives
+// each the id of the card it ran on (parentId). Only cards loaded in the
+// project are named; a deleted origin shows nothing. The list reuses the
+// chat's ⋯ menu, which already closes on an outside click or Escape.
+function lineageMarkup(card, p) {
+  const cards = p.flows.flatMap((f) => f.lanes.flatMap((lane) => lane.cards));
+  const origin = card.parentId ? cards.find((item) => item.id === card.parentId) : null;
+  const made = cards.filter((item) => item.parentId === card.id);
+  const name = (item) => escape(item.title || 'Untitled card');
+  const chips = [
+    origin ? `<button type="button" class="chip" data-action="open-card" data-id="${escape(origin.id)}" title="Open the card whose lane run created this one">${icon('left')}<span class="lineage-name">Created from: ${name(origin)}</span></button>` : '',
+    made.length ? `<details class="chat-menu editor-created"><summary aria-label="Cards created from this one" title="Cards created by this card’s lane runs">Created ${made.length} ${made.length === 1 ? 'card' : 'cards'}${icon('down')}</summary><div class="chat-menu-list">${made.map((item) => `<button type="button" class="chat-menu-item" data-action="open-card" data-id="${escape(item.id)}">${name(item)}</button>`).join('')}</div></details>` : '',
+  ].join('');
+  return chips ? `<div class="editor-lineage">${chips}</div>` : '';
 }
 export function openCard(targetId) {
   const found = locateCard(targetId);
@@ -110,6 +125,7 @@ export function openCard(targetId) {
   // Hidden fields (editor: false) stay out of the editor, header included.
   const fields = editorFields(template);
   cardDialog.innerHTML = `<div class="editor-header"><div class="editor-breadcrumb">${icon('board')}<label class="sr-only" for="card-lane">Move card to lane</label><select id="card-lane">${laneOptions(p, lane)}</select></div><div class="editor-header-right">${iconButton('undo-move', 'Undo last move', 'undo', 'data-undo-move="card" disabled')}<span class="save-status" data-save-status></span>${iconButton('close-card', 'Close card editor', 'close')}</div></div>
+    ${lineageMarkup(card, p)}
     <div id="editor-save-error" class="error-banner" role="alert" hidden></div>
     ${fields.filter((field) => field.placement === 'header').map((field) => editorField(field, card)).join('')}
     <div class="editor-title"><label class="sr-only" for="card-title">${escape(template.title.label)}</label><input id="card-title" placeholder="Untitled card" maxlength="${template.title.max}" value="${escape(card.title)}" autocomplete="off"></div>
@@ -232,7 +248,8 @@ export async function fetchYoutube(target) {
   state.uploads++;
   renderStatus();
   try {
-    const result = await request('/api/youtube', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url }) });
+    const wantsTranscript = Boolean(transcriptField(templateOf(card)));
+    const result = await request('/api/youtube', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(wantsTranscript ? { url, transcript: true } : { url }) });
     const found = locateCard(targetCardId);
     if (!found) return;
     const current = found.card;
@@ -255,15 +272,35 @@ export async function fetchYoutube(target) {
     const titleField = template.fields.find((item) => item.key === 'originalVideoTitle');
     if (titleField) current.fields.originalVideoTitle = result.title.slice(0, titleField.max);
     if (!current.title.trim()) current.title = result.title.slice(0, template.title.max);
+    // The captions fill the template's transcript field, trimmed to its limit. A transcript problem is
+    // reported beside the title and thumbnail, which are kept; text already in the field needs a yes.
+    const transcriptTarget = wantsTranscript ? transcriptField(template) : null;
+    let message = 'Title and thumbnail added.';
+    if (transcriptTarget && result.transcriptError) message += ` ${result.transcriptError}`;
+    else if (transcriptTarget && result.transcript) {
+      const { key, label, max } = transcriptTarget;
+      const text = result.transcript.text.slice(0, max).trimEnd();
+      if ((current.fields[key] ?? '').trim() && !confirm(`${label} already has text. Replace it with the video's transcript?`)) message += ` ${label} was left as it was.`;
+      else {
+        current.fields[key] = text;
+        message = result.transcript.text.length > max ? `Title, thumbnail and transcript added. The transcript was shortened to fit ${label}'s limit of ${max.toLocaleString()} characters.` : 'Title, thumbnail and transcript added.';
+      }
+    }
     cardChanged(current);
     if (state.cardId === targetCardId) {
       $('#card-title').value = current.title;
       const videoTitle = $(`#${fieldInputId('originalVideoTitle')}`);
       if (videoTitle) videoTitle.value = current.fields.originalVideoTitle;
+      const transcriptInput = transcriptTarget && $(`#${fieldInputId(transcriptTarget.key)}`);
+      if (transcriptInput) {
+        transcriptInput.value = current.fields[transcriptTarget.key] ?? '';
+        const count = transcriptTarget.countWords && $(`#${transcriptTarget.key}-count`);
+        if (count) count.textContent = `${wordCount(transcriptInput.value).toLocaleString()} words`;
+      }
       renderImages();
     }
     renderBoard();
-    toast('Title and thumbnail added.');
+    toast(message);
   } catch (error) {
     toast(error.message);
   } finally {

@@ -282,7 +282,9 @@ test('uploads stream over HTTP with only a filename, operation and collision cho
 test('only images and plain text preview inline; other files always download', () => {
   assert.deepEqual(previewType('Logo.PNG'), { kind: 'image', type: 'image/png' });
   assert.deepEqual(previewType('script.md'), { kind: 'text', type: 'text/plain; charset=utf-8' });
-  for (const name of ['page.html', 'vector.svg', 'clip.mp4', 'README', '.png', 'archive.zip']) assert.equal(previewType(name), null, name);
+  assert.deepEqual(previewType('page.html'), { kind: 'html', type: 'text/html; charset=utf-8' });
+  assert.deepEqual(previewType('vector.svg'), { kind: 'image', type: 'image/svg+xml' });
+  for (const name of ['clip.mp4', 'README', '.png', 'archive.zip']) assert.equal(previewType(name), null, name);
 });
 
 test('a disconnected upload saves nothing and retries; archived and maintenance states refuse Library changes', async (t) => {
@@ -688,6 +690,7 @@ test('previews and editing follow the current versionâ€™s content, not the fileâ
   const binary = await f.upload('README', Buffer.from([0xff, 0]), { collision: 'replace', assetId: uploaded.asset.id });
   assert.equal(assetPreview('README', binary.asset.current), null);
   assert.equal(assetPreview('ref.png', { written: true }).kind, 'text', 'a written document named like an image is text');
+  assert.equal(assetPreview('mockup.html', { written: true }).kind, 'html', 'a written document named .html renders as a sandboxed page');
   assert.equal(assetPreview('ref.png', { written: false }).kind, 'image');
 });
 

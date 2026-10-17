@@ -7,8 +7,11 @@
 // A definition is { id, name, title: { label, max }, fields: [...], imageRoles: [...] }.
 // Field: { key, label, control: 'text' | 'textarea' | 'url', max, placeholder?,
 //   placement?: 'header', copy?: true, countWords?: true, editor?: false,
-//   youtube?: true, videoLabel? }. Keys are the identity of a field: labels
-// can change, keys never do, because card values are stored by key.
+//   youtube?: true, videoLabel?, transcript?: true }. Keys are the identity of
+//   a field: labels can change, keys never do, because card values are stored
+//   by key. `youtube` marks the URL field whose video is looked up; at most
+//   one text area may be `transcript`, which that lookup fills with the
+//   video's captions as plain text.
 // Image role: { key, label }. The display image is always role "cover".
 
 export const controls = ['text', 'textarea', 'url'];
@@ -95,9 +98,11 @@ export function validateTemplate(input, { locked = [] } = {}) {
     if (raw.placeholder !== undefined && !isText(raw.placeholder, 500)) errors.push(`${where}: placeholders can be up to 500 characters.`);
     if (raw.placement !== undefined && raw.placement !== null && raw.placement !== 'header') errors.push(`${where}: placement must be header or left out.`);
     if (raw.videoLabel !== undefined && !isText(raw.videoLabel, 100)) errors.push(`${where}: the video label can be up to 100 characters.`);
-    for (const flag of ['copy', 'countWords', 'youtube']) if (raw[flag] !== undefined && typeof raw[flag] !== 'boolean') errors.push(`${where}: ${flag} must be true or false.`);
+    for (const flag of ['copy', 'countWords', 'youtube', 'transcript']) if (raw[flag] !== undefined && typeof raw[flag] !== 'boolean') errors.push(`${where}: ${flag} must be true or false.`);
     if (raw.editor !== undefined && raw.editor !== true && raw.editor !== false) errors.push(`${where}: editor must be true or false.`);
     if (raw.youtube && control !== 'url') errors.push(`${where}: only a url field can fetch from YouTube.`);
+    if (raw.transcript && control !== 'textarea') errors.push(`${where}: only a text area can receive a YouTube transcript.`);
+    if (raw.transcript && fields.some((other) => other.transcript)) errors.push(`${where}: only one field can receive the YouTube transcript.`);
     const field = { key, label, control, max };
     if (raw.placeholder) field.placeholder = raw.placeholder;
     if (raw.placement === 'header') field.placement = 'header';
@@ -105,6 +110,7 @@ export function validateTemplate(input, { locked = [] } = {}) {
     if (raw.countWords) field.countWords = true;
     if (raw.editor === false) field.editor = false;
     if (raw.youtube) field.youtube = true;
+    if (raw.transcript) field.transcript = true;
     if (raw.videoLabel) field.videoLabel = raw.videoLabel;
     fields.push(field);
   }
@@ -160,6 +166,8 @@ export function emptyImageRoles(template) {
 export function setFields(template) {
   return [{ key: 'title', ...template.title, control: 'text' }, ...template.fields];
 }
+// The text area that receives the YouTube transcript, if the template has one.
+export const transcriptField = (template) => template.fields.find((field) => field.transcript) ?? null;
 // Fields the card editor shows and search reads.
 export function editorFields(template) {
   return template.fields.filter((field) => field.editor !== false);

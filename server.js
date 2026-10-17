@@ -17,8 +17,10 @@ import { lockDataDirectory } from './data-lock.js';
 import { createBackup } from './backup.js';
 import { createMaintenance, maintenanceMessage } from './maintenance.js';
 import { homedir } from 'node:os';
-import { assetPreview } from './public/library-format.js';
+import { assetPreview, previewPolicy } from './public/library-format.js';
 import { assetSources } from './public/playbook-format.js';
+import { fetchYoutubeTranscript } from './youtube-transcript.js';
+import { createPublisher } from './publish.js';
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 const imageTypes = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif', 'image/avif': 'avif' };
@@ -59,7 +61,7 @@ const disposition = (kind, filename) => `${kind}; filename="${filename.replace(/
 function sendRetained(res, { size, filename, bytes, inline }) {
   res.writeHead(200, { 'Content-Type': inline ? inline.type : 'application/octet-stream', 'Content-Length': size,
     'Content-Disposition': disposition(inline ? 'inline' : 'attachment', filename),
-    'Content-Security-Policy': "default-src 'none'; sandbox", 'Cache-Control': 'private, max-age=31536000, immutable' });
+    'Content-Security-Policy': previewPolicy(inline ? inline.kind : null), 'Cache-Control': 'private, max-age=31536000, immutable' });
   bytes.once('error', () => res.destroy());
   res.once('close', () => bytes.destroy());
   return bytes.pipe(res);
@@ -112,7 +114,15 @@ async function json(req, limit) {
   catch (error) { if (error.status) throw error; throw Object.assign(new Error('Invalid JSON.'), { status: 400 }); }
 }
 
-export async function createApp({ dataDir = process.env.DATA_DIR || path.join(root, 'data'), fetch: fetchImpl = globalThis.fetch, onCardEvent, codexAdapter, claudeAdapter, providerBackoffMs, streamReplayLimit, backupCheckpoint, retainedCheckpoint } = {}) {
+// Hosts the board answers to besides localhost, such as the Tailscale name
+// `tailscale serve` forwards (FRAMEBOARD_HOSTS=zephyr.example.ts.net:8443).
+// The server still listens on this computer only; a listed host reaches it
+// through a local reverse proxy that sets X-Forwarded-Proto.
+const configuredHosts = () => (process.env.FRAMEBOARD_HOSTS ?? '').split(',').map((host) => host.trim().toLowerCase()).filter(Boolean);
+const localHost = /^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/;
+
+export async function createApp({ dataDir = process.env.DATA_DIR || path.join(root, 'data'), fetch: fetchImpl = globalThis.fetch, transcript = fetchYoutubeTranscript, allowedHosts = configuredHosts(),
+  onCardEvent, codexAdapter, claudeAdapter, providerBackoffMs, streamReplayLimit, backupCheckpoint, retainedCheckpoint, publisher: givenPublisher } = {}) {
   const lock = await lockDataDirectory(dataDir);
   dataDir = lock.dataDir;
   let store; let worker; let stream; let lanes; let maintenance;
@@ -141,7 +151,10 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
     const paused = () => Boolean(maintenance?.active);
     worker = createChatWorker({ store, adapter: codex, adapters, service: chat, ctx: currentUser(), providerBackoffMs, paused,
       onDelta: (delta) => stream.delta(currentUser().workspaceId, delta) });
-    lanes = createLaneRunner({ store, service: chat, providers, ctx: currentUser(), paused });
+    // Publishing happens outside the agent boundary: a lane action, not a run.
+    // Tests give their own, such as one with a stand-in rsync.
+    const publisher = givenPublisher ?? createPublisher({ dataDir });
+    lanes = createLaneRunner({ store, service: chat, providers, ctx: currentUser(), paused, publisher });
     // Native files are collected from the home the harness reports in use.
     const codexHome = async () => {
       try { return (await codex.discover({})).harness.codexHome; }
@@ -312,8 +325,10 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
       res.setHeader('Content-Security-Policy', "default-src 'self'; img-src 'self' blob:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
       try {
         const host = req.headers.host || '';
-        if (!/^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/.test(host)) return send(res, 403, { error: 'Use localhost to access this board.' });
-        if (req.headers.origin && req.headers.origin !== `http://${host}`) return send(res, 403, { error: 'Cross-origin requests are not allowed.' });
+        const local = localHost.test(host);
+        if (!local && !allowedHosts.includes(host.toLowerCase())) return send(res, 403, { error: 'Use localhost to access this board, or list this host in FRAMEBOARD_HOSTS.' });
+        const scheme = !local && req.headers['x-forwarded-proto'] === 'https' ? 'https' : 'http';
+        if (req.headers.origin && req.headers.origin !== `${scheme}://${host}`) return send(res, 403, { error: 'Cross-origin requests are not allowed.' });
         const url = new URL(req.url, `http://${host}`);
         if (url.pathname.startsWith('/api/') && !/^\/api\/maintenance(\/(export|cancel))?$/.test(url.pathname) && !['GET', 'HEAD'].includes(req.method)) {
           if (maintenance.active && !finishesRunningWork(url.pathname)) return send(res, 503, { error: maintenanceMessage });
@@ -357,11 +372,33 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
           return send(res, 201, { id: version.id, hash: version.hash });
         }
         if (url.pathname === '/api/youtube' && req.method === 'POST') {
-          const videoId = youtubeVideoId((await json(req, 16 * 1024))?.url);
+          const input = await json(req, 16 * 1024);
+          const videoId = youtubeVideoId(input?.url);
           assert(videoId, 'Enter a YouTube video URL, such as https://www.youtube.com/watch?v=…');
           const { title, thumbnail } = await fetchYoutube(videoId, fetchImpl);
           const { id } = store.images.record(currentUser(req), await storeImage(imagesDir, thumbnail), 'youtube');
-          return send(res, 201, { title, image: { id, name: `${title || videoId} thumbnail.jpg`.slice(0, 500) } });
+          const result = { title, image: { id, name: `${title || videoId} thumbnail.jpg`.slice(0, 500) } };
+          // The transcript is asked for by templates with a transcript field.
+          // A video without captions still gets its title and thumbnail; the
+          // problem is reported beside them rather than failing the lookup.
+          if (input?.transcript === true) {
+            try { result.transcript = await transcript(videoId); }
+            catch (error) { result.transcriptError = error.status ? error.message : 'Could not fetch the transcript.'; if (!error.status) console.error(error); }
+          }
+          return send(res, 201, result);
+        }
+        // Files a publish lane action put on a local site, served as sandboxed pages.
+        const site = url.pathname.match(/^\/sites\/(.+)$/);
+        if (site && (req.method === 'GET' || req.method === 'HEAD')) {
+          let relative;
+          try { relative = decodeURIComponent(site[1]); } catch { return send(res, 404, { error: 'Not found.' }); }
+          const file = await publisher.file(relative);
+          if (!file) return send(res, 404, { error: 'Not found.' });
+          res.writeHead(200, { 'Content-Type': file.type, 'Content-Length': file.size, 'Content-Security-Policy': previewPolicy(file.kind), 'Cache-Control': 'no-cache' });
+          if (req.method === 'HEAD') return res.end();
+          file.stream.once('error', () => res.destroy());
+          res.once('close', () => file.stream.destroy());
+          return file.stream.pipe(res);
         }
         if (url.pathname.startsWith('/api/')) return send(res, routes.some(([, pattern]) => pattern.test(url.pathname)) ? 405 : 404, { error: 'Not found.' });
         if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, { error: 'Method not allowed.' });

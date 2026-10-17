@@ -1,10 +1,11 @@
 // The card editor's view of its lane playbook: what the lane does, this
 // card's latest lane runs, Run playbook, and the card's hand-off notes
 // (notes.md in its workspace), which every lane run reads.
-import { $, escape, icon, button, iconButton, help, toast } from './ui.js';
+import { $, escape, icon, button, iconButton, help, toast, previewDialog } from './ui.js';
 import { locateCard, lanesOf, laneRuns, runPlaybook, loadNotes, saveNotes, moveCard } from './state.js';
 import { openPlaybooks } from './playbook-editor.js';
 import { renderBoard } from './board.js';
+import { previewType } from './library-format.js';
 
 let refreshTimer = null;
 const cardStates = new Map();
@@ -76,18 +77,24 @@ async function refresh() {
   } catch (error) { if (error.status !== 404) toast(error.message); }
 }
 
+// A saved output shown rather than downloaded, for the new tab link and the preview dialog.
+const outputURL = (output) => `/api/cards/${encodeURIComponent(active.id)}/chat/saved-outputs/${encodeURIComponent(output.outputId ?? output.id)}/content?inline=1`;
+
 export function renderBar() {
   const panel = $('#card-playbook');
   const found = active && locateCard(active.id);
   if (!panel || !found) return;
   const { lane } = found;
   const playbook = lane.playbook;
-  const runnable = playbook && playbook.hasInstructions && playbook.run !== 'off' && !playbook.errors.length;
+  // A lane that runs a Frameboard action (publish) has no instructions; Run playbook runs the action.
+  const runnable = playbook && (playbook.hasInstructions || playbook.action) && playbook.run !== 'off' && !playbook.errors.length;
   const latest = active.runs[0];
   const guidance = latest && runGuidance(latest, { here: latest.stageId === lane.id });
   // A graph node's routes: the user can send the card along any of them.
   const routes = found.flow.kind === 'graph' && !found.project.archivedAt ? (playbook?.routes ?? []).filter((route) => found.flow.lanes.some((item) => item.id === route.laneId)) : [];
   const routeButtons = routes.map((route) => `<button type="button" class="chip" data-action="follow-route" data-to="${route.laneId}" data-route="${escape(route.name)}">${escape(route.name)}${icon('arrow')}${escape(found.flow.lanes.find((item) => item.id === route.laneId).name)}</button>`).join('');
+  const outputs = (latest?.result?.outputs ?? []).filter((output) => output.status === 'saved' && output.outputId);
+  const made = latest?.result?.cards ?? [];
   // A re-render (run activity, a playbook save) keeps the guidance open if it was.
   const guidanceOpen = panel.querySelector('.card-playbook-guidance')?.open ? ' open' : '';
   const summary = playbook
@@ -97,6 +104,8 @@ export function renderBar() {
   panel.innerHTML = `<div class="card-playbook-info">${icon('playbook')}<strong>${escape(lane.name)} playbook</strong>${summary}</div>${actions}
     ${routeButtons ? `<div class="card-routes" role="group" aria-label="Follow a route"><span>Routes</span>${routeButtons}</div>` : ''}
     ${latest ? `<p class="card-playbook-run ${latest.status === 'failed' ? 'failed' : ''}"><span>Last run${latest.stageId !== lane.id ? ` in ${escape(lanesOf(found.project).find((item) => item.id === latest.stageId)?.name ?? 'another lane')}` : ''}:</span> ${escape(runLabel(latest))}</p>` : ''}
+    ${outputs.length ? `<p class="card-playbook-saved"><span class="card-playbook-label">Saved:</span>${outputs.map((output) => `<span class="card-playbook-file"><a href="${outputURL(output)}" target="_blank" rel="noopener">${escape(output.filename)}</a>${previewType(output.filename)?.kind === 'html' ? `<button type="button" class="chip" data-action="preview-run-output" data-id="${escape(output.outputId)}" data-filename="${escape(output.filename)}">Preview</button>` : ''}</span>`).join('')}</p>` : ''}
+    ${made.length ? `<p class="card-playbook-created"><span class="card-playbook-label">Created ${made.length} ${made.length === 1 ? 'card' : 'cards'}:</span>${made.map((card) => locateCard(card.id) ? `<button type="button" class="chip" data-action="open-card" data-id="${escape(card.id)}">${escape(card.title || 'Untitled card')}</button>` : `<span class="card-playbook-gone" title="This card is no longer on the board.">${escape(card.title || 'Untitled card')}</span>`).join('')}</p>` : ''}
     ${guidance ? `<details class="card-playbook-guidance"${guidanceOpen}><summary>What now?</summary><p>${escape(guidance)}</p></details>` : ''}`;
 }
 
@@ -166,6 +175,7 @@ document.addEventListener('click', async (event) => {
       await refresh();
     }
     if (action === 'open-lane-playbook') await openPlaybooks({ laneId: target.dataset.id });
+    if (action === 'preview-run-output') previewDialog(outputURL({ outputId: target.dataset.id }), target.dataset.filename);
     if (action === 'follow-route') {
       const id = active.id;
       if (moveCard(id, target.dataset.to, null, target.dataset.route)) {

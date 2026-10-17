@@ -24,6 +24,15 @@ How the graph view and routes are built. The decision is [ADR 0009](../adr/0009-
 - `applyLaneResult` calls `followRoute` for a result's `route`. It re-reads routes and advance from the playbook text frozen in the submission, resolves the route against the run's flow, and either moves the card with an `automation:<attemptId>` actor (advance `auto`, card still in the node with the same entry, no unsaved edits, fewer than `maxAutomaticMoves` in a row) or proposes the move, with its route, through the `lane-result-route` tool call. Moving on by itself also needs the node's current playbook to say `advance: auto`. The run's summary says which.
 - The next node's `on-enter` run is requested by `transitionCard` inside that same transaction, and queues behind the finishing attempt in the card chat.
 
+### Created cards
+
+A lane run can create cards in another lane of its flow. The decision is [ADR 0010](../adr/0010-lane-runs-create-cards.md).
+
+- `prepare` resolves the playbook's `creates:` with `resolveCreates` against the flow's lanes and the live card templates. A lane or template that is not found fails the run before anything is sent. The resolved lane and template are part of `preparedParts`, and `composeLanePrompt` adds a "Creating cards" section with the new cards' field keys.
+- `applyLaneResult` resolves `creates:` again from the frozen playbook text against the run's flow, checks the result's `cards` with `parseLaneResult`, and calls `store.createCards` inside the result's transaction with an `automation:<attemptId>` actor. A lane or template gone since the run started is reported and creates nothing. The run's `result.cards` lists `{ id, title }` and its summary says "Created 2 cards in Research."
+- `store.createCards` checks the origin card, that the lane is in the run's flow, the template, and every card's content before its first write. Each card goes to the end of the lane with `cards.parent_id` (`parentId` in the API; schema version 25), a `created` event with `data.origin` and `data.laneRunId`, the lane's `set:` values and, when the lane runs on entry and has work, a lane run. `createCard` refuses `parentId`.
+- Tests: `test/created-cards.test.js`.
+
 ## Browser
 
 - `public/graph.js` renders a graph flow into `#board` (`renderBoard` hands over when `flow.kind === 'graph'`). Nodes are `[data-lane]` sections with a `.lane-cards` list, so app.js's card drag, drop, paste and file-drop handling work on them unchanged. The page's CSP refuses `style` attributes, so node and label places are set through the CSSOM after rendering.

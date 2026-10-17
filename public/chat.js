@@ -1,10 +1,10 @@
-import { $, escape, toast, smallForm, help, icon, iconButton } from './ui.js';
+import { $, escape, toast, smallForm, help, icon, iconButton, previewDialog } from './ui.js';
 import { request, send, enqueue } from './api.js';
 import { state, locateCard, lanesOf, templateOf, flushCards, saveStatus, refreshSavedCard } from './state.js';
 import { contextFields, imageRoles } from './card-template.js';
 import { attemptMarkup, progressState, runningStatuses } from './chat-transcript.js';
 import { chooseCollision, folderOptions, formatSize, libraryChoices } from './library.js';
-import { deliveryDescription, libraryPaths, parseSourceKey, selectionPaths, selectionSummary, sourceKey } from './library-format.js';
+import { deliveryDescription, libraryPaths, parseSourceKey, previewType, selectionPaths, selectionSummary, sourceKey } from './library-format.js';
 
 const chats = new Map();
 // Each project's Library files and folders, for naming manual selections and the picker.
@@ -347,7 +347,9 @@ function savedOutputsMarkup(cardId, outputs, chosen = []) {
     if (output.status === 'saved') {
       const derivation = output.derivation?.declared ? `From ${output.derivation.sources.length ? output.derivation.sources.map((source) => source.label).join(', ') : 'no supplied inputs'}` : '';
       const inPrompt = chosen.includes(output.id);
-      return `<li${derivation ? ` title="${escape(derivation)}"` : ''}><div class="chat-saved-row"><a class="chat-saved-name" href="${content}?inline=1" target="_blank" rel="noopener" title="View">${icon('text')}<span>${escape(output.filename)}</span></a><button type="button" class="chip chat-reuse" data-action="chat-reuse-output" data-id="${escape(output.id)}" aria-pressed="${inPrompt}" title="${inPrompt ? 'Remove from the next prompt' : 'Send with the next prompt'}">${inPrompt ? `${icon('check')}In prompt` : 'Use in prompt'}</button>${menu(`output:${output.id}`, `More for ${output.filename}`, `<a class="chat-menu-item" href="${content}" download>Download</a><button type="button" class="chat-menu-item" data-action="chat-promote-output" data-id="${escape(output.id)}">Save to project library…</button>`)}</div><small class="chat-saved-detail">${savedOutputMethods[output.creationMethod] ?? 'Saved'}${origin}</small>${promotionsMarkup(output.promotions ?? [])}</li>`;
+      // An HTML page can be looked at without leaving the card: the chip opens it in a sandboxed frame.
+      const page = previewType(output.filename)?.kind === 'html' ? `<button type="button" class="chip chat-preview" data-action="chat-preview-output" data-id="${escape(output.id)}" title="Show this page here">${icon('monitor')}Preview</button>` : '';
+      return `<li${derivation ? ` title="${escape(derivation)}"` : ''}><div class="chat-saved-row"><a class="chat-saved-name" href="${content}?inline=1" target="_blank" rel="noopener" title="${page ? 'View the page in a new tab' : 'View'}">${icon('text')}<span>${escape(output.filename)}</span></a>${page}<button type="button" class="chip chat-reuse" data-action="chat-reuse-output" data-id="${escape(output.id)}" aria-pressed="${inPrompt}" title="${inPrompt ? 'Remove from the next prompt' : 'Send with the next prompt'}">${inPrompt ? `${icon('check')}In prompt` : 'Use in prompt'}</button>${menu(`output:${output.id}`, `More for ${output.filename}`, `<a class="chat-menu-item" href="${content}" download>Download</a><button type="button" class="chat-menu-item" data-action="chat-promote-output" data-id="${escape(output.id)}">Save to project library…</button>`)}</div><small class="chat-saved-detail">${savedOutputMethods[output.creationMethod] ?? 'Saved'}${origin}</small>${promotionsMarkup(output.promotions ?? [])}</li>`;
     }
     if (output.status === 'failed') return `<li class="chat-output-error">${escape(output.filename)}${origin} not saved: ${escape(output.error)}${output.creationMethod === 'workspace-save' ? ` <button class="button small secondary" data-action="chat-retry-saved-output" data-id="${escape(output.id)}">Retry</button>` : ''}</li>`;
     return `<li class="chat-hint">Saving ${escape(output.filename)}…</li>`;
@@ -818,6 +820,10 @@ export function initializeChats(callbacks) {
       if (action === 'chat-reply') replyToSelection(item);
       if (action === 'chat-save-selection') { const { sequence, text } = checkedReply(item); clearReplySelection(item); saveAsDocument(item, sequence, text); }
       if (action === 'chat-promote-output') await promoteOutput(item, target.dataset.id);
+      if (action === 'chat-preview-output') {
+        const output = (item.snapshot.savedOutputs ?? []).find((entry) => entry.id === target.dataset.id);
+        if (output) previewDialog(`${url(item.id, `saved-outputs/${encodeURIComponent(output.id)}/content`)}?inline=1`, output.filename);
+      }
       if (action === 'chat-adopt') { const result = await send('POST', url(item.id, `outputs/${target.dataset.id}/adopt`), {}); refreshSavedCard(result.card); await refresh(item); toast(result.adopted ? 'Added to gallery.' : 'Already in the gallery.'); }
       if (action === 'chat-retry-save') { await send('POST', url(item.id, `outputs/${target.dataset.id}/retry-save`), {}); await refresh(item); }
       if (action === 'chat-save-file') saveWorkspaceFile(item, target.dataset.id);
