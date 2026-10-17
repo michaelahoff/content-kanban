@@ -87,11 +87,12 @@
 }
 @layer forms {
   /* Board or graph, and how a node's chosen route is followed: a card per choice. */
-  .kind-field { display: grid; gap: 8px; margin: 20px 0 0; padding: 0; border: 0; }
+  .kind-field { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 14px 0 0; padding: 0; border: 0; }
+  .kind-field legend { grid-column: 1 / -1; padding: 0; margin-bottom: 0; }
   .kind-option { position: relative; display: block; cursor: pointer; }
   .kind-option input { position: absolute; inset: 0; margin: 0; opacity: 0; cursor: pointer; }
-  .kind-option > span { display: grid; grid-template-columns: 22px minmax(0, 1fr); column-gap: 10px; align-items: center; padding: 10px 14px; border: 1px solid var(--border-strong); border-radius: 12px; transition: background .1s, border-color .1s; }
-  .kind-option > span > .icon { grid-row: span 2; width: 20px; height: 20px; }
+  .kind-option > span { display: grid; grid-template-columns: 22px minmax(0, 1fr); column-gap: 10px; align-items: center; padding: 7px 12px; border: 1px solid var(--border-strong); border-radius: 10px; transition: background .1s, border-color .1s; }
+  .kind-option > span > .icon { width: 18px; height: 18px; }
   .kind-option strong { font-size: 14px; font-weight: 500; }
   .kind-option small { grid-column: 2; color: var(--muted); font-size: 12px; line-height: 1.4; }
   .kind-option:hover > span { background: var(--raised); }

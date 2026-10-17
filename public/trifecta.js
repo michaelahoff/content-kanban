@@ -7,7 +7,7 @@ function wrapLines(context, text, width) {
   const lines = [];
   const addLine = (line) => {
     lines.push(line);
-    if (lines.length * lineHeight > maxHeight) throw new Error('This card has too much text for one image. Shorten the prompt, titles, or intro and try again.');
+    if (lines.length * lineHeight > maxHeight) throw new Error('Too much text for one image. Shorten the prompt, titles or intro.');
   };
   for (const paragraph of text.split('\n')) {
     let line = '';
@@ -37,7 +37,7 @@ function imageSheet(prompt, titles, intro, images) {
   const gap = 40;
   const contentWidth = width - 2 * padding;
   const context = canvas.getContext('2d');
-  if (!context) throw new Error('Your browser could not prepare the Trifecta image.');
+  if (!context) throw new Error('This browser could not draw the Trifecta image.');
   context.font = '26px sans-serif';
   const blocks = [];
   let y = padding;
@@ -60,7 +60,7 @@ function imageSheet(prompt, titles, intro, images) {
   if (images.length) y += 44 + imageHeight + gap;
   textBlock('INTRO', intro);
   const height = y - gap + padding;
-  if (height > maxHeight) throw new Error('This card has too much text for one image. Shorten the prompt, titles, or intro and try again.');
+  if (height > maxHeight) throw new Error('Too much text for one image. Shorten the prompt, titles or intro.');
   canvas.width = width;
   canvas.height = height;
   context.fillStyle = '#ffffff';
@@ -81,7 +81,7 @@ function imageSheet(prompt, titles, intro, images) {
   }
   return new Promise((resolve, reject) => canvas.toBlob((blob) => {
     if (blob) resolve(blob);
-    else reject(new Error('Your browser could not prepare the Trifecta image.'));
+    else reject(new Error('This browser could not draw the Trifecta image.'));
   }, 'image/png'));
 }
 

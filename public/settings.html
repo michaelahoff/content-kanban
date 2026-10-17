@@ -12,20 +12,22 @@
   <main class="provider-settings">
     <a href="/" class="text-button">← Back to board</a>
     <h1>Settings</h1>
-    <p>Choose the providers available across all projects and card chats. Enable Claude, Codex, both, or neither.</p>
-    <p id="status" role="status" aria-live="polite">Loading settings…</p>
-    <div id="providers"></div>
-    <section class="model-catalog" aria-labelledby="models-heading">
-      <div class="settings-heading"><h2 id="models-heading">Available models</h2><button id="refresh-models" class="button secondary" disabled>Refresh models</button></div>
-      <p>This list is saved globally and reused in every chat, including after restarting Frameboard. Refresh here when your installed models change.</p>
-      <div id="models" aria-live="polite">Loading saved models…</div>
+    <p id="status" role="status" aria-live="polite">Loading…</p>
+    <section class="settings-card" aria-labelledby="providers-heading">
+      <div class="settings-heading"><h2 id="providers-heading">Providers</h2><span id="providers-help"></span></div>
+      <div id="providers"></div>
     </section>
-    <section class="model-catalog" aria-labelledby="backup-heading">
-      <div class="settings-heading"><h2 id="backup-heading">Export workspace</h2></div>
-      <p>Creates a complete, verified backup folder: the database and settings, every project (including archived ones), images, retained file versions, card workspaces and notes, playbooks and bound Codex conversation files. Changes and new work pause while it runs; running replies finish first or you can stop them. Global credentials and configuration, unrelated native conversations and external service data are not included.</p>
+    <section class="settings-card" aria-labelledby="models-heading">
+      <div class="settings-heading"><h2 id="models-heading">Models</h2><span id="models-help"></span>
+        <button id="refresh-models" class="icon-button" type="button" aria-label="Refresh models" title="Refresh models" disabled><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.3-5.7M20 4v5h-5"/></svg></button></div>
+      <div id="models" aria-live="polite">Loading…</div>
+    </section>
+    <section class="settings-card" aria-labelledby="backup-heading">
+      <div class="settings-heading"><h2 id="backup-heading">Export workspace</h2><span id="backup-help"></span></div>
+      <p>Creates a verified backup folder of everything in this workspace.</p>
       <form id="backup-form"><label for="backup-output">Backup folder</label><input id="backup-output" type="text" spellcheck="false" autocomplete="off">
-        <button id="backup-start" class="button secondary" type="submit">Export workspace</button>
-        <button id="backup-cancel" class="button secondary" type="button" hidden>Cancel export</button></form>
+        <div class="settings-actions"><button id="backup-start" class="button secondary" type="submit">Export workspace</button>
+        <button id="backup-cancel" class="button secondary" type="button" hidden>Cancel export</button></div></form>
       <p id="backup-status" role="status" aria-live="polite"></p>
     </section>
   </main>

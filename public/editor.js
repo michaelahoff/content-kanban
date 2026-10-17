@@ -35,7 +35,7 @@ export async function copyText(value, label) {
     await navigator.clipboard.writeText(value);
     toast(`${label} copied.`);
   } catch {
-    toast('Clipboard access was blocked. Allow clipboard access and try again.');
+    toast('Clipboard blocked. Allow clipboard access and try again.');
   }
 }
 export async function copyTrifecta(target) {
@@ -43,10 +43,10 @@ export async function copyTrifecta(target) {
   target.disabled = true;
   target.setAttribute('aria-busy', 'true');
   try {
-    if (!navigator.clipboard?.write || !window.ClipboardItem) throw new Error('This browser does not support copying images. Open the app in a current browser on localhost or HTTPS.');
-    toast('Preparing Trifecta…');
+    if (!navigator.clipboard?.write || !window.ClipboardItem) throw new Error('Copying images needs a current browser on localhost or HTTPS.');
+    toast('Copying Trifecta…');
     await navigator.clipboard.write([createTrifectaItem(card)]);
-    toast('Trifecta copied as one image, with a text version. Paste into your chat.');
+    toast('Trifecta copied as an image and text.');
   } catch (error) {
     toast(`Trifecta was not copied. ${error.name === 'NotAllowedError' ? 'Allow clipboard access, keep this page focused, and try again.' : error.message}`);
   } finally {
@@ -59,11 +59,13 @@ export function videoLinkMarkup(value, label) {
   try {
     const url = new URL(value.trim());
     if (url.protocol === 'http:' || url.protocol === 'https:') {
-      return `<a class="video-link" href="${escape(url.href)}" target="_blank" rel="noopener noreferrer" aria-label="Open ${escape(label)} in a new tab">Open video ${icon('external')}</a>`;
+      return `<a class="video-link" href="${escape(url.href)}" target="_blank" rel="noopener noreferrer" aria-label="Open ${escape(label)} in a new tab" title="Open ${escape(label)} in a new tab">Open ${icon('external')}</a>`;
     }
   } catch { /* Keep unfinished URLs editable and saved. */ }
-  return '<span class="url-hint">Enter a full http:// or https:// URL to open it.</span>';
+  return '<span class="url-hint">Needs a full http(s):// URL</span>';
 }
+// No copy glyph in the shared icon set; this one is drawn to match it.
+const copyIcon = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M15 9V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h4"/></svg>';
 function editorField(field, card) {
   const inputId = fieldInputId(field.key);
   const value = card.fields[field.key] || '';
@@ -74,8 +76,9 @@ function editorField(field, card) {
     : `<input class="form-input" ${attributes} type="${field.control || 'text'}" value="${escape(value)}" autocomplete="off"${field.control === 'url' ? ' autocapitalize="off" spellcheck="false"' : ''}>`;
   const link = field.control === 'url' ? `<div class="video-link-row" id="${inputId}-link">${field.youtube ? originalVideoMarkup(card, field) : videoLinkMarkup(value, field.videoLabel || field.label)}</div>` : '';
   if (field.placement === 'header') return `<section class="original-video">${label}<div class="original-video-row">${input}${link}</div></section>`;
-  const hint = field.countWords ? `<span id="${escape(field.key)}-count">${wordCount(value).toLocaleString()} words</span>` : '';
-  const tools = field.copy ? `<div class="field-tools">${hint}${button('copy-field', `Copy ${escape(field.label.toLowerCase())}`, null, 'button small secondary', `data-field="${escape(field.key)}"`)}</div>` : hint;
+  const hint = field.countWords ? `<span class="word-count" id="${escape(field.key)}-count">${wordCount(value).toLocaleString()} words</span>` : '';
+  const copyLabel = escape(`Copy ${field.label.toLowerCase()}`);
+  const tools = field.copy ? `<div class="field-tools">${hint}<button type="button" class="icon-button copy-field" data-action="copy-field" data-field="${escape(field.key)}" aria-label="${copyLabel}" title="${copyLabel}">${copyIcon}</button></div>` : hint;
   return `<section class="writing-section ${field.control === 'url' ? 'video-url' : field.section || fieldInputId(field.key).slice(5)}-section"><div class="field-heading">${label}${tools}</div>${input}${link}</section>`;
 }
 const youtubePattern = /^https?:\/\/(www\.|m\.|music\.)?(youtube\.com|youtube-nocookie\.com|youtu\.be)\//i;
@@ -115,8 +118,8 @@ export function openCard(targetId) {
       ${fields.filter((field) => field.placement !== 'header').map((field) => editorField(field, card)).join('')}
       ${notesMarkup()}
     </div>
-    <aside class="images-panel" aria-label="Card images and Library files"><div class="field-heading"><h2>Images</h2><span id="image-count"></span></div><div id="card-images"></div><label class="image-drop" id="image-drop">${icon('upload')}<strong>Add images</strong><span>Drop, paste or <u>browse files</u></span><input id="image-files" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/avif" multiple aria-label="Upload images"></label><p id="upload-status" class="upload-status" role="status"></p>${cardLibraryMarkup()}</aside></div>
-    <div class="editor-footer">${button('delete-card', 'Delete card', 'trash', 'text-button danger')}${template.fields.some((field) => ['titleOptions', 'intro', 'prompt'].includes(field.key)) ? button('copy-trifecta', 'Trifecta copy', 'text', 'button secondary') : ''}<span class="edited-at" data-edited-card="${card.id}">${lastEditedMarkup(card)}</span>${button('close-card', 'Done', 'check', 'button primary')}</div>`;
+    <aside class="images-panel" aria-label="Card images and Library files"><div class="field-heading"><h2>Images</h2><span id="image-count"></span></div><div id="card-images"></div><label class="image-drop" id="image-drop" title="Drop, paste or browse image files">${icon('upload')}<strong>Add images</strong><span>or drop, paste</span><input id="image-files" type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/avif" multiple aria-label="Upload images"></label><p id="upload-status" class="upload-status" role="status"></p>${cardLibraryMarkup()}</aside></div>
+    <div class="editor-footer">${button('delete-card', 'Delete', 'trash', 'text-button danger editor-delete', 'aria-label="Delete card" title="Delete card"')}${template.fields.some((field) => ['titleOptions', 'intro', 'prompt'].includes(field.key)) ? button('copy-trifecta', 'Trifecta copy', 'text', 'button secondary', 'title="Copy the prompt, titles, intro and chosen images as one image"') : ''}<span class="edited-at" data-edited-card="${card.id}">${lastEditedMarkup(card)}</span>${button('close-card', 'Done', 'check', 'button primary')}</div>`;
   // Cards in an archived project are read-only; the server refuses changes too.
   cardDialog.classList.toggle('archived', Boolean(p.archivedAt));
   if (p.archivedAt) {
@@ -124,6 +127,7 @@ export function openCard(targetId) {
     cardDialog.querySelectorAll('input, textarea').forEach((control) => { control.readOnly = true; });
     $('#card-lane').disabled = true; $('#image-files').disabled = true;
   }
+  markSaveStatus();
   renderImages();
   mountCardLibrary();
   renderStatus();
@@ -136,6 +140,16 @@ export function openCard(targetId) {
   const focusTarget = youtubeInput ?? $('#card-title');
   if (!card.title && !p.archivedAt) focusTarget.focus();
 }
+// The header shows only a check once everything is saved (its words stay for
+// screen readers and as a tooltip); saving, uploading and errors show in words.
+function markSaveStatus() {
+  const node = cardDialog.querySelector('.editor-header .save-status');
+  if (!node) return;
+  const text = node.textContent.trim();
+  node.title = text;
+  node.classList.toggle('is-saved', Boolean(text) && !node.classList.contains('save-error') && !text.endsWith('…'));
+}
+new MutationObserver(markSaveStatus).observe(cardDialog, { childList: true, subtree: true });
 export function renderImages() {
   const found = locateCard();
   if (!found || !$('#card-images')) return;
@@ -223,7 +237,7 @@ export async function fetchYoutube(target) {
     if (!found) return;
     const current = found.card;
     const template = templateOf(current);
-    if ((current.fields[field.key] ?? '').trim() !== url) return toast(`The ${field.label} changed while fetching. Fetch again for the new link.`);
+    if ((current.fields[field.key] ?? '').trim() !== url) return toast(`${field.label} changed while fetching. Fetch again.`);
     // The original role and the video title field are used only when the template has them.
     const hasOriginal = template.imageRoles.some((role) => role.key === 'original');
     const roles = current.imageRoles;

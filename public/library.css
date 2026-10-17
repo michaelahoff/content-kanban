@@ -8,7 +8,17 @@
   .board-tab:hover { color: var(--text); }
   .library { padding: 22px 36px 40px; display: grid; gap: 18px; align-content: start; }
   .library-head { display: flex; justify-content: space-between; align-items: center; gap: 16px; flex-wrap: wrap; }
-  .library-hint { color: var(--muted); font-size: 13px; }
+  .library-title { display: flex; align-items: center; gap: 8px; font-size: 18px; font-weight: 600; }
+  .library-menu { position: relative; }
+  .library-menu > summary { list-style: none; cursor: pointer; }
+  .library-menu > summary::-webkit-details-marker { display: none; }
+  .library-menu > summary.icon-only { width: 36px; padding: 0; }
+  .library-menu > summary.icon-only .icon { margin: 0; }
+  .library-menu-caret { width: 16px !important; height: 16px !important; margin-left: 0 !important; }
+  .library-menu-list { position: absolute; right: 0; top: calc(100% + 6px); z-index: 20; min-width: 170px; display: grid; padding: 6px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); box-shadow: 0 8px 24px #0003; }
+  .library-menu-item { display: flex; align-items: center; gap: 10px; min-height: 36px; padding: 0 12px; border: 0; border-radius: 8px; background: none; color: var(--text); font-size: 14px; text-align: left; cursor: pointer; }
+  .library-menu-item:hover { background: var(--raised); }
+  .library-menu-item .icon { width: 18px; height: 18px; color: var(--muted); }
   .library-tools { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
   .library-pick input { position: absolute; opacity: 0; width: 1px; height: 1px; }
   .library-pick { position: relative; }
@@ -89,7 +99,9 @@
   .library-version { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 0; border-top: 1px solid var(--border); font-size: 12px; }
   .library-version > div:first-child { min-width: 0; }
   .library-version small { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; }
-  .library-hash { font-family: var(--mono-font); overflow-wrap: anywhere; }
+  .library-hash-row { display: flex !important; align-items: center; gap: 8px; }
+  .library-hash-row .text-button { font-size: 12px; min-height: 0; padding: 0 4px; }
+  .library-hash { font-family: var(--mono-font); }
   .library-version-error { color: var(--danger) !important; }
   .library-version-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; flex-shrink: 0; }
   .library-badge { padding: 1px 6px; border-radius: 4px; background: var(--raised); color: var(--muted); font-size: 12px; font-weight: 500; }

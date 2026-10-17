@@ -158,7 +158,7 @@ document.addEventListener('click', (event) => {
   if (action === 'use-saved-card') {
     smallForm({
       title: 'Use the saved version?',
-      description: 'This discards your unsaved text and image changes on this card. Copy anything you want to keep first. Other cards are unaffected.',
+      description: 'Discards your unsaved changes to this card.',
       submit: 'Use saved version', danger: true,
       onSubmit: async () => {
         await useSavedCard(targetId);
@@ -176,7 +176,7 @@ document.addEventListener('click', (event) => {
   if (action === 'fetch-youtube') return fetchYoutube(target);
   if (action === 'delete-project') {
     const p = project();
-    confirmDelete(`Delete “${p.name}”?`, `This will delete the project, its ${p.flows.length === 1 ? 'flow' : `${p.flows.length} flows`} and their lanes, and ${cardCount(p)} cards. This cannot be undone.`, () => {
+    confirmDelete(`Delete “${p.name}”?`, `Deletes ${p.flows.length === 1 ? '1 flow' : `${p.flows.length} flows`} and ${cardCount(p)} cards. Cannot be undone.`, () => {
       deleteProject(p);
       selectProject(state.projects[0]?.id);
       renderApp();
@@ -187,7 +187,7 @@ document.addEventListener('click', (event) => {
     const p = project();
     smallForm({
       title: `Archive “${p.name}”?`,
-      description: 'Archiving cancels this project’s queued and pending work and stops running agent work. Its cards, chats, history and saved images are kept and stay readable. You can unarchive it later; cancelled work is not restarted.',
+      description: 'Cancels queued and running work. Everything stays readable; unarchive any time (cancelled work is not restarted).',
       submit: 'Archive project',
       onSubmit: async () => {
         await archiveProject(p);
@@ -200,14 +200,14 @@ document.addEventListener('click', (event) => {
   if (action === 'unarchive-project') {
     const p = project();
     target.disabled = true;
-    unarchiveProject(p).then(() => { renderApp(); toast('Project unarchived. Cancelled work was not restarted.'); })
+    unarchiveProject(p).then(() => { renderApp(); toast('Project unarchived.'); })
       .catch((error) => { target.disabled = false; toast(error.message); });
   }
   if (action === 'delete-flow') {
     const p = project();
     const f = p.flows.find((item) => item.id === targetId);
     const count = flowCardCount(f);
-    confirmDelete(`Delete the “${f.name}” flow?`, `This will delete its ${f.lanes.length} lanes and ${count} ${count === 1 ? 'card' : 'cards'}. Move any cards you want to keep to another flow first. Its playbook files stay on disk.`, async () => {
+    confirmDelete(`Delete the “${f.name}” flow?`, `Deletes ${f.lanes.length} ${f.lanes.length === 1 ? 'lane' : 'lanes'} and ${count} ${count === 1 ? 'card' : 'cards'}. Move cards you want to keep first.`, async () => {
       try { await deleteFlow(p, f); } catch (error) { return toast(error.message); }
       if (locateCard() === null && state.cardId) closeCard();
       renderApp();
@@ -218,7 +218,7 @@ document.addEventListener('click', (event) => {
     const f = flow();
     const lane = f.lanes.find((item) => item.id === targetId);
     const noun = f.kind === 'graph' ? 'node' : 'lane';
-    confirmDelete(`Delete “${lane.name}”?`, `This will also delete ${lane.cards.length} ${lane.cards.length === 1 ? 'card' : 'cards'} in this ${noun}. Move any cards you want to keep to another ${noun} first.${f.kind === 'graph' ? ' Routes that lead here are removed from the other nodes’ playbooks.' : ''}`, () => {
+    confirmDelete(`Delete “${lane.name}”?`, `Deletes ${lane.cards.length} ${lane.cards.length === 1 ? 'card' : 'cards'}.${f.kind === 'graph' ? ' Routes leading here are removed.' : ''}`, () => {
       deleteLane(f, targetId);
       renderApp();
       toast(f.kind === 'graph' ? 'Node deleted.' : 'Lane deleted.');
@@ -231,8 +231,8 @@ document.addEventListener('click', (event) => {
     smallForm({
       title: toGraph ? `Turn “${f.name}” into a graph?` : `Turn “${f.name}” into a board?`,
       description: toGraph
-        ? 'Every lane becomes a node, in a single line from the first lane to the last, joined by routes named “next”. Cards, playbooks and history stay as they are. You can then drag nodes, add routes and make loops.'
-        : 'This cannot be undone. Nodes become lanes in route order from the start node. Every route, every advance setting and the layout are removed from this flow and its playbooks. Cards, the rest of each playbook and history stay.',
+        ? 'Lanes become nodes joined in a line by routes named “next”. Cards and playbooks are kept.'
+        : 'Nodes become lanes in route order. Routes, advance settings and layout are removed. Cannot be undone.',
       submit: toGraph ? 'Turn into a graph' : 'Turn into a board', danger: !toGraph,
       onSubmit: async () => {
         await convertFlow(f, toGraph ? 'graph' : 'board');
@@ -243,7 +243,7 @@ document.addEventListener('click', (event) => {
   }
   if (action === 'delete-card') {
     const found = locateCard();
-    confirmDelete('Delete this card?', `“${found.card.title || 'Untitled card'}” and its text and images will be removed from the board. This cannot be undone.`, () => {
+    confirmDelete('Delete this card?', `“${found.card.title || 'Untitled card'}” and its images will be removed. Cannot be undone.`, () => {
       deleteCard(found.card.id);
       closeCard();
       renderBoard();
@@ -268,7 +268,7 @@ document.addEventListener('click', (event) => {
   if (action === 'remove-image') {
     const found = locateCard();
     const item = found.card.images.find((image) => image.id === targetId);
-    confirmDelete('Remove this image?', `Remove “${item.name}” from this card?`, () => {
+    confirmDelete('Remove this image?', `Remove “${item.name}”?`, () => {
       found.card.images = found.card.images.filter((image) => image.id !== targetId);
       const roles = found.card.imageRoles;
       for (const role of Object.keys(roles)) if (roles[role] === targetId) roles[role] = null;

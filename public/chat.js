@@ -1,4 +1,4 @@
-import { $, escape, toast, smallForm } from './ui.js';
+import { $, escape, toast, smallForm, help, icon, iconButton } from './ui.js';
 import { request, send, enqueue } from './api.js';
 import { state, locateCard, lanesOf, templateOf, flushCards, saveStatus, refreshSavedCard } from './state.js';
 import { contextFields, imageRoles } from './card-template.js';
@@ -100,11 +100,11 @@ export function mountChat(cardId) {
   while (dialog.firstChild) editor.append(dialog.firstChild);
   dialog.append(editor);
   dialog.insertAdjacentHTML('afterbegin', `<div class="workbench-tabs" role="tablist" aria-label="Card workbench"><button role="tab" data-action="workbench-tab" data-tab="editor">Editor</button><button role="tab" data-action="workbench-tab" data-tab="chat">Chat</button></div>`);
-  dialog.insertAdjacentHTML('beforeend', `<div id="chat-resizer" role="separator" tabindex="0" aria-label="Resize chat" aria-orientation="vertical"></div><aside id="card-chat" aria-label="Card chat"><div class="chat-header"><div><h2>Card chat</h2><span id="chat-provider-name">Provider</span></div><button class="button small secondary" data-action="chat-fresh">Start fresh context</button></div><div id="chat-error" role="alert" hidden></div><div id="chat-transcript" class="chat-transcript" aria-label="Conversation history"></div><div id="chat-progress" role="status" hidden></div><div id="chat-selection-actions" role="group" aria-label="Selected reply actions" hidden><button type="button" data-action="chat-reply">Reply</button><button type="button" data-action="chat-use-text">Use text…</button><button type="button" data-action="chat-save-selection">Save as document…</button></div><div id="chat-requests"></div><div id="chat-proposals"></div><div id="chat-grants"></div><div id="chat-composer" class="chat-composer"></div></aside>`);
+  dialog.insertAdjacentHTML('beforeend', `<div id="chat-resizer" role="separator" tabindex="0" aria-label="Resize chat" aria-orientation="vertical"></div><aside id="card-chat" aria-label="Card chat"><div class="chat-header"><h2>Chat</h2><span id="chat-provider-name" class="chat-badge" title="Provider">Provider</span>${iconButton('chat-fresh', 'Start fresh context', 'plus')}</div><div id="chat-error" role="alert" hidden></div><div id="chat-transcript" class="chat-transcript" aria-label="Conversation history"></div><div id="chat-progress" role="status" hidden></div><div id="chat-selection-actions" role="group" aria-label="Selected reply actions" hidden><button type="button" data-action="chat-reply">Reply</button><button type="button" data-action="chat-use-text">Use text…</button><button type="button" data-action="chat-save-selection" title="Save as document">Save…</button></div><div id="chat-requests"></div><div id="chat-proposals"></div><div id="chat-grants"></div><div id="chat-composer" class="chat-composer"></div></aside>`);
   $('.editor-header-right').insertAdjacentHTML('afterbegin', '<button class="button small secondary" data-action="toggle-chat" aria-expanded="true">Hide chat</button>');
   setDialogMode();
   if (item.snapshot) { renderComposer(item); renderTranscript(item); }
-  else $('#chat-transcript').textContent = 'Loading saved conversation…';
+  else $('#chat-transcript').textContent = 'Loading…';
   void refresh(item).catch((error) => showError(item, error));
   wireResize();
   $('#chat-transcript').addEventListener('scroll', () => { rememberView(); updateSelectionActions(); }, { passive: true });
@@ -118,7 +118,7 @@ function showError(item, error) {
   item.errorStatus = error.status;
   if (selected === item.id && $('#chat-error')) {
     $('#chat-error').hidden = false;
-    $('#chat-error').innerHTML = `<span>${escape(item.error)}</span>${item.dirty ? '<div><button class="button small secondary" data-action="chat-save-draft">Retry draft save</button><button class="button small secondary" data-action="chat-load-draft">Use saved draft</button></div>' : ''}`;
+    $('#chat-error').innerHTML = `<span>${escape(item.error)}</span>${item.dirty ? '<div><button class="button small secondary" data-action="chat-save-draft">Retry save</button><button class="button small secondary" data-action="chat-load-draft">Use saved draft</button></div>' : ''}`;
   }
 }
 async function saveComposer(item) {
@@ -166,6 +166,36 @@ async function refresh(item) {
 function referenceSignature(item, card) {
   return JSON.stringify([card?.images, (item.snapshot?.outputs ?? []).filter((o) => o.importStatus === 'imported').map((o) => [o.imageId, o.inGallery])]);
 }
+const providerName = (provider) => provider === 'claude' ? 'Claude' : 'Codex';
+// A sliders glyph for the model settings link; ui.js has no gear icon.
+const settingsIcon = '<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M4 7h9M17 7h3M4 12h3M11 12h9M4 17h11M19 17h1"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="17" r="2"/></svg>';
+const plural = (count, noun) => `${count} ${noun}${count === 1 ? '' : 's'}`;
+// A toggle chip is a real checkbox, so keyboard use and the change handler work as before.
+const chip = (attribute, key, label, checked, thumbnail = '') => `<label class="chat-chip" title="${escape(label)}"><input type="checkbox" ${attribute}="${escape(key)}" ${checked ? 'checked' : ''}>${thumbnail}<span>${escape(label)}</span></label>`;
+// A "⋯" menu for rarely used actions. Its key keeps it open across transcript re-renders.
+const menu = (key, label, items) => items ? `<details class="chat-menu" data-detail-key="menu:${escape(key)}"><summary class="icon-button" aria-label="${escape(label)}" title="${escape(label)}">${icon('more')}</summary><div class="chat-menu-list">${items}</div></details>` : '';
+const providerHelp = {
+  claude: '<p>Claude uses your full Claude Code setup and the Frameboard card tools, and runs its tools without permission prompts.</p><p>Card acceptance rules still apply.</p>',
+  codex: '<p>Native image generation and exact-reference edits stay in this chat. Add to gallery never sets Display, Original or Inspiration.</p><p>Codex can write in its workspace and run sandboxed commands without network access automatically. Escape requests need approval. Outside reads are possible. Full native access keeps card acceptance rules.</p><p><a href="/codex.html" target="_blank" rel="noopener">Configuration and permission limits</a></p>',
+};
+// One line naming what Send attaches; the sheet it opens holds the choices.
+function contextSummary(item, card, template) {
+  const { selections, authority } = item.composer;
+  const fields = contextFields(template);
+  const count = selections.fields.filter((key) => fields.some((field) => field.key === key)).length;
+  const roles = imageRoles(template).map((role) => role.key);
+  const images = new Set([...selections.roles.filter((key) => roles.includes(key)).map((key) => card.imageRoles?.[key]).filter(Boolean), ...selections.images]).size;
+  const parts = [count === fields.length ? 'all fields' : count ? `${count} of ${fields.length} fields` : 'no fields'];
+  if (images) parts.push(plural(images, 'image'));
+  if (selections.library?.length) parts.push(plural(selections.library.length, 'Library item'));
+  if (selections.savedOutputs?.length) parts.push(plural(selections.savedOutputs.length, 'saved output'));
+  if (authority.fields.length) parts.push(`may edit ${authority.fields.length}`);
+  return `Sends ${parts.join(' · ')}`;
+}
+function updateContextSummary(item) {
+  const card = locateCard(item.id)?.card; const node = $('#chat-context-summary');
+  if (card && node) node.textContent = contextSummary(item, card, templateOf(card));
+}
 function renderComposer(item) {
   if (!item.composer) return;
   const card = locateCard(item.id)?.card; if (!card) return;
@@ -179,18 +209,27 @@ function renderComposer(item) {
     .map((o) => ({ id: o.imageId, name: `Chat version · ${o.name}` }));
   const known = [...card.images, ...versions];
   const images = [...known, ...composer.selections.images.filter((id) => !known.some((image) => image.id === id))
-    .map((id) => ({ id, name: 'Unavailable reference (removed from gallery and chat)' }))];
+    .map((id) => ({ id, name: 'Unavailable image', missing: true }))];
   const provider = modelCatalog.find((entry) => entry.provider === composer.provider);
   const choices = provider?.enabled ? provider.discovery?.models ?? [] : [];
   const missing = composer.model && !choices.some((model) => model.id === composer.model);
   const enabledProviders = modelCatalog.filter((entry) => entry.enabled);
-  $('#chat-provider-name').textContent = composer.provider === 'claude' ? 'Claude' : 'Codex';
-  $('#chat-composer').innerHTML = `<div class="chat-model-row"><label for="chat-provider">Provider</label><select id="chat-provider"><option value="" disabled ${!provider ? 'selected' : ''}>Choose a provider…</option>${enabledProviders.map((entry) => `<option value="${entry.provider}" ${composer.provider === entry.provider ? 'selected' : ''}>${entry.provider === 'claude' ? 'Claude' : 'Codex'}</option>`).join('')}${provider && !provider.enabled ? `<option value="${composer.provider}" selected disabled>${composer.provider === 'claude' ? 'Claude' : 'Codex'} (disabled)</option>` : ''}</select></div>
-    <div class="chat-model-row"><label for="chat-model">Model</label><select id="chat-model"><option value="">Choose a model…</option>${choices.map((model) => `<option value="${escape(model.id)}" ${composer.model === model.id ? 'selected' : ''}>${escape(model.displayName ?? model.id)}</option>`).join('')}${missing ? `<option value="${escape(composer.model)}" selected disabled>${escape(composer.model)} (unavailable)</option>` : ''}</select><a class="button small secondary" href="/settings.html" target="_blank" rel="noopener">Settings</a></div>
-    ${!enabledProviders.length ? '<p class="chat-hint">Enable Claude or Codex in Settings to send prompts.</p>' : provider?.error ? `<p class="chat-hint">${escape(provider.error)} Refresh models in Settings.</p>` : !choices.length ? '<p class="chat-hint">Models are loading or unavailable. Check Settings for the shared model list.</p>' : ''}
-    <details id="chat-context-preview" ${item.view.preview ? 'open' : ''}><summary>What will be sent</summary><p class="chat-hint">Saved card values at Send. Images are attached once with all selected labels.</p><fieldset class="chat-selections"><legend>Card fields</legend>${contextFields(template).map((field) => `<label><input type="checkbox" data-chat-field="${field.key}" ${composer.selections.fields.includes(field.key) ? 'checked' : ''}>${escape(field.label)}</label>`).join('')}</fieldset><fieldset class="chat-selections"><legend>Image references</legend>${imageRoles(template).map((role) => `<label><input type="checkbox" data-chat-role="${role.key}" ${composer.selections.roles.includes(role.key) ? 'checked' : ''}>${escape(role.label)}</label>`).join('')}${images.map((image) => `<label><input type="checkbox" data-chat-image="${image.id}" ${composer.selections.images.includes(image.id) ? 'checked' : ''}>${escape(image.name)}</label>`).join('')}</fieldset>${libraryMarkup(item)}${reusedOutputsMarkup(item)}<fieldset class="chat-selections"><legend>Allow requested text edits</legend><p>Only check fields you explicitly ask the provider to edit. Suggestions remain proposals.</p>${contextFields(template).map((field) => `<label><input type="checkbox" data-chat-authority="${field.key}" ${composer.authority.fields.includes(field.key) ? 'checked' : ''}>${escape(field.label)}</label>`).join('')}</fieldset><div id="chat-exact-preview"></div></details>
-    <label class="sr-only" for="chat-prompt">Prompt for this card</label><textarea id="chat-prompt" maxlength="200000" placeholder="Ask about this card…" ${item.pending ? 'disabled' : ''}>${escape(composer.prompt)}</textarea><div class="chat-send-row"><span id="chat-save-state">${item.dirty ? 'Saving draft…' : ''}</span><button class="button small secondary" data-action="chat-stop" ${active(item) ? '' : 'disabled'}>Stop</button><button class="button primary" data-action="chat-send">${item.pending ? 'Retry Send' : 'Send'}</button></div>${composer.provider === 'claude' ? '<p class="chat-hint">Claude uses your full Claude Code setup and Frameboard card tools, and runs its tools without permission prompts. Card acceptance rules still apply.</p>' : '<p class="chat-hint">Codex native image generation and exact-reference edits stay in this chat. Add to gallery never sets Display, Original or Inspiration.</p><p class="chat-hint">Codex can write in its workspace and run sandboxed commands without network access automatically. Escape requests need approval. Outside reads are possible. Full native access keeps card acceptance rules. <a href="/codex.html" target="_blank" rel="noopener">Configuration and permission limits</a></p>'}`;
+  const fields = contextFields(template); const roles = imageRoles(template);
+  $('#chat-provider-name').textContent = providerName(composer.provider);
+  const notice = !enabledProviders.length ? 'Enable Claude or Codex in Settings to send.' : provider?.error ? `${escape(provider.error)} Refresh models in Settings.` : !choices.length ? 'No models available. Check Settings.' : '';
+  $('#chat-composer').innerHTML = `${notice ? `<p class="chat-hint chat-composer-notice">${notice}</p>` : ''}
+    <details id="chat-context-preview" class="chat-context" ${item.view.preview ? 'open' : ''}><summary><span id="chat-context-summary">${escape(contextSummary(item, card, template))}</span><span class="chat-context-toggle" aria-hidden="true"></span></summary><div class="chat-sheet">
+      <div id="chat-send-problems"></div>
+      <section class="chat-sheet-section"><h3>Fields</h3><div class="chat-chips">${fields.map((field) => chip('data-chat-field', field.key, field.label, composer.selections.fields.includes(field.key))).join('')}</div></section>
+      ${roles.length || images.length ? `<section class="chat-sheet-section"><h3>Images</h3><div class="chat-chips">${roles.map((role) => chip('data-chat-role', role.key, role.label, composer.selections.roles.includes(role.key))).join('')}${images.map((image) => chip('data-chat-image', image.id, image.name, composer.selections.images.includes(image.id), image.missing ? '' : `<img src="/images/${encodeURIComponent(image.id)}" alt="">`)).join('')}</div></section>` : ''}
+      ${libraryMarkup(item)}${reusedOutputsMarkup(item)}
+      <section class="chat-sheet-section"><h3>May edit ${help('May edit', '<p>Fields the provider may change directly. Check only fields your prompt explicitly asks it to edit.</p><p>Other suggestions come back as proposals for you to accept.</p>')}</h3><div class="chat-chips">${fields.map((field) => chip('data-chat-authority', field.key, field.label, composer.authority.fields.includes(field.key))).join('')}</div></section>
+      <details class="chat-exact" ${item.view.exact ? 'open' : ''}><summary>Exact preview</summary><p class="chat-hint">Saved card values at Send. Each image is attached once with all its labels.</p><div id="chat-exact-preview"></div></details>
+    </div></details>
+    <label class="sr-only" for="chat-prompt">Prompt for this card</label><textarea id="chat-prompt" maxlength="200000" placeholder="Ask about this card…" ${item.pending ? 'disabled' : ''}>${escape(composer.prompt)}</textarea>
+    <div class="chat-send-row"><select id="chat-provider" aria-label="Provider" title="Provider"><option value="" disabled ${!provider ? 'selected' : ''}>Provider…</option>${enabledProviders.map((entry) => `<option value="${entry.provider}" ${composer.provider === entry.provider ? 'selected' : ''}>${providerName(entry.provider)}</option>`).join('')}${provider && !provider.enabled ? `<option value="${composer.provider}" selected disabled>${providerName(composer.provider)} (disabled)</option>` : ''}</select><select id="chat-model" aria-label="Model" title="Model"><option value="">Model…</option>${choices.map((model) => `<option value="${escape(model.id)}" ${composer.model === model.id ? 'selected' : ''}>${escape(model.displayName ?? model.id)}</option>`).join('')}${missing ? `<option value="${escape(composer.model)}" selected disabled>${escape(composer.model)} (unavailable)</option>` : ''}</select><a class="icon-button chat-tool" href="/settings.html" target="_blank" rel="noopener" aria-label="Model settings" title="Model settings">${settingsIcon}</a>${help(`${providerName(composer.provider)} in card chat`, providerHelp[composer.provider] ?? providerHelp.codex, 'chat-tool')}<span id="chat-save-state">${item.dirty ? 'Saving…' : ''}</span><button class="button small secondary" data-action="chat-stop" ${active(item) ? '' : 'disabled'}>Stop</button><button class="button primary small" data-action="chat-send">${item.pending ? 'Retry send' : 'Send'}</button></div>`;
   $('#chat-context-preview').addEventListener('toggle', () => { rememberView(); if ($('#chat-context-preview').open) void refreshPreview(item); });
+  $('#chat-context-preview .chat-exact').addEventListener('toggle', (event) => { item.view.exact = event.target.open; rememberView(); });
   if (item.view.preview) void refreshPreview(item);
   updateComposerControls(item);
   if (focusId) { const input = document.getElementById(focusId); input?.focus(); if (selection) input?.setSelectionRange(...selection); }
@@ -204,12 +243,12 @@ function libraryMarkup(item) {
   const loaded = Boolean(library?.assets);
   const paths = loaded && libraryPaths(library);
   const chosen = item.composer.selections.library ?? [];
-  return `<fieldset class="chat-selections chat-library"><legend>Library files</legend>${library?.error ? `<p class="chat-hint">Library files could not be loaded: ${escape(library.error)}</p>` : ''}${chosen.length ? `<ol>${chosen.map((entry, index) => {
+  return `<section class="chat-sheet-section chat-library"><h3>Library</h3>${library?.error ? `<p class="chat-hint">Library unavailable: ${escape(library.error)}</p>` : ''}${chosen.length ? `<ol>${chosen.map((entry, index) => {
     // A folder sends every file in it; a removed or unknown source stays listed until removed here.
     const name = loaded && (entry.kind === 'folder' ? paths.folders.get(entry.id) : paths.assets.get(entry.id));
     const noun = entry.kind === 'folder' ? 'folder' : 'file';
-    return `<li><span>${name ? escape(name) : loaded ? `<strong>Unavailable ${noun}</strong> <small>${escape(entry.id)}</small>` : escape(entry.id)}</span><button type="button" class="button small secondary" data-action="chat-library-remove" data-index="${index}" aria-label="Remove ${escape(name || `this ${noun}`)}">Remove</button></li>`;
-  }).join('')}</ol>` : ''}<button type="button" class="button small secondary" data-action="chat-library-add">Add Library files…</button></fieldset>`;
+    return `<li><span>${name ? escape(name) : loaded ? `<strong>Unavailable ${noun}</strong> <small>${escape(entry.id)}</small>` : escape(entry.id)}</span><button type="button" class="icon-button chat-remove" data-action="chat-library-remove" data-index="${index}" aria-label="Remove ${escape(name || `this ${noun}`)}" title="Remove">${icon('close')}</button></li>`;
+  }).join('')}</ol>` : ''}<button type="button" class="text-button" data-action="chat-library-add">${icon('plus')}Add Library files…</button></section>`;
 }
 // Saved outputs of this card chat chosen with Use in prompt, in the order
 // chosen. Each Send captures their exact saved versions after Library files.
@@ -217,17 +256,17 @@ function reusedOutputsMarkup(item) {
   const chosen = item.composer.selections.savedOutputs ?? [];
   if (!chosen.length) return '';
   const saved = item.snapshot?.savedOutputs ?? [];
-  return `<fieldset class="chat-selections chat-library"><legend>Saved outputs</legend><ol>${chosen.map((id) => {
+  return `<section class="chat-sheet-section chat-library"><h3>Saved outputs</h3><ol>${chosen.map((id) => {
     const name = saved.find((output) => output.id === id)?.filename;
-    return `<li><span>${name ? escape(name) : `<strong>Unavailable saved output</strong> <small>${escape(id)}</small>`}</span><button type="button" class="button small secondary" data-action="chat-reuse-output" data-id="${escape(id)}" aria-label="Remove ${escape(name || 'this saved output')}">Remove</button></li>`;
-  }).join('')}</ol></fieldset>`;
+    return `<li><span>${name ? escape(name) : `<strong>Unavailable saved output</strong> <small>${escape(id)}</small>`}</span><button type="button" class="icon-button chat-remove" data-action="chat-reuse-output" data-id="${escape(id)}" aria-label="Remove ${escape(name || 'this saved output')}" title="Remove">${icon('close')}</button></li>`;
+  }).join('')}</ol></section>`;
 }
 function pickLibraryFiles(item) {
   editableComposer(item);
   libraries.delete(locateCard(item.id).project.id);
   void loadLibrary(locateCard(item.id).project.id).then((listing) => {
     const available = libraryChoices(listing, new Set((item.composer.selections.library ?? []).map(sourceKey)));
-    smallForm({ title: 'Add Library files', description: available.length ? 'Check files and folders, or drag one onto the prompt. They are sent as reference material, in the order chosen.' : 'Everything in the Library is already selected, or the Library is empty.',
+    smallForm({ title: 'Add Library files', description: available.length ? 'Check files or folders, or drag one onto the prompt. Sent in the order chosen.' : 'Nothing left to add.',
       fields: `<div class="chat-library-picker">${available.map((entry) => `<label draggable="true" data-library-source="${escape(sourceKey(entry.source))}"><input type="checkbox" name="source" value="${escape(sourceKey(entry.source))}">${escape(entry.label)} <small>${escape(entry.detail)}</small></label>`).join('')}</div>`,
       submit: 'Add', onSubmit: async (data) => addLibrarySources(item, data.getAll('source').map(parseSourceKey)) });
   }, (error) => showError(item, error));
@@ -279,36 +318,44 @@ function libraryContextMarkup(context) {
   const library = context.library ?? [];
   // Submissions frozen before the selection itself was captured have no summary.
   const selected = context.librarySelections?.length ? `<p class="chat-library-selected">Selected: ${selectionSummary(context.librarySelections, library).map(escape).join('; ')}</p>` : '';
-  return `${selected}${library.length ? `<ul class="chat-library-inputs">${library.map((file) => `<li><strong>${escape(file.libraryPath ?? file.filename)}</strong> <small>v${file.number} · ${formatSize(file.size)} · ${escape(deliveryDescription(file))}<br><span class="chat-library-sources">${selectionPaths(file.sources).map(escape).join(' · ')}</span><br>Version ${escape(file.versionId)} · SHA-256 ${escape(file.hash)}</small></li>`).join('')}</ul>${library.some((file) => file.method === 'copy') ? '<p class="chat-hint">The provider reads workspace copies with its tools. Frameboard does not extract, render, transcribe or convert them, and sent does not mean a file was read or understood.</p>' : ''}${library.some((file) => file.method === 'document') ? '<p class="chat-hint">Claude receives each PDF\'s exact bytes as a document. Claude may remove a PDF it cannot process; that stops the attempt. Sent does not mean a PDF was read or understood.</p>' : ''}` : ''}${(context.warnings ?? []).map((warning) => `<p class="chat-hint">${escape(warning)}</p>`).join('')}`;
+  return `${selected}${library.length ? `<ul class="chat-library-inputs">${library.map((file) => `<li title="Version ${escape(file.versionId)} · SHA-256 ${escape(file.hash)}"><strong>${escape(file.libraryPath ?? file.filename)}</strong> <small>${file.number > 1 ? `v${file.number} · ` : ''}${formatSize(file.size)} · ${escape(deliveryDescription(file))}<br><span class="chat-library-sources">${selectionPaths(file.sources).map(escape).join(' · ')}</span></small></li>`).join('')}</ul>${library.some((file) => file.method === 'copy') ? '<p class="chat-hint">The provider reads workspace copies with its tools. Sent does not mean read.</p>' : ''}${library.some((file) => file.method === 'document') ? '<p class="chat-hint">Claude gets each PDF as a document; one it cannot process stops the attempt.</p>' : ''}` : ''}${(context.warnings ?? []).map((warning) => `<p class="chat-hint">${escape(warning)}</p>`).join('')}`;
 }
 const deliveryLabels = { sending: 'sending, not confirmed', sent: 'sent', 'not-sent': 'not sent', uncertain: 'delivery uncertain', failed: 'failed' };
+// Files all sent fold into one line; any other outcome stays visible.
 function deliveryMarkup(attempt) {
   if (!attempt.delivery?.length) return '';
-  return `<ul class="chat-delivery" aria-label="Delivery">${attempt.delivery.map((entry) => `<li>${escape(entry.filename)} · ${escape(deliveryDescription(entry))} · ${deliveryLabels[entry.status] ?? escape(entry.status)}${entry.reason ? ` · ${escape(entry.reason)}` : ''}</li>`).join('')}</ul>`;
+  const list = `<ul class="chat-delivery" aria-label="Delivery">${attempt.delivery.map((entry) => `<li>${escape(entry.filename)} · ${escape(deliveryDescription(entry))} · ${deliveryLabels[entry.status] ?? escape(entry.status)}${entry.reason ? ` · ${escape(entry.reason)}` : ''}</li>`).join('')}</ul>`;
+  if (!attempt.delivery.every((entry) => entry.status === 'sent')) return list;
+  return `<details class="chat-delivery-details" data-detail-key="delivery:${escape(attempt.id)}"><summary>Sent ${plural(attempt.delivery.length, 'file')}</summary>${list}</details>`;
 }
-const savedOutputMethods = { 'transcript-save': 'Saved from a reply', 'lane-result': 'Saved by the lane result', 'workspace-save': 'Saved by you from the workspace' };
-// Saved outputs beside the work that produced them: retained snapshots,
-// downloadable even after Stop, archive or the card's deletion. A response's
-// finished workspace files are saved only when explicitly named, and only from
-// a response that could write files.
-function savedOutputsMarkup(cardId, outputs, attempt, submission, chosen = []) {
-  const kind = { image: 'Image', file: 'File' };
+const savedOutputMethods = { 'transcript-save': 'From a reply', 'lane-result': 'Lane result', 'workspace-save': 'From the workspace' };
+// Save output is offered only for a finished response that could write files.
+function canSaveFile(attempt, submission) {
   const options = submission.configuration?.nativeOptions;
   const writes = options?.sandbox === 'workspace-write' || options?.permissionMode === 'bypassPermissions';
-  const saveFile = writes && attempt.turnId && !runningStatuses.has(attempt.status)
-    ? `<button class="button small secondary" data-action="chat-save-file" data-id="${escape(attempt.id)}">Save output…</button>` : '';
-  if (!outputs.length) return saveFile ? `<div class="chat-saved-outputs">${saveFile}</div>` : '';
+  return Boolean(writes && attempt.turnId && !runningStatuses.has(attempt.status));
+}
+// Saved outputs beside the work that produced them: retained snapshots,
+// downloadable even after Stop, archive or the card's deletion. A response's
+// finished workspace files are saved only when explicitly named (Save output
+// in the message's ⋯ menu).
+function savedOutputsMarkup(cardId, outputs, chosen = []) {
+  if (!outputs.length) return '';
   return `<ul class="chat-saved-outputs" aria-label="Saved outputs">${outputs.map((output) => {
     const content = url(cardId, `saved-outputs/${encodeURIComponent(output.id)}/content`);
-    const origin = output.file ? ` · ${kind[output.kind] ?? 'File'} from ${escape(output.file.path)}` : '';
-    if (output.status === 'saved') return `<li><strong>${escape(output.filename)}</strong> · ${savedOutputMethods[output.creationMethod] ?? 'Saved'}${origin}${output.derivation?.declared ? ` · from ${output.derivation.sources.length ? escape(output.derivation.sources.map((source) => source.label).join(', ')) : 'no supplied inputs'}` : ''}${promotionsMarkup(output.promotions ?? [])}<span class="chat-output-actions"><a class="button small secondary" href="${content}?inline=1" target="_blank" rel="noopener">View</a><a class="button small secondary" href="${content}" download>Download</a><button type="button" class="button small secondary" data-action="chat-reuse-output" data-id="${escape(output.id)}" aria-pressed="${chosen.includes(output.id)}">${chosen.includes(output.id) ? 'In prompt · Remove' : 'Use in prompt'}</button><button type="button" class="button small secondary" data-action="chat-promote-output" data-id="${escape(output.id)}">Save to project library…</button></span></li>`;
-    if (output.status === 'failed') return `<li class="chat-output-error">${escape(output.filename)}${origin} was not saved. ${escape(output.error)}${output.creationMethod === 'workspace-save' ? ` <button class="button small secondary" data-action="chat-retry-saved-output" data-id="${escape(output.id)}">Retry saving</button>` : ''}</li>`;
+    const origin = output.file ? ` · ${escape(output.file.path)}` : '';
+    if (output.status === 'saved') {
+      const derivation = output.derivation?.declared ? `From ${output.derivation.sources.length ? output.derivation.sources.map((source) => source.label).join(', ') : 'no supplied inputs'}` : '';
+      const inPrompt = chosen.includes(output.id);
+      return `<li${derivation ? ` title="${escape(derivation)}"` : ''}><div class="chat-saved-row"><a class="chat-saved-name" href="${content}?inline=1" target="_blank" rel="noopener" title="View">${icon('text')}<span>${escape(output.filename)}</span></a><button type="button" class="chip chat-reuse" data-action="chat-reuse-output" data-id="${escape(output.id)}" aria-pressed="${inPrompt}" title="${inPrompt ? 'Remove from the next prompt' : 'Send with the next prompt'}">${inPrompt ? `${icon('check')}In prompt` : 'Use in prompt'}</button>${menu(`output:${output.id}`, `More for ${output.filename}`, `<a class="chat-menu-item" href="${content}" download>Download</a><button type="button" class="chat-menu-item" data-action="chat-promote-output" data-id="${escape(output.id)}">Save to project library…</button>`)}</div><small class="chat-saved-detail">${savedOutputMethods[output.creationMethod] ?? 'Saved'}${origin}</small>${promotionsMarkup(output.promotions ?? [])}</li>`;
+    }
+    if (output.status === 'failed') return `<li class="chat-output-error">${escape(output.filename)}${origin} not saved: ${escape(output.error)}${output.creationMethod === 'workspace-save' ? ` <button class="button small secondary" data-action="chat-retry-saved-output" data-id="${escape(output.id)}">Retry</button>` : ''}</li>`;
     return `<li class="chat-hint">Saving ${escape(output.filename)}…</li>`;
-  }).join('')}</ul>${saveFile}`;
+  }).join('')}</ul>`;
 }
 // Where a saved output was published in the Library. The files are separate:
 // changing or removing one never changes the other.
-const promotionsMarkup = (promotions) => promotions.length ? `<br><small class="chat-hint">${promotions.map((entry) => `${entry.outcome === 'replaced' ? 'Replaced' : 'Saved to Library as'} ${escape(entry.filename)}${entry.removed ? ' (since removed)' : ''}`).join(' · ')}</small>` : '';
+const promotionsMarkup = (promotions) => promotions.length ? `<small class="chat-saved-detail">${promotions.map((entry) => `${entry.outcome === 'replaced' ? 'Replaced' : 'Saved to Library as'} ${escape(entry.filename)}${entry.removed ? ' (since removed)' : ''}`).join(' · ')}</small>` : '';
 // Save to project library: the user names a folder and filename; a taken name
 // asks Create new, Replace or Cancel. The output stays as it is, and the new
 // Library file is not selected anywhere. Each distinct choice is one operation,
@@ -326,7 +373,7 @@ async function promoteOutput(item, outputId) {
   };
   smallForm({
     title: `Save ${output.filename} to the project Library`, submit: 'Save to Library',
-    description: 'Saves a separate Library file other cards can select. This saved output stays as it is.',
+    description: 'Saves a separate copy other cards can use.',
     fields: `<label class="form-label" for="chat-promote-folder">Folder</label><select class="form-input" id="chat-promote-folder" name="folder"><option value="">Library</option>${folderOptions(listing)}</select>
       <label class="form-label" for="name-input">Filename</label><input class="form-input" id="name-input" name="name" value="${escape(output.filename)}" maxlength="255" required autocomplete="off">`,
     onSubmit: async (data) => {
@@ -350,7 +397,7 @@ async function promoteOutput(item, outputId) {
 // again (a lost response) reuses its operation, so it is saved once.
 function saveAsDocument(item, sequence, text) {
   const operations = new Map();
-  smallForm({ title: 'Save as document', fields: `<label class="form-label" for="chat-document-name">Filename</label><input class="form-input" id="chat-document-name" name="filename" value="reply.md" required maxlength="255"><pre class="chat-review-text">${escape(text)}</pre><p class="chat-hint">Saves this exact text as a document kept with this card chat. It does not change the card or the Library.</p>`, submit: 'Save document', onSubmit: async (data) => {
+  smallForm({ title: 'Save as document', fields: `<label class="form-label" for="chat-document-name">Filename</label><input class="form-input" id="chat-document-name" name="filename" value="reply.md" required maxlength="255"><pre class="chat-review-text">${escape(text)}</pre><p class="chat-hint">Kept with this chat. The card and Library are unchanged.</p>`, submit: 'Save document', onSubmit: async (data) => {
     const filename = String(data.get('filename'));
     if (!operations.has(filename)) operations.set(filename, crypto.randomUUID());
     await send('POST', url(item.id, 'saved-outputs'), { operation: operations.get(filename), sequence, filename, text });
@@ -362,7 +409,7 @@ function saveAsDocument(item, sequence, text) {
 // filename reuse one operation, so a lost response saves it once.
 function saveWorkspaceFile(item, attemptId) {
   const operations = new Map();
-  smallForm({ title: 'Save output from the workspace', fields: `<label class="form-label" for="chat-file-path">Path in the card workspace</label><input class="form-input" id="chat-file-path" name="path" placeholder="renders/thumbnail.png" required maxlength="4000" autocomplete="off"><label class="form-label" for="chat-file-name">Filename (optional)</label><input class="form-input" id="chat-file-name" name="filename" maxlength="255" autocomplete="off"><p class="chat-hint">Keeps the file's exact current bytes with this response. Later changes to the workspace do not change it. It does not change the card, its gallery or the Library.</p>`, submit: 'Save output', onSubmit: async (data) => {
+  smallForm({ title: 'Save output from the workspace', fields: `<label class="form-label" for="chat-file-path">Path in the card workspace</label><input class="form-input" id="chat-file-path" name="path" placeholder="renders/thumbnail.png" required maxlength="4000" autocomplete="off"><label class="form-label" for="chat-file-name">Filename (optional)</label><input class="form-input" id="chat-file-name" name="filename" maxlength="255" autocomplete="off"><p class="chat-hint">Keeps the file as it is now, beside this response.</p>`, submit: 'Save output', onSubmit: async (data) => {
     const input = { path: String(data.get('path')).trim(), filename: String(data.get('filename')).trim() || undefined };
     const key = JSON.stringify(input);
     if (!operations.has(key)) operations.set(key, crypto.randomUUID());
@@ -373,37 +420,54 @@ function saveWorkspaceFile(item, attemptId) {
 function outputMarkup(output) {
   if (!output) return '';
   const status = output.generationStatus !== 'completed'
-    ? `<p class="chat-output-error">Generation ${escape(output.generationStatus)}${output.native.failure ? ` · ${escape(output.native.failure.type)}${output.native.failure.resetsAt ? ` · resets ${escape(new Date(output.native.failure.resetsAt * 1000).toLocaleString())}` : ''}` : ''}. Send a deliberate new request to try again.</p>`
+    ? `<p class="chat-output-error">Generation ${escape(output.generationStatus)}${output.native.failure ? ` · ${escape(output.native.failure.type)}${output.native.failure.resetsAt ? ` · resets ${escape(new Date(output.native.failure.resetsAt * 1000).toLocaleString())}` : ''}` : ''}. Send a new request to try again.</p>`
     : output.importStatus === 'imported' ? output.available ? `<img class="chat-output-image" src="/images/${encodeURIComponent(output.imageId)}" alt="${escape(output.name)}">`
-      : '<p class="chat-output-error">Image file unavailable. Its history and provenance are retained; it will not be regenerated.</p>'
-      : output.importStatus === 'failed' ? `<p class="chat-output-error">Generated, but not saved: ${escape(output.error)}</p><button class="button small secondary" data-action="chat-retry-save" data-id="${escape(output.id)}">Retry saving</button>`
-        : '<p class="chat-hint">Saving generated image…</p>';
-  const actions = output.importStatus === 'imported' && output.available ? `<div class="chat-output-actions"><button class="button small secondary" data-action="chat-edit-image" data-id="${escape(output.imageId)}">Edit</button>${output.inGallery ? '<span class="chat-hint">In gallery</span>' : `<button class="button small secondary" data-action="chat-adopt" data-id="${escape(output.id)}">Add to gallery</button>`}</div>` : '';
+      : '<p class="chat-output-error" title="Its history and provenance are kept; it will not be regenerated.">Image file unavailable.</p>'
+      : output.importStatus === 'failed' ? `<p class="chat-output-error">Generated, not saved: ${escape(output.error)}</p><button class="button small secondary" data-action="chat-retry-save" data-id="${escape(output.id)}">Retry saving</button>`
+        : '<p class="chat-hint">Saving image…</p>';
+  const actions = output.importStatus === 'imported' && output.available ? `<div class="chat-output-actions"><button class="button small secondary" data-action="chat-edit-image" data-id="${escape(output.imageId)}" title="Use this exact version as a reference">Edit</button>${output.inGallery ? `<span class="chat-hint">${icon('check')}In gallery</span>` : `<button class="button small secondary" data-action="chat-adopt" data-id="${escape(output.id)}">Add to gallery</button>`}</div>` : '';
   return `<figure class="chat-output">${status}${actions}</figure>`;
 }
+// Exact identifiers stay available as tooltips; field versions show only once a field has changed.
 function contextMarkup(context) {
-  return `${context.fields.map((field) => `<p><strong>${escape(field.label)} <small>v${field.version}</small></strong><br>${escape(field.value)}</p>`).join('')}${context.images.map((image) => `<figure><img src="/images/${encodeURIComponent(image.id)}" alt="${escape(image.name)}"><figcaption>${escape(image.labels.join(', '))}: ${escape(image.name)}<br><small>Version ${escape(image.id)} · SHA-256 ${escape(image.hash)}</small></figcaption></figure>`).join('')}${libraryContextMarkup(context)}${(context.savedOutputs ?? []).length ? `<ul class="chat-library-inputs" aria-label="Reused saved outputs">${context.savedOutputs.map((output) => `<li><strong>${escape(output.filename)}</strong> <small>Saved output · ${escape(savedOutputMethods[output.creationMethod] ?? 'Saved')} by ${escape(output.provider === 'claude' ? 'Claude' : 'Codex')} · ${formatSize(output.size)} · ${escape(deliveryDescription(output))}<br>From submission ${escape(output.submissionId)} · conversation ${escape(output.conversationId)}<br>Saved output ${escape(output.outputId)} · Version ${escape(output.versionId)} · SHA-256 ${escape(output.hash)}</small></li>`).join('')}</ul>` : ''}`;
+  return `${context.fields.map((field) => `<p><strong>${escape(field.label)}${field.version > 1 ? ` <small>v${field.version}</small>` : ''}</strong><br>${escape(field.value)}</p>`).join('')}${context.images.map((image) => `<figure title="Version ${escape(image.id)} · SHA-256 ${escape(image.hash)}"><img src="/images/${encodeURIComponent(image.id)}" alt="${escape(image.name)}"><figcaption>${escape(image.labels.join(', '))}: ${escape(image.name)}</figcaption></figure>`).join('')}${libraryContextMarkup(context)}${(context.savedOutputs ?? []).length ? `<ul class="chat-library-inputs" aria-label="Reused saved outputs">${context.savedOutputs.map((output) => `<li title="From submission ${escape(output.submissionId)} · conversation ${escape(output.conversationId)} · saved output ${escape(output.outputId)} · version ${escape(output.versionId)} · SHA-256 ${escape(output.hash)}"><strong>${escape(output.filename)}</strong> <small>Saved output · ${escape(savedOutputMethods[output.creationMethod] ?? 'Saved')} · ${escape(providerName(output.provider))} · ${formatSize(output.size)} · ${escape(deliveryDescription(output))}</small></li>`).join('')}</ul>` : ''}`;
 }
 function frozenMarkup(submission) {
-  return `<details class="chat-frozen" data-detail-key="context:${escape(submission.id)}"><summary>Submitted context · ${escape(submission.model)}</summary><p>${escape(submission.prompt)}</p>${contextMarkup(submission.context)}<small>Configuration ${escape(submission.configuration.id)}</small></details>`;
+  return `<details class="chat-frozen" data-detail-key="context:${escape(submission.id)}"><summary title="Configuration ${escape(submission.configuration.id)}">Context · ${escape(submission.model)}</summary><div class="chat-frozen-body"><p>${escape(submission.prompt)}</p>${contextMarkup(submission.context)}</div></details>`;
 }
 async function refreshPreview(item) {
   if (selected !== item.id || !$('#chat-context-preview')?.open || item.dirty || item.saving) return;
   try {
     const preview = await send('POST', url(item.id, 'preview'), {});
     if (selected !== item.id || !$('#chat-exact-preview')) return;
-    $('#chat-exact-preview').innerHTML = `${preview.problems?.length ? `<div class="chat-problems" role="alert"><strong>Send is blocked</strong><ul>${preview.problems.map((problem) => `<li>${escape(problem.label)}: ${escape(problem.reason)}</li>`).join('')}</ul></div>` : ''}${contextMarkup(preview.context)}`;
+    $('#chat-send-problems').innerHTML = preview.problems?.length ? `<div class="chat-problems" role="alert"><strong>Send is blocked</strong><ul>${preview.problems.map((problem) => `<li>${escape(problem.label)}: ${escape(problem.reason)}</li>`).join('')}</ul></div>` : '';
+    $('#chat-exact-preview').innerHTML = contextMarkup(preview.context);
   } catch (error) { showError(item, error); }
 }
 // Possible delivery is never resent automatically; these are explicit choices.
 function recoveryMarkup(submission, attempts) {
   if (submission.status === 'uncertain') {
     const attempt = attempts.at(-1);
-    return `<div class="chat-recovery"><p class="chat-hint">Codex may have received this prompt. Nothing is resent automatically.</p><button class="button small secondary" data-action="chat-reconcile">Check native history</button><button class="button small secondary" data-action="chat-resolve" data-id="${escape(attempt.id)}">Mark interrupted…</button></div>`;
+    return `<div class="chat-recovery"><span class="chat-hint">May have been delivered. Nothing is resent automatically.</span><button class="button small secondary" data-action="chat-reconcile" title="Check native history">Check history</button><button class="button small secondary" data-action="chat-resolve" data-id="${escape(attempt.id)}">Mark interrupted…</button></div>`;
   }
-  if (submission.status === 'held' && submission.hold === 'outside') return `<div class="chat-recovery"><button class="button small secondary" data-action="chat-continue" data-id="${escape(submission.id)}">Continue in this conversation</button><span class="chat-hint">or start fresh context</span></div>`;
-  if (submission.status === 'waiting' && submission.retryAt) return `<p class="chat-hint">Next automatic try at ${escape(new Date(submission.retryAt).toLocaleTimeString())}.</p>`;
+  if (submission.status === 'held' && submission.hold === 'outside') return `<div class="chat-recovery"><button class="button small secondary" data-action="chat-continue" data-id="${escape(submission.id)}">Continue here</button><span class="chat-hint">or start fresh context</span></div>`;
+  if (submission.status === 'waiting' && submission.retryAt) return `<p class="chat-hint">Next try at ${escape(new Date(submission.retryAt).toLocaleTimeString())}.</p>`;
   return '';
+}
+const statusLabels = { running: 'In progress', completed: 'Completed', queued: 'Queued', waiting: 'Waiting for provider', held: 'Needs attention', failed: 'Failed', interrupted: 'Stopped', uncertain: 'Check delivery', cancelled: 'Cancelled' };
+function submissionMarkup(item, submission, speaker) {
+  const snapshot = item.snapshot;
+  const attempts = snapshot.attempts.filter((attempt) => attempt.submissionId === submission.id);
+  const sent = submission.lane
+    ? `<div class="chat-prompt-sent chat-lane-run" title="${escape(submission.lane.playbook.path)}"><span class="chat-speaker">Lane run · ${submission.lane.trigger === 'manual' ? 'by you' : 'on entry'}</span>${escape(submission.lane.stageName)} playbook</div>`
+    : `<div class="chat-prompt-sent"><span class="chat-speaker">You</span>${escape(submission.prompt)}</div>`;
+  const body = attempts.map((attempt) => `${attempt.previousAttemptId ? `<div class="chat-divider">${snapshot.attempts.find((a) => a.id === attempt.previousAttemptId)?.status === 'not-delivered' ? 'Not sent before stop · resent with original inputs' : 'Retry · original inputs'}</div>` : ''}${deliveryMarkup(attempt)}${attemptMarkup(snapshot.items.filter((entry) => entry.attemptId === attempt.id), attempt.id,
+    (entry) => outputMarkup((snapshot.outputs ?? []).find((output) => output.attemptId === entry.attemptId
+      && (output.nativeId === entry.nativeId || output.id === entry.data?.outputId))), runningStatuses.has(attempt.status), speaker)}${savedOutputsMarkup(snapshot.cardId, (snapshot.savedOutputs ?? []).filter((output) => output.attemptId === attempt.id), item.composer?.selections.savedOutputs)}`).join('');
+  const writable = attempts.filter((attempt) => canSaveFile(attempt, submission));
+  const more = writable.map((attempt, index) => `<button type="button" class="chat-menu-item" data-action="chat-save-file" data-id="${escape(attempt.id)}" title="Keep a file this response wrote">Save output…${writable.length > 1 ? ` (try ${index + 1})` : ''}</button>`).join('');
+  const actions = `${['queued', 'waiting', 'held'].includes(submission.status) ? `<button class="button small secondary" data-action="chat-cancel" data-id="${escape(submission.id)}" title="Cancel this submission">Cancel</button>` : ''}${submission.retryable ? `<button class="button small secondary" data-action="chat-retry" data-id="${escape(submission.id)}" title="Resend the original submission">Retry</button>` : ''}`;
+  return `<article class="chat-submission">${sent}${body}<div class="chat-meta"><span class="chat-status">${escape(statusLabels[submission.status] ?? submission.status)}${submission.reason ? ` · ${escape(submission.reason)}` : ''}</span>${frozenMarkup(submission)}${menu(`submission:${submission.id}`, 'More actions', more)}</div>${recoveryMarkup(submission, attempts)}${actions ? `<div class="chat-recovery">${actions}</div>` : ''}${submission.retryable && submission.lane ? '<p class="chat-hint chat-retry-hint">Retry resends the original run as sent. For the current playbook and inputs, use Run playbook.</p>' : ''}</article>`;
 }
 function renderTranscript(item) {
   const timeline = $('#chat-transcript'); if (!timeline || !item.snapshot) return;
@@ -413,21 +477,13 @@ function renderTranscript(item) {
   const snapshot = item.snapshot;
   const html = snapshot.conversations.map((conversation) => {
     const submissions = snapshot.submissions.filter((submission) => submission.conversationId === conversation.id);
-    const divider = conversation.state === 'previous' ? 'Previous conversation' : conversation.state === 'native-unavailable' ? 'Native context unavailable · history retained' : snapshot.conversations.length > 1 ? 'Current conversation' : '';
-    return `${divider ? `<div class="chat-divider">${divider}</div>` : ''}${submissions.map((submission) => {
-      const attempts = snapshot.attempts.filter((attempt) => attempt.submissionId === submission.id);
-      const sent = submission.lane
-        ? `<div class="chat-prompt-sent chat-lane-run"><span class="chat-speaker">Lane run</span>${escape(submission.lane.stageName)} playbook${submission.lane.trigger === 'manual' ? ' · run by you' : ' · card entered the lane'}<small>${escape(submission.lane.playbook.path)}</small></div>`
-        : `<div class="chat-prompt-sent"><span class="chat-speaker">You</span>${escape(submission.prompt)}</div>`;
-      return `<article class="chat-submission">${sent}${frozenMarkup(submission)}<p class="chat-status">${escape(({ running: 'In progress', completed: 'Completed', queued: 'Queued', waiting: 'Waiting for provider', held: 'Needs attention', failed: 'Failed', interrupted: 'Stopped', uncertain: 'Check delivery', cancelled: 'Cancelled' })[submission.status] ?? submission.status)}${submission.reason ? ` · ${escape(submission.reason)}` : ''}</p>${attempts.map((attempt) => `${attempt.previousAttemptId ? `<div class="chat-divider">${snapshot.attempts.find((a) => a.id === attempt.previousAttemptId)?.status === 'not-delivered' ? 'Not sent before Codex stopped · sent again with original inputs' : 'Retry · original inputs retained'}</div>` : ''}${deliveryMarkup(attempt)}${attemptMarkup(snapshot.items.filter((entry) => entry.attemptId === attempt.id), attempt.id,
-        (entry) => outputMarkup((snapshot.outputs ?? []).find((output) => output.attemptId === entry.attemptId
-          && (output.nativeId === entry.nativeId || output.id === entry.data?.outputId))), runningStatuses.has(attempt.status))}${savedOutputsMarkup(snapshot.cardId, (snapshot.savedOutputs ?? []).filter((output) => output.attemptId === attempt.id), attempt, submission, item.composer?.selections.savedOutputs)}`).join('')}${recoveryMarkup(submission, attempts)}${['queued', 'waiting', 'held'].includes(submission.status) ? `<button class="button small secondary" data-action="chat-cancel" data-id="${escape(submission.id)}">Cancel submission</button>` : ''}${submission.retryable ? `<button class="button small secondary" data-action="chat-retry" data-id="${escape(submission.id)}">Retry original submission</button>${submission.lane ? '<p class="chat-hint chat-retry-hint">Retry resends this lane run’s original submission exactly as it was sent. To use the current playbook and inputs, choose Run playbook on the card.</p>' : ''}` : ''}</article>`;
-    }).join('')}`;
+    const divider = conversation.state === 'previous' ? 'Previous conversation' : conversation.state === 'native-unavailable' ? 'Native context lost · history kept' : snapshot.conversations.length > 1 ? 'Current conversation' : '';
+    return `${divider ? `<div class="chat-divider">${divider}</div>` : ''}${submissions.map((submission) => submissionMarkup(item, submission, providerName(conversation.provider))).join('')}`;
   }).join('');
   if (timeline.dataset.rendered !== html) {
     const selection = selectedReply();
-    const openDetails = new Set([...timeline.querySelectorAll('details[open]')].map((node) => node.dataset.detailKey));
-    timeline.innerHTML = html || '<p class="chat-empty">Send a prompt to start this card’s conversation.</p>';
+    const openDetails = new Set([...timeline.querySelectorAll('details[open]')].map((node) => node.dataset.detailKey).filter(Boolean));
+    timeline.innerHTML = html || '<p class="chat-empty">No messages yet.</p>';
     timeline.dataset.rendered = html;
     timeline.querySelectorAll('details').forEach((node) => { node.open = openDetails.has(node.dataset.detailKey); });
     restoreReplySelection(selection);
@@ -438,8 +494,9 @@ function renderTranscript(item) {
   renderRequests(item);
   renderProposals(item);
   const current = snapshot.conversations.find((c) => c.state !== 'previous');
-  $('#chat-grants').innerHTML = current?.grants.length ? `<p class="chat-hint">${current.grants.some((g) => g.kind === 'full') ? 'Full native access for this conversation. Remaining requests are approved individually; full sandbox mode begins with the next response. Stop active work before revoking.' : `${current.grants.length} exact operation allowance(s)`}. Card acceptance still applies. <button class="button small secondary" data-action="chat-revoke-grants">Revoke allowances</button></p>` : '';
-  if ($('#chat-save-state')) $('#chat-save-state').textContent = item.dirty || item.saving ? 'Saving draft…' : '';
+  const full = current?.grants.some((g) => g.kind === 'full');
+  $('#chat-grants').innerHTML = current?.grants.length ? `<div class="chat-grants-row"><span>${full ? 'Full native access' : plural(current.grants.length, 'allowed operation')} · this conversation</span>${help('Allowances', full ? '<p>Remaining requests are approved individually; full sandbox mode begins with the next response. Stop active work before revoking.</p><p>Card acceptance still applies.</p>' : '<p>Exact operations you allowed for the rest of this conversation.</p><p>Card acceptance still applies.</p>')}<button class="text-button" data-action="chat-revoke-grants" title="Revoke allowances">Revoke</button></div>` : '';
+  if ($('#chat-save-state')) $('#chat-save-state').textContent = item.dirty || item.saving ? 'Saving…' : '';
 }
 function renderRequests(item) {
   const html = item.snapshot.requests.filter((r) => r.status === 'pending').map((r) => {
@@ -450,19 +507,21 @@ function renderRequests(item) {
       || r.method === 'item/fileChange/requestApproval' && r.params.changes?.length;
     const detail = input ? r.params.questions?.map((q) => q.question).join('\n')
       : [r.params.command, r.params.cwd, r.params.reason, r.params.permissions ? JSON.stringify(r.params.permissions, null, 2) : '', r.params.changes ? JSON.stringify(r.params.changes, null, 2) : ''].filter(Boolean).join('\n');
-    return `<div class="chat-request"><strong>? ${escape(locateCard(item.id)?.card.title || 'This card')} · Input needed</strong><pre>${escape(detail || r.method)}</pre>${supported ? '<p>Approval relaxes only Codex\'s own sandbox. Retained originals, outputs, frozen history and authority metadata stay protected.</p>' : ''}${input ? `<button class="button small secondary" data-action="chat-input" data-id="${escape(r.id)}">Answer questions</button>` : supported ? `<button class="button small secondary" data-action="chat-answer" data-id="${escape(r.id)}" data-decision="accept">Allow once</button>${scoped ? `<button class="button small secondary" data-action="chat-answer" data-id="${escape(r.id)}" data-decision="accept" data-scope="conversation">Allow this exact operation for conversation</button>` : ''}<button class="button small secondary" data-action="chat-full-access" data-id="${escape(r.id)}">Full native access…</button><button class="button small secondary" data-action="chat-answer" data-id="${escape(r.id)}" data-decision="decline">Deny</button>` : '<p>This request is unsupported. Stop remains available.</p>'}</div>`;
+    return `<div class="chat-request"><div class="chat-request-head"><strong>? ${escape(locateCard(item.id)?.card.title || 'This card')} · Input needed</strong>${supported ? help('Approvals', '<p>Approval relaxes only Codex’s own sandbox. Retained originals, outputs, frozen history and authority metadata stay protected.</p><p><strong>Always allow</strong> allows this exact operation for the rest of the conversation. <strong>Full access</strong> turns off Codex’s sandbox and approval prompts for it.</p>') : ''}</div><pre>${escape(detail || r.method)}</pre><div class="chat-request-actions">${input ? `<button class="button small secondary" data-action="chat-input" data-id="${escape(r.id)}">Answer questions</button>` : supported ? `<button class="button small secondary" data-action="chat-answer" data-id="${escape(r.id)}" data-decision="accept">Allow once</button>${scoped ? `<button class="button small secondary" data-action="chat-answer" data-id="${escape(r.id)}" data-decision="accept" data-scope="conversation" title="Allow this exact operation for the rest of this conversation">Always allow</button>` : ''}<button class="button small secondary" data-action="chat-answer" data-id="${escape(r.id)}" data-decision="decline">Deny</button><button class="text-button" data-action="chat-full-access" data-id="${escape(r.id)}" title="Full native access for this conversation">Full access…</button>` : '<p>Unsupported request. Stop is still available.</p>'}</div></div>`;
   }).join('');
   const panel = $('#chat-requests'); if (panel.dataset.rendered !== html) { panel.innerHTML = html; panel.dataset.rendered = html; }
-  if (item.reveal === 'requests' && html) { item.reveal = null; panel.scrollIntoView({ block: 'nearest' }); panel.querySelector('button')?.focus(); }
+  if (item.reveal === 'requests' && html) { item.reveal = null; panel.scrollIntoView({ block: 'nearest' }); panel.querySelector('[data-action="chat-answer"], [data-action="chat-input"]')?.focus(); }
 }
 function renderProposals(item) {
-  const html = (item.snapshot.proposals ?? []).filter((p) => p.status === 'pending').map((p) => `<div class="chat-request"><strong>Card proposal · ${p.kind === 'move' ? 'Lane move' : 'Text changes'}</strong><p>${escape(p.kind === 'move' ? 'Requires your acceptance' : Object.keys(p.payload.fields).join(', '))}</p><button class="button small secondary" data-action="chat-proposal" data-id="${escape(p.id)}">Review proposal</button></div>`).join('');
+  const card = locateCard(item.id)?.card;
+  const label = (key) => (card && contextFields(templateOf(card)).find((field) => field.key === key)?.label) ?? key;
+  const html = (item.snapshot.proposals ?? []).filter((p) => p.status === 'pending').map((p) => `<div class="chat-request chat-proposal"><span><strong>Proposed ${p.kind === 'move' ? 'lane move' : 'edits'}</strong>${p.kind === 'move' ? '' : ` · ${escape(Object.keys(p.payload.fields).map(label).join(', '))}`}</span><button class="button small secondary" data-action="chat-proposal" data-id="${escape(p.id)}">Review</button></div>`).join('');
   const panel = $('#chat-proposals'); if (panel.dataset.rendered !== html) { panel.innerHTML = html; panel.dataset.rendered = html; }
 }
 async function answerInput(item, id) {
   const r = item.snapshot.requests.find((r) => r.id === id && r.status === 'pending');
   if (!r) throw new Error('This request is no longer pending.');
-  smallForm({ title: 'Answer this card’s questions', fields: r.params.questions.map((q, index) => `<label class="form-label" for="chat-question-${index}">${escape(q.question)}</label>${q.options?.length ? `<p>${q.options.map((o) => `${escape(o.label)}: ${escape(o.description)}`).join('<br>')}</p>` : ''}<input class="form-input" id="chat-question-${index}" name="answer-${index}" type="${q.isSecret ? 'password' : 'text'}" maxlength="200000" required autocomplete="off">`).join(''), submit: 'Send answers', onSubmit: async (data) => {
+  smallForm({ title: 'Answer questions', fields: r.params.questions.map((q, index) => `<label class="form-label" for="chat-question-${index}">${escape(q.question)}</label>${q.options?.length ? `<p>${q.options.map((o) => `${escape(o.label)}: ${escape(o.description)}`).join('<br>')}</p>` : ''}<input class="form-input" id="chat-question-${index}" name="answer-${index}" type="${q.isSecret ? 'password' : 'text'}" maxlength="200000" required autocomplete="off">`).join(''), submit: 'Send answers', onSubmit: async (data) => {
     const answers = Object.fromEntries(r.params.questions.map((q, index) => [q.id, { answers: [String(data.get(`answer-${index}`))] }]));
     await send('POST', url(item.id, 'answer'), { requestId: id, response: { answers } }); await refresh(item);
   } });
@@ -472,12 +531,12 @@ async function reviewProposal(item, id) {
   const p = item.snapshot.proposals.find((p) => p.id === id);
   const found = locateCard(item.id); const lanes = found ? lanesOf(found.project) : [];
   const label = (key) => contextFields(templateOf(locateCard(item.id).card)).find((f) => f.key === key)?.label ?? key;
-  smallForm({ title: 'Review card proposal', fields: p.kind === 'move'
+  smallForm({ title: 'Review proposal', fields: p.kind === 'move'
     ? `<p>${escape(lanes.find((l) => l.id === preview.fromStageId)?.name ?? 'Current lane')} → ${escape(lanes.find((l) => l.id === preview.payload.toStageId)?.name ?? 'Missing lane')}${preview.payload.route ? ` (route “${escape(preview.payload.route)}”)` : ''}</p>`
     : Object.entries(preview.payload.fields).map(([key, value]) => `<label><input type="checkbox" name="field" value="${escape(key)}" checked> ${escape(label(key))}</label><p>Current</p><pre class="chat-review-text">${escape(preview.before[key])}</pre><p>Proposed</p><pre class="chat-review-text">${escape(value)}</pre>`).join(''), submit: p.kind === 'move' ? 'Accept lane move' : 'Apply selected fields', onSubmit: async (data) => {
       await send('POST', url(item.id, `proposals/${id}/accept`), { reviewId: preview.reviewId, fields: data.getAll('field'), baseVersions: preview.baseVersions, placementVersion: preview.placementVersion });
       await refresh(item);
-    }, extra: `<button class="button secondary" type="button" data-action="chat-reject-proposal" data-id="${escape(id)}">Reject proposal</button>` });
+    }, extra: `<button class="button secondary" type="button" data-action="chat-reject-proposal" data-id="${escape(id)}">Reject</button>` });
 }
 function selectedReply() {
   const selection = window.getSelection();
@@ -656,7 +715,7 @@ function renderProgress(item) {
 }
 function renderActivityList() {
   const list = $('#chat-activity-list'); if (!list) return;
-  list.innerHTML = activity.length ? activity.map((entry) => `<button class="chat-activity-entry" data-action="chat-activity-card" data-id="${escape(entry.cardId)}" data-project="${escape(entry.projectId)}" ${entry.requestId ? 'data-reveal="requests"' : ''} ${entry.deleted ? 'disabled' : ''}><strong>${escape(entry.title || 'Untitled card')}${entry.deleted ? ' (deleted)' : ''}</strong><span data-activity-card="${escape(entry.cardId)}">${escape(activityLabel(entry))}</span>${entry.reason ? `<span>${escape(entry.reason)}</span>` : ''}</button>`).join('') : '<p>No active card chats.</p>';
+  list.innerHTML = activity.length ? activity.map((entry) => `<button class="chat-activity-entry" data-action="chat-activity-card" data-id="${escape(entry.cardId)}" data-project="${escape(entry.projectId)}" ${entry.requestId ? 'data-reveal="requests"' : ''} ${entry.deleted ? 'disabled' : ''}><strong>${escape(entry.title || 'Untitled card')}${entry.deleted ? ' (deleted)' : ''}</strong><span data-activity-card="${escape(entry.cardId)}">${escape(activityLabel(entry))}</span>${entry.reason ? `<span>${escape(entry.reason)}</span>` : ''}</button>`).join('') : '<p>No active chats.</p>';
 }
 async function loadModelCatalog() {
   if (catalogLoading) { catalogRefreshPending = true; return catalogLoading; }
@@ -684,7 +743,14 @@ export function initializeChats(callbacks) {
   window.addEventListener('resize', updateSelectionActions);
   // Preserve the highlight until a toolbar action captures it, including on touch.
   document.addEventListener('pointerdown', (event) => { if (event.target.closest('#chat-selection-actions')) event.preventDefault(); });
+  const closeMenus = (except) => document.querySelectorAll('details.chat-menu[open]').forEach((node) => { if (node !== except) node.open = false; });
+  document.addEventListener('click', (event) => {
+    const open = event.target.closest?.('details.chat-menu');
+    closeMenus(open && !event.target.closest('.chat-menu-item') ? open : null);
+  });
   document.addEventListener('keydown', (event) => {
+    const menu = document.querySelector('details.chat-menu[open]');
+    if (event.key === 'Escape' && menu) { menu.open = false; menu.querySelector('summary').focus(); event.preventDefault(); event.stopPropagation(); return; }
     const toolbar = $('#chat-selection-actions');
     if (event.key === 'Escape' && toolbar && !toolbar.hidden) { clearReplySelection(chats.get(selected)); event.preventDefault(); event.stopPropagation(); }
   });
@@ -708,14 +774,14 @@ export function initializeChats(callbacks) {
     if (target.dataset.chatAuthority) {
       const fields = new Set(item.composer.authority.fields);
       if (target.checked) fields.add(target.dataset.chatAuthority); else fields.delete(target.dataset.chatAuthority);
-      item.composer.authority.fields = [...fields]; composerChanged(item); return;
+      item.composer.authority.fields = [...fields]; composerChanged(item); updateContextSummary(item); return;
     }
     if (target.id === 'chat-provider') { item.composer.provider = target.value; item.composer.model = null; item.composer.selections.library = []; item.composer.selections.savedOutputs = []; composerChanged(item); renderComposer(item); return; }
     if (target.id === 'chat-model') { item.composer.model = target.value || null; composerChanged(item); updateComposerControls(item); return; }
     for (const [attribute, key] of [['chatField', 'fields'], ['chatRole', 'roles'], ['chatImage', 'images']]) if (target.dataset[attribute]) {
       const set = new Set(item.composer.selections[key]);
       if (target.checked) set.add(target.dataset[attribute]); else set.delete(target.dataset[attribute]);
-      item.composer.selections[key] = [...set]; composerChanged(item);
+      item.composer.selections[key] = [...set]; composerChanged(item); updateContextSummary(item);
     }
   });
   document.addEventListener('click', async (event) => {
@@ -733,7 +799,7 @@ export function initializeChats(callbacks) {
       if (action === 'workbench-tab') { rememberView(); item.view.tab = target.dataset.tab; applyLayout(); rememberView(); scheduleRefresh(); }
       if (action === 'chat-send') await sendPrompt(item);
       if (action === 'chat-save-draft') { await saveComposer(item); item.error = ''; $('#chat-error').hidden = true; await refresh(item); }
-      if (action === 'chat-load-draft') smallForm({ title: 'Use the saved composer?', description: 'Discard this card’s local unsent prompt and reference selections. Copy anything you want to keep first. Other card drafts and running responses are unaffected.', submit: 'Use saved draft', onSubmit: async () => {
+      if (action === 'chat-load-draft') smallForm({ title: 'Use the saved composer?', description: 'Discards this card’s unsent prompt and selections here. Copy anything you want to keep first.', submit: 'Use saved draft', onSubmit: async () => {
         if (item.saving) await item.saving.catch(() => {});
         clearTimeout(item.timer); item.version++; item.dirty = false;
         item.composer = (await request(url(item.id))).composer;
@@ -741,7 +807,7 @@ export function initializeChats(callbacks) {
       } });
       if (action === 'chat-reconcile') { await send('POST', url(item.id, 'reconcile'), {}); await refresh(item); }
       if (action === 'chat-continue') { await send('POST', url(item.id, 'continue'), { submissionId: target.dataset.id }); await refresh(item); }
-      if (action === 'chat-resolve') smallForm({ title: 'Mark this delivery interrupted?', description: 'Codex may already have received this prompt. Marking it interrupted unblocks this card’s queue and lets you retry deliberately, which may send it twice. Nothing is resent automatically.', submit: 'Mark interrupted', onSubmit: async () => { await send('POST', url(item.id, 'resolve'), { attemptId: target.dataset.id }); await refresh(item); } });
+      if (action === 'chat-resolve') smallForm({ title: 'Mark this delivery interrupted?', description: 'Codex may already have this prompt. Marking it interrupted unblocks the queue; a retry may send it twice.', submit: 'Mark interrupted', onSubmit: async () => { await send('POST', url(item.id, 'resolve'), { attemptId: target.dataset.id }); await refresh(item); } });
       if (action === 'chat-stop') { await send('POST', url(item.id, 'stop'), {}); await refresh(item); }
       if (action === 'chat-cancel' || action === 'chat-retry') { await send('POST', url(item.id, action === 'chat-cancel' ? 'cancel' : 'retry'), { submissionId: target.dataset.id }); await refresh(item); }
       if (action === 'chat-answer') { await send('POST', url(item.id, 'answer'), { requestId: target.dataset.id, response: { decision: target.dataset.decision, scope: target.dataset.scope ?? 'once' } }); await refresh(item); }
@@ -752,7 +818,7 @@ export function initializeChats(callbacks) {
       if (action === 'chat-reply') replyToSelection(item);
       if (action === 'chat-save-selection') { const { sequence, text } = checkedReply(item); clearReplySelection(item); saveAsDocument(item, sequence, text); }
       if (action === 'chat-promote-output') await promoteOutput(item, target.dataset.id);
-      if (action === 'chat-adopt') { const result = await send('POST', url(item.id, `outputs/${target.dataset.id}/adopt`), {}); refreshSavedCard(result.card); await refresh(item); toast(result.adopted ? 'Added to gallery. Choose roles in the editor.' : 'Already in the gallery.'); }
+      if (action === 'chat-adopt') { const result = await send('POST', url(item.id, `outputs/${target.dataset.id}/adopt`), {}); refreshSavedCard(result.card); await refresh(item); toast(result.adopted ? 'Added to gallery.' : 'Already in the gallery.'); }
       if (action === 'chat-retry-save') { await send('POST', url(item.id, `outputs/${target.dataset.id}/retry-save`), {}); await refresh(item); }
       if (action === 'chat-save-file') saveWorkspaceFile(item, target.dataset.id);
       if (action === 'chat-retry-saved-output') { try { await send('POST', url(item.id, `saved-outputs/${target.dataset.id}/retry-save`), {}); toast('File saved.'); } finally { await refresh(item); } }
@@ -776,8 +842,8 @@ export function initializeChats(callbacks) {
         composerChanged(item); renderComposer(item);
       }
       if (action === 'chat-revoke-grants') { await send('POST', url(item.id, 'revoke-grants'), {}); await refresh(item); }
-      if (action === 'chat-full-access') smallForm({ title: 'Allow full native access?', description: 'Approve remaining native requests individually. From the next response Codex runs without its own sandbox or approval prompts for this conversation. Retained originals, outputs, frozen history and authority metadata remain protected. Workspaces stay mutable; local services and unverified network destinations stay blocked. Card acceptance keeps its own rules. Stop active work before revoking; fresh context resets the allowance.', submit: 'Allow full native access', onSubmit: async () => { await send('POST', url(item.id, 'answer'), { requestId: target.dataset.id, response: { decision: 'accept', scope: 'full' } }); await refresh(item); } });
-      if (action === 'chat-fresh') smallForm({ title: 'Start empty fresh context?', description: 'Retain this conversation as previous history and reset its permissions. Cancel any queued or held submissions for the old conversation and clear Library file and saved output choices. Saved outputs stay available to use again. No native conversation or turn starts until Send.', submit: 'Start fresh and cancel queued work', onSubmit: async () => { await saveComposer(item); item.snapshot = await send('POST', url(item.id, 'fresh'), { cancelQueued: true }); item.composer = item.snapshot.composer; renderComposer(item); renderTranscript(item); } });
+      if (action === 'chat-full-access') smallForm({ title: 'Allow full native access?', description: 'From the next response, Codex runs without its sandbox or approval prompts in this conversation. Originals, outputs and history stay protected; local services and unverified network stay blocked. Fresh context resets it.', submit: 'Allow full access', onSubmit: async () => { await send('POST', url(item.id, 'answer'), { requestId: target.dataset.id, response: { decision: 'accept', scope: 'full' } }); await refresh(item); } });
+      if (action === 'chat-fresh') smallForm({ title: 'Start fresh context?', description: 'Keeps this conversation as history, resets its permissions, cancels queued work and clears Library and saved output choices.', submit: 'Start fresh', onSubmit: async () => { await saveComposer(item); item.snapshot = await send('POST', url(item.id, 'fresh'), { cancelQueued: true }); item.composer = item.snapshot.composer; renderComposer(item); renderTranscript(item); } });
     } catch (error) { if (item) showError(item, error); else toast(error.message); }
 
   });

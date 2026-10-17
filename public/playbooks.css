@@ -1,70 +1,73 @@
 /* The playbook folder editor and the card editor's playbook bar and notes.
    Documents are plain Markdown, so the editor is a monospace page with the
-   folder on the left and an explanation of the saved settings on the right. */
+   folder on the left and a one-line summary of the settings over it. */
 @layer forms {
-  #playbook-dialog { width: min(1320px, calc(100vw - 48px)); height: min(880px, calc(100dvh - 48px)); max-width: none; max-height: none; overflow: hidden; }
+  #playbook-dialog { width: min(1080px, calc(100vw - 48px)); height: min(880px, calc(100dvh - 48px)); max-width: none; max-height: none; overflow: hidden; }
   #playbook-dialog[open] { display: flex; flex-direction: column; }
   .playbook-header { display: flex; justify-content: space-between; align-items: center; gap: 18px; padding: 20px 26px 16px; border-bottom: 1px solid var(--border); }
   .playbook-breadcrumb { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
   .playbook-breadcrumb .icon { width: 12px; height: 12px; }
   .playbook-header h2 { font: 700 20px/28px var(--body-font); margin-top: 4px; }
-  .playbook-workspace { display: grid; grid-template-columns: 230px minmax(0, 1fr) 320px; flex: 1; min-height: 0; }
+  .playbook-workspace { display: grid; grid-template-columns: 210px minmax(0, 1fr); flex: 1; min-height: 0; }
 
   .playbook-nav { display: flex; flex-direction: column; gap: 2px; padding: 16px 12px; border-right: 1px solid var(--border); background: var(--well); overflow-y: auto; min-width: 0; }
   .playbook-nav-heading { display: flex; align-items: center; justify-content: space-between; margin: 14px 8px 6px; color: var(--text); font: 500 14px/1.5 var(--body-font); }
   .playbook-nav-heading:first-child { margin-top: 0; }
   .playbook-nav-heading .icon-button { width: 22px; height: 22px; color: var(--text); }
   .playbook-nav-heading .icon { width: 13px; height: 13px; }
-  .playbook-nav-item { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: 8px; width: 100%; padding: 8px 10px; border-radius: 10px; text-align: left; font-size: 14px; color: var(--text); }
+  .playbook-nav-item { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; column-gap: 8px; width: 100%; padding: 6px 10px; border-radius: 10px; text-align: left; font-size: 14px; color: var(--text); }
   .playbook-nav-item > span { display: flex; align-items: center; gap: 8px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .playbook-nav-item small { grid-column: 1 / -1; color: var(--muted); font-size: 12px; }
+  .playbook-nav-item small { grid-column: 3; color: var(--faint); font-size: 11px; font-weight: 400; white-space: nowrap; }
   .playbook-nav-item:hover { background: var(--raised); }
   .playbook-nav-item.active { background: var(--raised); color: var(--text); font-weight: 500; }
   .playbook-nav-item .lane-dot { flex-shrink: 0; }
   .playbook-unsaved { width: 7px; height: 7px; border-radius: 50%; background: var(--amber); }
-  .playbook-nav-empty { margin: 0 10px; color: var(--muted); font-size: 12px; line-height: 1.6; }
-  .playbook-folder { margin-top: auto; padding: 18px 8px 4px; display: grid; gap: 4px; color: var(--muted); font-size: 12px; }
-  .playbook-folder code { font: 12px/1.5 var(--mono-font); color: var(--muted); overflow-wrap: anywhere; }
-  .playbook-folder .text-button { justify-self: start; font-size: 12px; }
+  .playbook-folder { margin-top: auto; padding: 14px 8px 2px; }
+  .playbook-folder .text-button { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+  .playbook-folder .text-button:hover { color: var(--text); }
+  .playbook-folder .icon { width: 14px; height: 14px; }
 
   .playbook-main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   .playbook-text { flex: 1; width: 100%; resize: none; border: 0; padding: 22px 26px; background: var(--surface); color: var(--text); font: 14px/1.75 var(--mono-font); tab-size: 2; outline: none; scrollbar-width: thin; }
   .playbook-text:focus-visible { box-shadow: inset 0 0 0 1px var(--blue); }
-  .playbook-empty { margin: auto; max-width: 440px; padding: 30px; text-align: center; color: var(--muted); line-height: 1.7; }
-  .playbook-empty > .icon { width: 30px; height: 30px; color: var(--muted); }
-  .playbook-empty h3 { color: var(--text); font: 600 18px/1.4 var(--body-font); margin: 10px 0 6px; }
-  .playbook-empty p { font-size: 14px; margin-bottom: 18px; }
+  .playbook-empty { margin: auto; display: grid; justify-items: center; gap: 14px; padding: 30px; text-align: center; color: var(--muted); }
+  .playbook-empty p { display: flex; align-items: center; gap: 4px; font-size: 14px; }
   .playbook-preview-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 22px; border-bottom: 1px solid var(--border); }
   .playbook-preview-head div { display: grid; gap: 2px; font-size: 14px; }
   .playbook-preview-head span { color: var(--muted); font-size: 12px; }
   .playbook-preview { flex: 1; margin: 0; padding: 20px 26px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surface); color: var(--text); font: 13px/1.7 var(--mono-font); }
   .playbook-error { margin: 14px 22px 0; padding: 10px 12px; border: 1px solid var(--danger-line); border-radius: 12px; background: var(--danger-wash); color: var(--danger); font-size: 13px; }
 
-  /* Lane playbooks: Form or Markdown, chosen by a segmented control that stays
-     put while the column scrolls as one: settings form, then instructions.
-     Hints shows the help text under the form's rows. */
+  /* A sticky toolbar (Form/Markdown or a one-line note; Preview and the
+     settings reference) over a column that scrolls as one: the summary line,
+     the settings form, then the instructions. */
   .playbook-main { overflow-y: auto; }
-  .playbook-modes { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-shrink: 0; padding: 10px 22px; border-bottom: 1px solid var(--border); background: var(--surface); }
-  .playbook-modes > div { display: flex; gap: 8px; }
+  .playbook-modes { position: sticky; top: 0; z-index: 1; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; flex-shrink: 0; min-height: 51px; padding: 8px 22px; border-bottom: 1px solid var(--border); background: var(--surface); }
+  .playbook-mode-group, .playbook-tools { display: flex; align-items: center; gap: 6px; min-width: 0; }
   .playbook-modes .chip { min-height: 30px; padding: 0 14px; font-size: 13px; }
-  .playbook-modes .playbook-hints-toggle { gap: 5px; padding: 0 12px 0 10px; background: transparent; color: var(--muted); }
-  .playbook-modes .playbook-hints-toggle .icon { width: 15px; height: 15px; }
-  .playbook-modes .playbook-hints-toggle:hover, .playbook-modes .playbook-hints-toggle[aria-pressed="true"] { background: var(--raised); color: var(--text); }
-  .playbook-main .playbook-problems { flex-shrink: 0; margin: 16px 22px 0; }
-  .playbook-main .playbook-problems p { margin-top: 6px; font-size: 13px; }
+  .playbook-tools select.form-input { width: auto; max-width: 170px; min-height: 30px; padding: 3px 8px; font-size: 13px; }
+  .playbook-tools .button.small { min-height: 30px; padding: 0 12px; font-size: 13px; }
+  .playbook-note { display: flex; align-items: center; gap: 4px; color: var(--muted); font-size: 13px; }
+  .playbook-summary-slot { flex-shrink: 0; display: grid; gap: 8px; padding: 12px 22px 0; }
+  .playbook-summary-slot:empty { display: none; }
+  .playbook-summary { color: var(--text); font-size: 13px; font-weight: 500; overflow-wrap: anywhere; }
+  .playbook-summary-slot .playbook-problems, .playbook-summary-slot .playbook-warnings { margin: 0; font-size: 13px; }
+  .playbook-warnings { padding-left: 18px; }
+  .playbook-fallback { flex-shrink: 0; margin: 10px 22px 0; color: var(--muted); font-size: 13px; }
 
-  /* The settings form is a sheet: one short row per setting, a narrow label
-     column beside the controls, hairlines between rows and the help text off
-     until Hints is on. Its rows stack only when the column itself is narrow,
-     so it fits a phone-wide column and a split window alike. */
-  .playbook-form { container: playbook-form / inline-size; display: grid; flex-shrink: 0; padding: 2px 22px 0; font-size: 13px; line-height: 1.5; color: var(--text); }
-  .playbook-form .playbook-problems { margin: 14px 0 4px; }
-  .playbook-row { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 4px 12px; align-items: start; padding: 9px 0; border-bottom: 1px solid var(--border); }
+  /* The settings form is a sheet of titled sections: one short row per
+     setting, a narrow label column beside the controls. Its rows stack only
+     when the column itself is narrow, so it fits a phone-wide column and a
+     split window alike. Explanations are help popovers on the section titles. */
+  .playbook-form { container: playbook-form / inline-size; display: grid; gap: 4px; flex-shrink: 0; padding: 4px 22px 0; font-size: 13px; line-height: 1.5; color: var(--text); }
+  .playbook-section { display: grid; padding: 8px 0 4px; border-bottom: 1px solid var(--border); }
+  .playbook-section-title { display: flex; align-items: center; gap: 2px; margin: 0 0 2px; color: var(--faint); font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
+  .playbook-section-title .help-button { width: 20px; height: 20px; }
+  .playbook-section-title .help-button .icon { width: 14px; height: 14px; }
+  .playbook-row { display: grid; grid-template-columns: 76px minmax(0, 1fr); gap: 4px 12px; align-items: start; padding: 6px 0; }
   .playbook-row-label { padding-top: 5px; font-size: 12px; font-weight: 500; color: var(--muted); overflow-wrap: anywhere; }
   .playbook-row-control { display: grid; gap: 6px; min-width: 0; }
   .playbook-row-control > .playbook-check { justify-self: start; }
-  .playbook-form .field-help { margin: 0; font-size: 12px; line-height: 1.5; }
-  .playbook-form:not(.playbook-form-hints) .field-help { display: none; }
   .playbook-form .form-input { padding: 5px 10px; font-size: 13px; }
   .playbook-row-control > select.form-input, .playbook-row-control > input.form-input { max-width: 360px; }
   .playbook-form code { font: 11px var(--mono-font); color: var(--muted); background: var(--raised); padding: 1px 4px; border-radius: 4px; }
@@ -93,26 +96,30 @@
   .playbook-check:has(input:disabled:checked) { background: var(--raised-hover); color: var(--muted); }
   .playbook-check small { font-size: 11px; font-weight: 400; color: inherit; }
   .playbook-check small::before { content: '· '; }
+  /* "+ Field", "+ Skills": quiet dashed pills that add a row or open a group. */
+  .playbook-add { display: inline-flex; align-items: center; gap: 4px; justify-self: start; min-height: 26px; padding: 0 10px 0 7px; border: 1px dashed var(--border-strong); border-radius: 8px; color: var(--muted); font-size: 13px; font-weight: 500; }
+  .playbook-add:hover:not(:disabled) { border-style: solid; color: var(--text); background: var(--raised); }
+  .playbook-add:disabled { opacity: .5; cursor: default; }
+  .playbook-add .icon { width: 13px; height: 13px; }
+  .playbook-remove { width: 28px; height: 28px; color: var(--faint); }
+  .playbook-remove:hover { color: var(--text); }
+  .playbook-remove .icon { width: 14px; height: 14px; }
   .playbook-set-row { display: grid; grid-template-columns: minmax(130px, 180px) minmax(0, 1fr) auto; gap: 6px; align-items: start; }
   .playbook-form .playbook-set-value { min-height: 30px; resize: vertical; font: 12px/1.6 var(--mono-font); field-sizing: content; }
-  .playbook-set-row .text-button { padding: 5px 0; }
   .playbook-form .button.small { justify-self: start; min-height: 28px; padding: 0 12px; font-size: 13px; }
   .playbook-add-skill { display: flex; gap: 6px; max-width: 360px; }
   .playbook-add-skill .button.small { flex-shrink: 0; }
   .playbook-unknown { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding-top: 4px; color: var(--amber); }
   .playbook-unknown .text-button { padding: 0; }
-  /* The Library block is the inspector's; the row label replaces its heading. */
-  .playbook-library { display: grid; gap: 6px; justify-items: start; }
-  .playbook-library > h4 { display: none; }
-  .playbook-library .field-help, .playbook-library .playbook-assets { margin: 0; }
-  .playbook-library .playbook-assets { display: grid; gap: 4px; padding-left: 18px; }
-  .playbook-library .playbook-assets small { color: var(--muted); }
+  /* Library sources: chips in send order, each with its own remove button. */
+  .playbook-library { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+  .playbook-library > p { flex-basis: 100%; margin: 0; }
   .playbook-body-label { flex-shrink: 0; margin: 14px 22px 0; font-size: 12px; font-weight: 500; color: var(--muted); }
   .playbook-body { flex: none; min-height: 240px; padding-top: 10px; resize: vertical; field-sizing: content; }
   @container playbook-form (max-width: 480px) {
     /* A set row folds: the field picker and Remove on one line, the value under them. */
     .playbook-set-row { grid-template-columns: minmax(0, 1fr) auto; }
-    .playbook-set-row .text-button { grid-row: 1; grid-column: 2; }
+    .playbook-set-row .playbook-remove { grid-row: 1; grid-column: 2; }
     .playbook-set-value { grid-row: 2; grid-column: 1 / -1; }
   }
   @container playbook-form (max-width: 320px) {
@@ -120,35 +127,21 @@
     .playbook-row-label { padding-top: 0; }
   }
 
-  .playbook-inspector { padding: 22px; border-left: 1px solid var(--border); background: var(--well); overflow-y: auto; min-width: 0; font-size: 14px; line-height: 1.6; color: var(--text); }
-  .playbook-inspector h3 { font: 500 16px/1.35 var(--body-font); margin: 0 0 12px; }
-  .playbook-inspector h4 { margin: 18px 0 4px; font-size: 13px; font-weight: 500; color: var(--muted); }
-  .playbook-inspector ul, .playbook-inspector ol { padding-left: 18px; display: grid; gap: 4px; }
-  .playbook-inspector li { overflow-wrap: anywhere; }
-  .playbook-inspector .muted { list-style: none; margin-left: -18px; color: var(--faint); }
-  .playbook-inspector code { font: 12px var(--mono-font); color: var(--text); background: var(--raised); padding: 1px 4px; border-radius: 4px; }
-  .playbook-steps { margin-top: 6px; color: var(--text); }
-  .playbook-facts { display: grid; grid-template-columns: 96px minmax(0, 1fr); gap: 7px 10px; margin: 4px 0 0; }
-  .playbook-facts dt { color: var(--faint); }
-  .playbook-facts dd { margin: 0; overflow-wrap: anywhere; }
   .playbook-problems { margin-bottom: 14px; padding: 10px 12px; border: 1px solid var(--danger-line); border-radius: 12px; background: var(--danger-wash); color: var(--danger); }
-  .playbook-problems ul { margin: 4px 0 0; }
+  .playbook-problems ul { margin: 4px 0 0; padding-left: 18px; }
   .playbook-warnings { margin: 0 0 12px; color: var(--amber); }
   .playbook-missing { color: var(--amber); font-size: 12px; }
-  .playbook-assets { display: grid; gap: 6px; margin: 6px 0 10px; padding-left: 18px; }
-  .playbook-assets li > * { vertical-align: baseline; }
-  .playbook-assets li { overflow-wrap: anywhere; }
-  .playbook-assets li span { margin-right: 6px; }
-  .playbook-assets small { color: var(--muted); }
+  .playbook-assets { display: contents; margin: 0; padding: 0; list-style: none; }
+  .playbook-assets li { display: inline-flex; align-items: center; gap: 2px; min-height: 26px; max-width: 100%; padding: 0 2px 0 10px; border-radius: 8px; background: var(--raised); font-size: 13px; font-weight: 500; overflow-wrap: anywhere; }
+  .playbook-assets li.unresolved { background: var(--amber-wash); }
+  .playbook-assets li small { margin-left: 4px; color: var(--muted); font-weight: 400; }
+  .playbook-assets code { font: 11px var(--mono-font); }
+  .playbook-assets .icon-button { width: 22px; height: 22px; color: var(--faint); }
+  .playbook-assets .icon-button:hover { color: var(--text); }
+  .playbook-assets .icon-button .icon { width: 12px; height: 12px; }
   .playbook-unsaved-note { display: flex; align-items: center; gap: 8px; margin: 14px 22px 0; padding: 8px 12px; border: 1px solid var(--amber-line); border-radius: 12px; background: var(--amber-wash); color: var(--amber); font-size: 12px; }
   .playbook-preview-library { margin: 0; padding: 10px 22px 10px 40px; border-bottom: 1px solid var(--border); font-size: 12px; }
   .playbook-preview-library small { color: var(--muted); }
-  .playbook-reference { margin-top: 20px; padding-top: 14px; border-top: 1px solid var(--border); color: var(--muted); font-size: 12px; }
-  .playbook-reference summary { cursor: pointer; color: var(--text); font-weight: 500; }
-  .playbook-reference p { margin-top: 8px; overflow-wrap: anywhere; }
-  .playbook-try { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); display: grid; gap: 8px; }
-  .playbook-try .form-label { margin: 0; }
-  .playbook-try .button { justify-self: start; }
 
   .playbook-footer { display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 14px 22px; border-top: 1px solid var(--border); }
   #playbook-status { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
@@ -182,8 +175,7 @@
 }
 @layer responsive {
   @media (max-width: 1100px) {
-    .playbook-workspace { grid-template-columns: 200px minmax(0, 1fr); }
-    .playbook-inspector { display: none; }
+    .playbook-workspace { grid-template-columns: 190px minmax(0, 1fr); }
   }
   @media (max-width: 760px) {
     #playbook-dialog { width: calc(100vw - 24px); height: calc(100dvh - 24px); }
@@ -194,8 +186,8 @@
     .playbook-nav-heading, .playbook-folder, .playbook-nav-item small { display: none; }
     .playbook-nav-item { width: auto; }
     .playbook-footer { flex-wrap: wrap; padding: 12px 14px; }
-    .playbook-modes, .playbook-form { padding-inline: 14px; }
-    .playbook-body-label, .playbook-main .playbook-problems { margin-inline: 14px; }
+    .playbook-modes, .playbook-form, .playbook-summary-slot { padding-inline: 14px; }
+    .playbook-body-label, .playbook-fallback { margin-inline: 14px; }
     .card-playbook { margin-inline: 16px; grid-template-columns: minmax(0, 1fr); }
   }
 }

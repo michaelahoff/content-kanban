@@ -64,9 +64,16 @@ test('choosing a model writes its provider too when none is set, and only the mo
   assert.match(cleared, /^provider: codex$/m, 'Clearing the model keeps the provider');
 });
 
-test('the help text is marked for the sheet only while hints are on, and choice chips carry a real checkbox', () => {
-  assert.ok(!renderSettingsForm(context(doc('run: manual'))).includes('playbook-form-hints'));
-  const html = renderSettingsForm(context(doc('run: manual'), { hints: true }));
-  assert.ok(html.includes('class="playbook-form playbook-form-hints"'));
-  assert.match(html, /<label class="playbook-check"><input type="checkbox" id="playbook-field-context-all" data-playbook-action="form-context-all"[^>]*checked[^>]*><svg class="icon /);
+test('explanations are help popovers on the sections, empty groups fold into one Add row, and choice chips carry a real checkbox', () => {
+  const html = renderSettingsForm(context(doc('run: manual')));
+  assert.ok(!html.includes('field-help'), 'No help text under the rows');
+  assert.equal(html.match(/class="help-button /g)?.length, 2, 'When & who and Context each have a help popover');
+  assert.match(html, /<template class="help-content" data-help-title="Context">[^]*May edit/);
+  assert.ok(html.includes('id="playbook-label-more"') && html.includes('data-playbook-action="show-skills"') && html.includes('data-playbook-action="add-assets"'));
+  assert.ok(!html.includes('playbook-label-set') && !html.includes('playbook-label-skills') && !html.includes('playbook-label-assets'), 'Empty groups are not rows');
+  assert.match(html, /<label class="playbook-check"[^>]*><input type="checkbox" id="playbook-field-context-all" data-playbook-action="form-context-all"[^>]*checked[^>]*><svg class="icon /);
+  const filled = renderSettingsForm({ ...context(doc('run: manual\nset:\n  title: Hi\nskills: [voice]')), libraryMarkup: '<ol class="playbook-assets"></ol>' });
+  assert.ok(filled.includes('playbook-label-set') && filled.includes('playbook-label-skills') && filled.includes('playbook-label-assets'));
+  assert.ok(!filled.includes('playbook-label-more'), 'With every group in use there is no Add row');
+  assert.ok(renderSettingsForm({ ...context(doc('run: manual')), expanded: ['skills'] }).includes('id="playbook-skill-name"'), 'Opening Skills shows its row while empty');
 });

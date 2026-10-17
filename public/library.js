@@ -5,7 +5,7 @@
 // Restoring an older version saves it as a new current one; a project copy is
 // a separate file. Document drafts are kept as the user types; only Save
 // publishes.
-import { $, escape, icon, button, iconButton, toast, smallForm, id } from './ui.js';
+import { $, escape, icon, button, iconButton, toast, smallForm, id, help } from './ui.js';
 import { request, send as sendJSON } from './api.js';
 import { assetPreview, comparePaths, libraryFilename, libraryPaths, searchLibrary, folderHolders, movableInto, nameConflict, parseSourceKey, splitExtension, sourceKey } from './library-format.js';
 import { project, state } from './state.js';
@@ -103,7 +103,7 @@ function chosenBar() {
 // A new document's draft is not a Library file until its first Save.
 function draftMarkup(draft) {
   return `<li class="library-item"><button class="library-asset draft" data-action="library-edit-draft" data-id="${escape(draft.id)}" aria-label="Edit draft ${escape(draft.filename)}"><div class="library-thumb draft"><span>Draft</span></div>
-    <span class="library-name">${escape(draft.filename)}</span><span class="library-meta">Unsaved draft</span></button></li>`;
+    <span class="library-name">${escape(draft.filename)}</span><span class="library-meta">Draft</span></button></li>`;
 }
 const uploadState = {
   waiting: () => 'Waiting', uploading: (entry) => `Uploading ${Math.round((entry.progress || 0) * 100)}%`, cancelled: () => 'Cancelled',
@@ -113,6 +113,8 @@ function uploadMarkup(entry) {
   return `<li class="library-upload ${entry.status}" data-upload="${entry.id}"><span class="library-upload-name">${escape(entry.label)}</span>
     <span class="library-upload-state" role="status">${escape(uploadState[entry.status](entry))}</span>${entry.status === 'failed' && entry.retryable ? button('library-retry-upload', 'Retry', null, 'button small secondary', `data-id="${entry.id}"`) : ''}</li>`;
 }
+// A dropdown of actions; its items keep their own data-action names.
+const menu = (label, symbol, cls, items, name = label) => `<details class="library-menu"><summary class="button ${cls}" aria-label="${escape(name)}" title="${escape(name)}">${icon(symbol)}${label}${label ? icon('down', 'library-menu-caret') : ''}</summary><div class="library-menu-list" role="menu">${items}</div></details>`;
 function paint() {
   const container = $('#library');
   if (!container) return;
@@ -131,17 +133,18 @@ function paint() {
   const drafts = library.drafts.filter((draft) => !draft.assetId && (search ? draft.filename.toLocaleLowerCase().includes(search.toLocaleLowerCase()) : library.folder === null));
   const finished = library.uploads.length && library.uploads.every((entry) => !['waiting', 'uploading'].includes(entry.status));
   container.classList.toggle('choosing', library.chosen.size > 0);
-  container.innerHTML = `<div class="library-head"><p class="library-hint">${archived() ? 'This project is archived. Its files stay readable and downloadable.' : 'Upload any file or folder, or write a document. Frameboard keeps the exact original and every saved version.'}</p>
+  container.innerHTML = `<div class="library-head"><h2 class="library-title">Library${help('Library', '<p>Upload any file or folder, or write a document. Frameboard keeps the exact original and every saved version.</p>')}${archived() ? '<span class="library-badge" title="Files stay readable and downloadable">Archived</span>' : ''}</h2>
       <div class="library-tools"><label class="search">${icon('search')}<input id="library-search" type="search" placeholder="Find a file or folder…" aria-label="Find a file or folder" value="${escape(library.query)}"></label>
-      ${button('library-removed', 'Removed files', null, 'button secondary')}
-      ${archived() ? '' : `${button('library-write', 'Write document', 'edit', 'button secondary')}${button('library-new-folder', 'New folder', 'folder', 'button secondary')}<label class="button secondary library-pick">${icon('folder')}Upload folder<input id="library-folder-files" type="file" webkitdirectory multiple></label>
-      <label class="button primary library-pick">${icon('upload')}Upload files<input id="library-files" type="file" multiple></label>`}</div></div>
+      ${archived() ? '' : `${menu('Upload', 'upload', 'primary', `<label class="library-menu-item library-pick" role="menuitem">${icon('upload')}Files<input id="library-files" type="file" multiple></label>
+        <label class="library-menu-item library-pick" role="menuitem">${icon('folder')}Folder<input id="library-folder-files" type="file" webkitdirectory multiple></label>`)}
+      ${menu('New', 'plus', 'secondary', `${button('library-write', 'Document', 'edit', 'library-menu-item', 'role="menuitem"')}${button('library-new-folder', 'Folder', 'folder', 'library-menu-item', 'role="menuitem"')}`)}`}
+      ${menu('', 'more', 'secondary icon-only', button('library-removed', 'Removed files', 'trash', 'library-menu-item', 'role="menuitem"'), 'More')}</div></div>
     ${library.uploads.length ? `<section class="library-uploads" aria-label="Uploads"><div class="library-uploads-head"><h2>Uploads</h2>${finished ? button('library-clear-uploads', 'Clear', null, 'button small secondary') : ''}</div><ul>${library.uploads.map(uploadMarkup).join('')}</ul></section>` : ''}
     ${library.error ? `<p class="library-error" role="alert">${escape(library.error)}</p>` : ''}
-    ${search && !library.chosen.size ? '' : `<div class="library-bar">${search ? '' : crumbs(paths)}${chosenBar()}</div>`}
-    <div class="library-drop" data-library-drop>${!library.loaded && !library.error ? '<p class="library-empty">Loading files…</p>'
+    ${(search || library.folder === null) && !library.chosen.size ? '' : `<div class="library-bar">${search || library.folder === null ? '' : crumbs(paths)}${chosenBar()}</div>`}
+    <div class="library-drop" data-library-drop>${!library.loaded && !library.error ? '<p class="library-empty">Loading…</p>'
       : tiles.length || drafts.length ? `<ul class="library-grid">${drafts.map(draftMarkup).join('')}${tiles.join('')}</ul>`
-        : `<div class="library-empty">${icon(search ? 'search' : 'upload')}<p>${search ? 'No matching files or folders' : library.folder ? 'This folder is empty' : 'No files yet'}</p><span>${search ? 'Try another search.' : archived() ? '' : 'Drop files or folders here, or choose Upload.'}</span></div>`}</div>`;
+        : `<div class="library-empty">${icon(search ? 'search' : 'upload')}<p>${search ? 'No matches' : library.folder ? 'This folder is empty' : 'No files yet'}</p>${search || archived() ? '' : button('library-pick-files', 'Upload', 'upload', 'button secondary')}</div>`}</div>`;
 }
 
 // Uploads stream the File itself, so large files never load into memory.
@@ -160,23 +163,23 @@ function send(entry) {
       if (state) state.textContent = uploadState.uploading(entry);
     };
     xhr.onload = () => { let body = {}; try { body = JSON.parse(xhr.responseText); } catch { /* Reported below. */ } resolve({ status: xhr.status, body }); };
-    xhr.onerror = () => resolve({ status: 0, body: { error: 'The upload was interrupted. Retry to send the same file again.' } });
+    xhr.onerror = () => resolve({ status: 0, body: { error: 'Upload interrupted.' } });
     xhr.send(entry.file);
   });
 }
 // Create new is the default; Replace saves a new version of the file holding
 // the name. A copy is always a separate file, so it offers no Replace.
 // An open form (such as Copy to project) closes before the question opens.
-export async function chooseCollision(conflict, holder, skip = 'Skip this file.', { replace = true } = {}) {
+export async function chooseCollision(conflict, holder, skip = 'Skip this file', { replace = true } = {}) {
   const form = $('#form-dialog');
   if (form.open) { const closed = new Promise((resolve) => form.addEventListener('close', resolve, { once: true })); form.close(); await closed; }
   return new Promise((resolve) => {
     let choice = 'cancel';
     const option = (value, label, detail, checked = false, disabled = false) => `<label class="collision-option"><input type="radio" name="collision" value="${value}" ${checked ? 'checked' : ''} ${disabled ? 'disabled' : ''}><span>${label}<small>${escape(detail)}</small></span></label>`;
     smallForm({
-      title: `A file named ${conflict.filename} already exists`,
+      title: `${conflict.filename} already exists`,
       description: 'Library',
-      fields: `<fieldset class="collision-options"><legend class="sr-only">What to do with this upload</legend>${option('create', 'Create new', `Saves as ${conflict.suggested} · a separate file`, true)}${!replace ? '' : option('replace', 'Replace', holder ? `Saves v${holder.current.number + 1} of ${conflict.filename}; older versions are kept.` : conflict.assetId ? 'The file with this name is still uploading.' : 'A folder has this name; only a file can be replaced.', false, !holder)}${option('cancel', 'Cancel', skip)}</fieldset>`,
+      fields: `<fieldset class="collision-options"><legend class="sr-only">What to do with this upload</legend>${option('create', 'Create new', `Save as ${conflict.suggested}`, true)}${!replace ? '' : option('replace', 'Replace', holder ? `Save as v${holder.current.number + 1}; older versions are kept` : conflict.assetId ? 'That file is still uploading' : 'A folder has this name', false, !holder)}${option('cancel', 'Cancel', skip)}</fieldset>`,
       submit: 'Continue',
       onSubmit: (data) => { choice = data.get('collision'); },
     });
@@ -242,7 +245,7 @@ const enqueue = (entries) => {
 // Each file publishes atomically with its own collision choice and retry;
 // dropped folders holding no files are still created.
 function uploadLibraryItems(items, folderPaths = []) {
-  if (archived()) return toast('Unarchive this project to upload files.');
+  if (archived()) return toast('Unarchive this project to upload.');
   const projectId = library.projectId; const parentId = library.folder;
   const entries = items.map(({ file, path }) => {
     const parts = path.split('/').filter(Boolean);
@@ -289,9 +292,9 @@ export function dropLibraryItems(dataTransfer, files) {
 async function preview(asset) {
   const node = $('#library-preview', dialog);
   const type = assetPreview(asset.filename, asset.current);
-  if (!asset.current.available) { node.innerHTML = '<p class="library-preview-note">This version’s bytes are unavailable. Repair it with the exact original file below.</p>'; return; }
+  if (!asset.current.available) { node.innerHTML = '<p class="library-preview-note">Bytes unavailable. Repair with the original file below.</p>'; return; }
   if (type?.kind === 'image') { node.innerHTML = `<img src="${contentURL(asset.current.id, true)}" alt="${escape(asset.filename)}">`; return; }
-  if (type?.kind !== 'text') { node.innerHTML = '<p class="library-preview-note">No preview for this file type. Download it to open the exact original.</p>'; return; }
+  if (type?.kind !== 'text') { node.innerHTML = '<p class="library-preview-note">No preview for this file type.</p>'; return; }
   try {
     const response = await fetch(contentURL(asset.current.id, true));
     if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || 'Could not load the preview.');
@@ -303,26 +306,27 @@ async function preview(asset) {
     for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.length; }
     const text = new TextDecoder().decode(bytes.subarray(0, previewBytes));
     if (inspected?.id !== asset.id) return;
-    node.innerHTML = `<pre>${escape(text)}</pre>${asset.current.size > previewBytes ? '<p class="library-preview-note">Showing the first 64 KB.</p>' : ''}`;
+    node.innerHTML = `<pre>${escape(text)}</pre>${asset.current.size > previewBytes ? '<p class="library-preview-note">First 64 KB shown.</p>' : ''}`;
   } catch (error) { node.innerHTML = `<p class="library-preview-note">${escape(error.message)}</p>`; }
 }
 function versionMarkup(version, asset) {
   const restoredFrom = version.restoredFrom && asset.versions.find((entry) => entry.id === version.restoredFrom);
   const restorable = !version.current && version.available && !archived() && !asset.removedAt;
+  const hash = `<small class="library-hash-row"><span>SHA-256</span><code class="library-hash" title="${escape(version.hash)}">${escape(version.hash.slice(0, 12))}…</code>${button('library-copy-hash', 'Copy', null, 'text-button', `data-hash="${escape(version.hash)}" title="Copy SHA-256"`)}</small>`;
   return `<li class="library-version ${version.available ? '' : 'unavailable'}"><div><strong>v${version.number}</strong>${version.current ? ' <span class="library-badge">Current</span>' : ''}${version.available ? '' : ' <span class="library-badge danger">Unavailable</span>'}
-    <small>${formatSize(version.size)} · ${escape(savedAt(version.committedAt))}${restoredFrom ? ` · restored from v${restoredFrom.number}` : ''}</small><small class="library-hash" title="SHA-256">${escape(version.hash)}</small>${version.available ? '' : `<small class="library-version-error">${escape(version.error)}</small>`}</div>
-    <div class="library-version-actions">${version.available ? `<a class="button small secondary" href="${contentURL(version.id)}" download>${icon('download')}Download</a>` : ''}${restorable ? button('library-restore', 'Restore', null, 'button small secondary', `data-id="${version.id}"`) : ''}${button('library-verify', 'Check bytes', null, 'button small secondary', `data-id="${version.id}"`)}${!version.available && !archived() ? `<label class="button small secondary">Repair…<input type="file" data-repair="${version.id}" hidden></label>` : ''}</div></li>`;
+    <small>${formatSize(version.size)} · ${escape(savedAt(version.committedAt))}${restoredFrom ? ` · restored from v${restoredFrom.number}` : ''}</small>${hash}${version.available ? '' : `<small class="library-version-error">${escape(version.error)}</small>`}</div>
+    <div class="library-version-actions">${version.available ? `<a class="button small secondary" href="${contentURL(version.id)}" download>${icon('download')}Download</a>` : ''}${restorable ? button('library-restore', 'Restore', null, 'button small secondary', `data-id="${version.id}" title="Save this version as the new current one"`) : ''}${button('library-verify', 'Verify', null, 'button small secondary', `data-id="${version.id}" title="Recompute the stored bytes' hash and size and compare"`)}${!version.available && !archived() ? `<label class="button small secondary" title="Upload the exact original file to restore these bytes">Repair…<input type="file" data-repair="${version.id}" hidden></label>` : ''}</div></li>`;
 }
 async function inspect(assetId) {
   try { inspected = await request(`${base()}/assets/${encodeURIComponent(assetId)}`); } catch (error) { inspected = null; return toast(error.message); }
   const asset = inspected; const draft = draftFor(asset); const removed = Boolean(asset.removedAt);
-  const location = removed ? 'Removed from the Library. Every version is kept.' : libraryPaths(library).folders.get(asset.folderId) || 'Library';
+  const location = removed ? '' : libraryPaths(library).folders.get(asset.folderId) || 'Library';
   dialog.innerHTML = `<div class="library-inspector"><div class="small-dialog-header"><h2 id="library-heading">${escape(asset.filename)}</h2>${iconButton('library-close', 'Close file details', 'close')}</div>
-    <p class="library-location">${removed ? '<span class="library-badge danger">Removed</span> ' : ''}${escape(location)}${asset.copiedFrom ? ` · copied from ${escape(projectName(asset.copiedFrom.projectId))}` : ''}</p>
-    <p class="library-preview-label">Saved v${asset.current.number}${draft ? ' · <span class="library-badge draft">Unsaved draft</span> Prompts and downloads use the saved version until you save the draft.' : ''}</p>
+    <p class="library-location">${removed ? '<span class="library-badge danger" title="Every version is kept">Removed</span>' : escape(location)}${asset.copiedFrom ? ` · copied from ${escape(projectName(asset.copiedFrom.projectId))}` : ''}</p>
+    <p class="library-preview-label">Saved v${asset.current.number}${draft ? ' · <span class="library-badge draft" title="Prompts and downloads use the saved version until you save the draft">Unsaved draft</span>' : ''}</p>
     <div id="library-preview" class="library-preview"></div>
-    <div class="library-actions">${asset.current.available ? `<a class="button primary" href="${contentURL(asset.current.id)}" download>${icon('download')}Download v${asset.current.number}</a>` : ''}${!removed && editable(asset) && (draft || !archived()) ? button(draft ? 'library-edit-draft' : 'library-edit', draft ? 'Continue draft' : 'Edit', 'edit', 'button secondary', draft ? `data-id="${escape(draft.id)}"` : `data-id="${escape(asset.id)}"`) : ''}${archived() || removed ? '' : `<label class="button secondary">${icon('upload')}Replace…<input type="file" id="library-replace" hidden></label>${button('library-copy', 'Copy to project…', null, 'button secondary')}`}</div>
-    <h3 class="library-versions-heading">Versions</h3><ul class="library-versions">${asset.versions.map((version) => versionMarkup(version, asset)).join('')}</ul></div>`;
+    <div class="library-actions">${asset.current.available ? `<a class="button primary" href="${contentURL(asset.current.id)}" download>${icon('download')}Download v${asset.current.number}</a>` : ''}${!removed && editable(asset) && (draft || !archived()) ? button(draft ? 'library-edit-draft' : 'library-edit', draft ? 'Continue draft' : 'Edit', 'edit', 'button secondary', draft ? `data-id="${escape(draft.id)}"` : `data-id="${escape(asset.id)}"`) : ''}${archived() || removed ? '' : `<label class="button secondary">${icon('upload')}Replace…<input type="file" id="library-replace" hidden></label>${button('library-copy', 'Copy to…', null, 'button secondary')}`}</div>
+    <h3 class="library-versions-heading">Versions${help('Versions', '<p>Every saved version is kept. Restoring saves an old version as a new current one. Verify recomputes the stored bytes’ SHA-256 and size and compares them with the recorded values; Repair re-uploads the exact original file for an unavailable version.</p>')}</h3><ul class="library-versions">${asset.versions.map((version) => versionMarkup(version, asset)).join('')}</ul></div>`;
   if (!dialog.open) dialog.showModal();
   void preview(asset);
 }
@@ -335,10 +339,9 @@ async function showRemoved() {
   let assets;
   try { ({ assets } = await request(`${base()}/removed`)); } catch (error) { return toast(error.message); }
   inspected = null;
-  dialog.innerHTML = `<div class="library-inspector"><div class="small-dialog-header"><h2 id="library-heading">Removed files</h2>${iconButton('library-close', 'Close removed files', 'close')}</div>
-    <p class="library-location">Removed files are kept with every version, and work already queued keeps what it captured. They are never offered again.</p>
+  dialog.innerHTML = `<div class="library-inspector"><div class="small-dialog-header"><h2 id="library-heading">Removed files${help('Removed files', '<p>Removed files keep every version, and work already queued keeps what it captured. They are never offered again.</p>')}</h2>${iconButton('library-close', 'Close removed files', 'close')}</div>
     ${assets.length ? `<ul class="library-versions">${assets.map((asset) => `<li class="library-version"><div><strong>${escape(asset.path)}</strong><small>${asset.versionCount} ${asset.versionCount === 1 ? 'version' : 'versions'} · removed ${escape(savedAt(asset.removedAt))}</small></div>
-      <div class="library-version-actions">${button('library-inspect', 'Inspect', null, 'button small secondary', `data-id="${escape(asset.id)}"`)}</div></li>`).join('')}</ul>` : '<p class="library-preview-note">No removed files.</p>'}</div>`;
+      <div class="library-version-actions">${button('library-inspect', 'Inspect', null, 'button small secondary', `data-id="${escape(asset.id)}"`)}</div></li>`).join('')}</ul>` : '<p class="library-preview-note">None removed.</p>'}</div>`;
   if (!dialog.open) dialog.showModal();
 }
 
@@ -351,10 +354,10 @@ function restore(versionId) {
   const operation = id();
   smallForm({
     title: `Restore v${version.number} of ${asset.filename}?`, submit: 'Restore',
-    description: `Saves v${asset.current.number + 1} with the content of v${version.number}. Every version is kept, and work already queued keeps what it captured.`,
+    description: `Saves v${asset.current.number + 1} with v${version.number}’s content. All versions are kept.`,
     onSubmit: async () => {
       const result = await sendJSON('POST', `${base()}/assets/${encodeURIComponent(asset.id)}/restore`, { versionId, baseVersionId: asset.current.id, operation });
-      toast(result.outcome === 'unchanged' ? `v${result.version.number} already has this content.` : `Saved v${result.version.number} from v${version.number}.`);
+      toast(result.outcome === 'unchanged' ? `v${result.version.number} already matches.` : `Saved v${result.version.number} from v${version.number}.`);
       await reload(); await refreshInspected();
     },
   });
@@ -365,11 +368,11 @@ function copyToProject() {
   const asset = inspected;
   const targets = state.projects.filter((entry) => entry.id !== library.projectId && !entry.archivedAt);
   if (!asset) return;
-  if (!targets.length) return toast('Create another active project to copy into.');
+  if (!targets.length) return toast('No other active project to copy into.');
   const operation = id();
   smallForm({
     title: `Copy ${asset.filename} to another project`, submit: 'Copy',
-    description: `Copies v${asset.current.number} only, as a separate file with its own history.`,
+    description: `Copies v${asset.current.number} only, as a separate file.`,
     fields: `<label class="form-label" for="library-copy-project">Project</label><select class="form-input" id="library-copy-project" name="project">${targets.map((entry) => `<option value="${escape(entry.id)}">${escape(entry.name)}</option>`).join('')}</select>
       <label class="form-label" for="library-copy-folder">Folder</label><select class="form-input" id="library-copy-folder" name="folder"><option value="">Library</option></select>
       ${nameInput('Filename', asset.filename)}`,
@@ -378,7 +381,7 @@ function copyToProject() {
       const url = `${base()}/assets/${encodeURIComponent(asset.id)}/copy`;
       let result = await call('POST', url, body);
       if (result.status === 409 && result.body.conflict) {
-        const choice = await chooseCollision(result.body.conflict, null, 'Copy nothing.', { replace: false });
+        const choice = await chooseCollision(result.body.conflict, null, 'Copy nothing', { replace: false });
         if (choice !== 'create') return;
         result = await call('POST', url, { ...body, collision: 'create' });
       }
@@ -424,7 +427,7 @@ function organize(kind, itemId) {
   if (!item) return;
   const name = itemName(source);
   smallForm({
-    title: `Organize ${name}`, description: 'Renaming or moving keeps its identity and every version.',
+    title: `Organize ${name}`,
     fields: `${nameInput(folder ? 'Folder name' : 'Filename', name)}${locationField(folder ? [item.id] : [], folder ? item.parentId : item.folderId)}`,
     submit: 'Save',
     extra: button('library-remove', 'Remove…', 'trash', 'button secondary library-remove', `data-kind="${kind}" data-id="${escape(item.id)}"`),
@@ -440,7 +443,7 @@ function remove(kind, itemId) {
   if (!libraryItem(kind, itemId)) return;
   smallForm({
     title: `Remove ${itemName(source)}?`, submit: 'Remove', danger: true,
-    description: `${folder ? 'This folder and everything in it will' : 'This file will'} no longer be offered for new work. Every version stays retained, and work already queued keeps what it captured. Remembered selections of ${folder ? 'it' : 'this file'} need correcting.`,
+    description: `${folder ? 'The folder and its contents' : 'This file'} won’t be offered for new work. Versions are kept.`,
     onSubmit: async () => { await sendJSON('DELETE', itemURL(source)); await reload(); },
   });
 }
@@ -476,8 +479,7 @@ async function moveInto(keys, folderId) {
 function moveChosen() {
   const keys = [...library.chosen];
   smallForm({
-    title: `Move ${keys.length} ${keys.length === 1 ? 'item' : 'items'}`, description: 'Moving keeps each item’s identity and every version.',
-    fields: locationField(keys.map(parseSourceKey).filter((source) => source.kind === 'folder').map((source) => source.id)),
+    title: `Move ${keys.length} ${keys.length === 1 ? 'item' : 'items'}`, fields: locationField(keys.map(parseSourceKey).filter((source) => source.kind === 'folder').map((source) => source.id)),
     submit: 'Move',
     onSubmit: (data) => moveInto(keys, data.get('destination') || null),
   });
@@ -537,6 +539,12 @@ document.addEventListener('dragend', () => {
   clearDropZones();
   document.querySelectorAll('#library .dragging').forEach((node) => node.classList.remove('dragging'));
 });
+// Menus close on a choice or an outside click.
+document.addEventListener('click', (event) => {
+  for (const node of document.querySelectorAll('.library-menu[open]')) {
+    if (!node.contains(event.target) || event.target.closest('.library-menu-item')) setTimeout(() => node.removeAttribute('open'));
+  }
+});
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape' || !library.chosen.size || !$('#library') || document.querySelector('dialog[open]')) return;
   clearChosen(); paint();
@@ -574,9 +582,13 @@ document.addEventListener('click', async (event) => {
     const entry = library.uploads.find((item) => item.id === target.dataset.id);
     if (entry) { entry.status = 'waiting'; paint(); void enqueue([entry]); }
   }
+  if (action === 'library-pick-files') $('#library-files')?.click();
+  if (action === 'library-copy-hash') {
+    try { await navigator.clipboard.writeText(target.dataset.hash); toast('SHA-256 copied.'); } catch { toast('Could not copy.'); }
+  }
   if (action === 'library-verify') {
     target.disabled = true;
-    try { await request(`${base()}/versions/${encodeURIComponent(target.dataset.id)}/verify`, { method: 'POST' }); toast('The recorded hash and size match.'); }
+    try { await request(`${base()}/versions/${encodeURIComponent(target.dataset.id)}/verify`, { method: 'POST' }); toast('Bytes verified.'); }
     catch (error) { toast(error.message); }
     await load(); paint(); await refreshInspected();
   }
@@ -596,7 +608,7 @@ document.addEventListener('change', async (event) => {
   if (target.dataset.repair && target.files[0]) {
     try {
       await request(`${base()}/versions/${encodeURIComponent(target.dataset.repair)}/repair`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: target.files[0] });
-      toast('Version repaired with its exact original bytes.');
+      toast('Version repaired.');
     } catch (error) { toast(error.message); }
     target.value = '';
     await load(); paint(); await refreshInspected();
@@ -632,14 +644,14 @@ const draftURL = (draftId) => `${base()}/drafts${draftId ? `/${encodeURIComponen
 const availableName = (name) => nameConflict(name, [...folderHolders(library, null), ...library.drafts])?.suggested ?? name;
 async function call(method, url, body) {
   const response = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: body && JSON.stringify(body) }).catch(() => null);
-  if (!response) return { status: 0, body: { error: 'Frameboard could not be reached. Your draft is still here; try again.' } };
+  if (!response) return { status: 0, body: { error: 'Could not reach Frameboard. Your draft is still here.' } };
   let result = {};
   try { result = await response.json(); } catch { /* Reported below. */ }
   return { status: response.status, body: result };
 }
 
 async function startDraft(input) {
-  if (archived()) return toast('Unarchive this project to write documents.');
+  if (archived()) return toast('Unarchive this project to write.');
   const { status, body } = await call('POST', draftURL(), input);
   if (status >= 300) return toast(body.error || 'Could not start the draft.');
   await load(); paint();
@@ -658,16 +670,16 @@ function edit(draft) {
 const savedAsset = () => editing.draft.assetId && library.assets.find((asset) => asset.id === editing.draft.assetId);
 function draftState() {
   const asset = savedAsset();
-  const saved = asset ? `Unsaved draft · the Library and downloads use saved v${asset.current.number}` : 'Unsaved draft · not in the Library until you save';
+  const saved = asset ? `Unsaved draft · v${asset.current.number} is saved` : 'Unsaved draft · not in the Library yet';
   return editing.notice || (editing.writing || editing.timer ? `${saved} · Keeping draft…` : saved);
 }
 function renderEditor() {
   const asset = savedAsset(); const locked = archived() || editing.saving;
   dialog.innerHTML = `<div class="library-editor"><div class="small-dialog-header"><h2 id="library-heading">${escape(asset ? asset.filename : 'New document')}</h2>${iconButton('library-close', 'Close document', 'close')}</div>
     ${asset ? '' : `<label class="form-label" for="library-draft-name">File name</label><input class="form-input" id="library-draft-name" value="${escape(editing.filename)}" maxlength="255" autocomplete="off" ${locked ? 'disabled' : ''}>`}
-    <label class="sr-only" for="library-draft-text">Document text</label><textarea id="library-draft-text" class="library-draft-text" spellcheck="true" placeholder="Write or paste a guide, script or notes…" ${locked ? 'readonly' : ''}>${escape(editing.text)}</textarea>
+    <label class="sr-only" for="library-draft-text">Document text</label><textarea id="library-draft-text" class="library-draft-text" spellcheck="true" placeholder="Write or paste…" ${locked ? 'readonly' : ''}>${escape(editing.text)}</textarea>
     <p class="library-draft-state ${editing.notice ? 'notice' : ''}" role="status">${escape(draftState())}</p>
-    ${editing.conflict ? `<div class="library-draft-conflict" role="alert"><span>This draft changed in another tab.</span>${button('library-load-theirs', 'Use the other tab’s text', null, 'button small secondary')}${button('library-keep-mine', 'Keep this text', null, 'button small secondary')}</div>` : ''}
+    ${editing.conflict ? `<div class="library-draft-conflict" role="alert"><span>Draft changed in another tab.</span>${button('library-load-theirs', 'Use theirs', null, 'button small secondary')}${button('library-keep-mine', 'Keep mine', null, 'button small secondary')}</div>` : ''}
     <div class="library-editor-footer">${asset?.current.available ? `<a class="text-button" href="${contentURL(asset.current.id)}" download>${icon('download')}Download saved v${asset.current.number}</a>` : '<span></span>'}
       <div>${archived() ? '' : `${button('library-discard-draft', 'Discard draft', null, 'button secondary', locked ? 'disabled' : '')}${button('library-save-draft', editing.saving ? 'Saving…' : 'Save', null, 'button primary', locked || editing.conflict ? 'disabled' : '')}`}</div></div></div>`;
 }
@@ -699,7 +711,7 @@ function keep(current = editing) {
     const { status, body } = await call('PUT', draftURL(current.draft.id), input);
     if (status === 200) { current.draft = { ...body, text }; current.notice = ''; return; }
     if (status === 409 && body.conflict?.draftRevision) { current.conflict = true; return; }
-    current.notice = `Draft not kept: ${body.error || 'try again.'} Keep this window open and type to retry.`;
+    current.notice = `Draft not kept: ${body.error || 'try again.'}`;
   });
   current.writing = write;
   return write.finally(() => {
@@ -730,7 +742,7 @@ async function saveDraft(options = {}) {
     await load();
     const conflict = nameConflict(current.draft.filename, folderHolders(library, null));
     if (conflict) {
-      const collision = await chooseCollision(conflict, library.assets.find((entry) => entry.id === conflict.assetId), 'Keep editing the draft.');
+      const collision = await chooseCollision(conflict, library.assets.find((entry) => entry.id === conflict.assetId), 'Keep editing');
       if (collision === 'cancel') return;
       choice = { collision, asset: collision === 'replace' ? conflict.assetId : undefined };
     }
@@ -744,7 +756,7 @@ async function saveDraft(options = {}) {
   if (editing !== current) return;
   if (status === 200) {
     current.operation = null;
-    toast(body.outcome === 'unchanged' ? `No changes to save; v${body.version.number} is current.` : `Saved ${body.asset.filename} · v${body.version.number}`);
+    toast(body.outcome === 'unchanged' ? `No changes; v${body.version.number} is current.` : `Saved ${body.asset.filename} · v${body.version.number}`);
     editing = null;
     await load(); paint();
     return inspect(body.asset.id);
@@ -756,17 +768,17 @@ async function saveDraft(options = {}) {
   // Someone took the name meanwhile: nothing was saved, so ask again.
   if (status === 409 && body.conflict?.assetId) { await load(); renderEditor(); return saveDraft(); }
   if (status === 409 && body.conflict?.draftRevision) { current.conflict = true; return renderEditor(); }
-  const kept = asset ? ` Saved v${asset.current.number} is still current.` : '';
-  current.notice = `Not saved: ${body.error || 'the save failed.'} Your draft is kept.${kept}`;
+  const kept = asset ? ` v${asset.current.number} is still current.` : '';
+  current.notice = `Not saved: ${body.error || 'the save failed.'}${kept}`;
   renderEditor();
 }
 function confirmOverwrite(version, message) {
-  smallForm({ title: 'A newer version was saved', description: `${message} Saving your draft adds v${version.number + 1}; v${version.number} and older versions are kept.`,
+  smallForm({ title: 'A newer version was saved', description: `Saving adds v${version.number + 1}; v${version.number} is kept.`,
     submit: 'Save my draft anyway', onSubmit: () => { setTimeout(() => saveDraft({ baseVersionId: version.id })); } });
 }
 function discardDraft() {
   const current = editing;
-  smallForm({ title: 'Discard this draft?', description: savedAsset() ? 'The saved version stays in the Library unchanged.' : 'This document has never been saved, so its text will be lost.', submit: 'Discard draft', danger: true,
+  smallForm({ title: 'Discard this draft?', description: savedAsset() ? 'The saved version is unchanged.' : 'This document was never saved; its text will be lost.', submit: 'Discard draft', danger: true,
     onSubmit: async () => {
       clearTimeout(current.timer); current.timer = null; current.conflict = true;
       await current.writing;

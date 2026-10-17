@@ -1,7 +1,7 @@
 // The card editor's view of its lane playbook: what the lane does, this
 // card's latest lane runs, Run playbook, and the card's hand-off notes
 // (notes.md in its workspace), which every lane run reads.
-import { $, escape, icon, button, toast } from './ui.js';
+import { $, escape, icon, button, iconButton, help, toast } from './ui.js';
 import { locateCard, lanesOf, laneRuns, runPlaybook, loadNotes, saveNotes, moveCard } from './state.js';
 import { openPlaybooks } from './playbook-editor.js';
 import { renderBoard } from './board.js';
@@ -40,7 +40,8 @@ export function cardPlaybookMarkup() {
   return '<section id="card-playbook" class="card-playbook" aria-label="Lane playbook"></section>';
 }
 export function notesMarkup() {
-  return `<section class="writing-section notes-section"><div class="field-heading"><label for="lane-notes">Hand-off notes</label><div class="field-tools"><span id="lane-notes-state"></span></div></div><div id="lane-notes-conflict" class="notes-conflict" role="alert" hidden></div><textarea id="lane-notes" placeholder="Lane runs leave notes here for the next lane. You can add your own." disabled>Loading notes…</textarea><p class="field-help">Saved as notes.md in this card's workspace. Every lane run reads it first.</p></section>`;
+  const about = help('Hand-off notes', "<p>Saved as <code>notes.md</code> in this card's workspace. Every lane run reads it first, and lane runs leave notes here for the next lane.</p><p>You can add your own.</p>");
+  return `<section class="writing-section notes-section"><div class="field-heading"><span class="notes-heading"><label for="lane-notes">Hand-off notes</label>${about}</span><div class="field-tools"><span id="lane-notes-state"></span></div></div><div id="lane-notes-conflict" class="notes-conflict" role="alert" hidden></div><textarea id="lane-notes" placeholder="Notes for the next lane…" disabled>Loading notes…</textarea></section>`;
 }
 
 export function mountCardPlaybook(id) {
@@ -87,11 +88,16 @@ export function renderBar() {
   // A graph node's routes: the user can send the card along any of them.
   const routes = found.flow.kind === 'graph' && !found.project.archivedAt ? (playbook?.routes ?? []).filter((route) => found.flow.lanes.some((item) => item.id === route.laneId)) : [];
   const routeButtons = routes.map((route) => `<button type="button" class="chip" data-action="follow-route" data-to="${route.laneId}" data-route="${escape(route.name)}">${escape(route.name)}${icon('arrow')}${escape(found.flow.lanes.find((item) => item.id === route.laneId).name)}</button>`).join('');
-  panel.innerHTML = `<div class="card-playbook-info">${icon('playbook')}<div><strong>${escape(lane.name)} playbook</strong><span>${escape(playbook ? playbook.summary : 'No playbook yet. Open playbooks to write one.')}</span></div></div>
-    <div class="card-playbook-actions">${button('run-playbook', 'Run playbook', 'arrow', 'button small secondary', runnable ? '' : 'disabled title="This lane has no runnable playbook"')}${button('open-lane-playbook', 'Open playbook', null, 'button small secondary', `data-id="${lane.id}"`)}</div>
-    ${routeButtons ? `<div class="card-routes" role="group" aria-label="Follow a route"><span>Follow a route</span>${routeButtons}</div>` : ''}
+  // A re-render (run activity, a playbook save) keeps the guidance open if it was.
+  const guidanceOpen = panel.querySelector('.card-playbook-guidance')?.open ? ' open' : '';
+  const summary = playbook
+    ? `<span class="card-playbook-summary" title="${escape(playbook.summary ?? '')}">${escape(playbook.summary ?? '')}</span>`
+    : `<button type="button" class="text-button card-playbook-write" data-action="open-lane-playbook" data-id="${lane.id}">Write one</button>`;
+  const actions = playbook ? `<div class="card-playbook-actions">${button('run-playbook', 'Run playbook', 'arrow', 'button small secondary', runnable ? '' : 'disabled title="This lane has no runnable playbook"')}${iconButton('open-lane-playbook', 'Open playbook', 'edit', `data-id="${lane.id}"`)}</div>` : '';
+  panel.innerHTML = `<div class="card-playbook-info">${icon('playbook')}<strong>${escape(lane.name)} playbook</strong>${summary}</div>${actions}
+    ${routeButtons ? `<div class="card-routes" role="group" aria-label="Follow a route"><span>Routes</span>${routeButtons}</div>` : ''}
     ${latest ? `<p class="card-playbook-run ${latest.status === 'failed' ? 'failed' : ''}"><span>Last run${latest.stageId !== lane.id ? ` in ${escape(lanesOf(found.project).find((item) => item.id === latest.stageId)?.name ?? 'another lane')}` : ''}:</span> ${escape(runLabel(latest))}</p>` : ''}
-    ${guidance ? `<p class="card-playbook-guidance">${escape(guidance)}</p>` : ''}`;
+    ${guidance ? `<details class="card-playbook-guidance"${guidanceOpen}><summary>What now?</summary><p>${escape(guidance)}</p></details>` : ''}`;
 }
 
 function renderNotes() {
@@ -105,7 +111,7 @@ function renderNotes() {
   $('#lane-notes-state').textContent = saving ? 'Saving…' : draft !== null ? 'Unsaved' : '';
   const banner = $('#lane-notes-conflict');
   banner.hidden = !conflict;
-  banner.innerHTML = conflict ? `<span>These notes changed while you were editing (a lane run may have added notes). Your text is kept.</span><div>${button('notes-use-newer', 'Use the newer notes', null, 'button small secondary')}${button('notes-keep-mine', 'Keep my version', null, 'button small secondary')}</div>` : '';
+  banner.innerHTML = conflict ? `<span title="A lane run may have added notes.">Notes changed while you were editing. Your text is kept.</span><div>${button('notes-use-newer', 'Use newer', null, 'button small secondary')}${button('notes-keep-mine', 'Keep mine', null, 'button small secondary')}</div>` : '';
 }
 
 async function flushNotes(force = false, state = active) {
@@ -154,9 +160,9 @@ document.addEventListener('click', async (event) => {
       target.disabled = true;
       const state = active;
       await flushNotes(false, state);
-      if (state.draft !== null) throw new Error('Save or resolve the hand-off notes before running this playbook.');
+      if (state.draft !== null) throw new Error('Resolve the hand-off notes before running.');
       await runPlaybook(state.id);
-      toast('Lane run started. Follow it in the card chat.');
+      toast('Lane run started. Follow it in the chat.');
       await refresh();
     }
     if (action === 'open-lane-playbook') await openPlaybooks({ laneId: target.dataset.id });

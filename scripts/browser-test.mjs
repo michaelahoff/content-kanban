@@ -519,7 +519,7 @@ These values apply when a card enters this lane.
   await fill('#playbook-text', playbookText.replace('run: off', 'run: off\nmay_edit: [nope]'));
   await waitFor(`document.querySelector('.playbook-problems')?.textContent.includes('nope')`);
   await fill('#playbook-text', playbookText);
-  await waitFor(`!document.querySelector('.playbook-problems') && document.querySelector('.playbook-inspector h3').textContent.includes('sets Prompt')`);
+  await waitFor(`!document.querySelector('.playbook-problems') && document.querySelector('.playbook-summary').textContent.includes('sets Prompt')`);
   assert.equal(await evaluate(`document.querySelector('#playbook-status').textContent`), 'Unsaved changes · Ctrl+S saves');
   await snapshot('lane-playbook-editor');
   await click('[data-playbook-action="save"]');
@@ -663,7 +663,7 @@ These values apply when a card enters this lane.
   await waitFor(`document.querySelector('#playbook-status').textContent.startsWith('Saved')`);
   await click(`[data-playbook-action="select"][data-id="${addedLane}"]`);
   await fill('#playbook-text', `---\nlane: ${addedLane}\nmodel: test-model\nmay_edit: [intro]\n---\n\nWrite a better intro. Follow skills/voice.md.\n`);
-  await waitFor(`document.querySelector('.playbook-inspector h3').textContent === 'Runs on entry · Card chat provider · may edit Intro'`);
+  await waitFor(`document.querySelector('.playbook-summary').textContent === 'On entry · Chat’s agent test-model · continues chat · sends all · may edit Intro · 1 skill'`);
   await click('[data-playbook-action="save"]');
   await waitFor(`document.querySelector('#playbook-status').textContent.startsWith('Saved')`);
   await click('[data-playbook-action="close"]');
@@ -702,7 +702,7 @@ These values apply when a card enters this lane.
   await waitFor(`document.querySelector('#form-dialog').open && document.querySelector('#form-heading')?.textContent === 'Save output from the workspace'`);
   await fill('#chat-file-path', 'renders/frame.bin');
   await click('#small-form button[type="submit"]');
-  await waitFor(`[...document.querySelectorAll('.chat-saved-outputs li')].some((li) => li.textContent.includes('frame.bin') && li.textContent.includes('Saved by you from the workspace') && li.querySelector('a[download]'))`);
+  await waitFor(`[...document.querySelectorAll('.chat-saved-outputs li')].some((li) => li.textContent.includes('frame.bin') && li.textContent.includes('From the workspace') && li.querySelector('a[download]'))`);
   console.log('PASS Save output keeps a named workspace file beside its response');
   // Save to project library publishes a separate Library file; a second save of the same name asks Create new, Replace or Cancel.
   const entryProjectId = (await (await fetch(`${base}/api/cards/${entryCardId}`)).json()).card.projectId;
@@ -716,7 +716,7 @@ These values apply when a card enters this lane.
   await click('.chat-saved-outputs [data-action="chat-promote-output"]');
   await waitFor(`document.querySelector('#form-dialog').open && document.querySelector('#form-heading')?.textContent === 'Save intro-notes.md to the project Library'`);
   await click('#small-form button[type="submit"]');
-  await waitFor(`document.querySelector('#form-heading')?.textContent === 'A file named intro-notes.md already exists'`);
+  await waitFor(`document.querySelector('#form-heading')?.textContent === 'intro-notes.md already exists'`);
   assert.deepEqual(await evaluate(`[...document.querySelectorAll('input[name="collision"]')].map(input => input.value)`), ['create', 'replace', 'cancel']);
   assert.equal(await evaluate(`document.querySelector('input[name="collision"]:checked').value`), 'create', 'Create new is the default');
   await evaluate(`document.querySelector('input[name="collision"][value="replace"]').checked = true`);
@@ -814,7 +814,7 @@ These values apply when a card enters this lane.
     const formLane = (await state()).projects[0].lanes.at(-1).id;
     const pressed = (mode) => evaluate(`document.querySelector('[data-playbook-action="mode"][data-mode="${mode}"]')?.getAttribute('aria-pressed')`);
     const markdown = () => evaluate(`document.querySelector('#playbook-text').value`);
-    const inspectorHeading = () => evaluate(`document.querySelector('.playbook-inspector h3').textContent`);
+    const inspectorHeading = () => evaluate(`document.querySelector('.playbook-summary').textContent`);
     const switchTo = async (mode) => {
       await click(`[data-playbook-action="mode"][data-mode="${mode}"]`);
       await waitFor(mode === 'form' ? `!!document.querySelector('#playbook-body') && !document.querySelector('#playbook-text')` : `!!document.querySelector('#playbook-text') && !document.querySelector('#playbook-body')`);
@@ -830,10 +830,10 @@ These values apply when a card enters this lane.
     assert.ok(await evaluate(`document.querySelector('#playbook-body').value.includes('What should happen when a card enters this lane?')`), 'The instructions sit under the controls');
     await click('#playbook-run-manual');
     await waitFor(`document.querySelector('#playbook-run-manual')?.getAttribute('aria-pressed') === 'true'`);
-    assert.ok((await inspectorHeading()).includes('Runs when you choose'), 'Manual changes the summary');
+    assert.ok((await inspectorHeading()).startsWith('Manual'), 'Manual changes the summary');
     assert.equal(await evaluate(`document.querySelector('#playbook-status').textContent`), 'Unsaved changes · Ctrl+S saves');
     await click('input[data-playbook-action="form-may-edit"][data-key="intro"]');
-    await waitFor(`document.querySelector('.playbook-inspector h3')?.textContent.includes('may edit Intro')`);
+    await waitFor(`document.querySelector('.playbook-summary')?.textContent.includes('may edit Intro')`);
     await switchTo('markdown');
     assert.match(await markdown(), /^run: manual$/m, 'The chip wrote run:');
     assert.match(await markdown(), /^may_edit: \[intro\]$/m, 'The checkbox wrote may_edit:');
@@ -844,7 +844,7 @@ These values apply when a card enters this lane.
     assert.equal(await evaluate(`document.querySelector('#playbook-set-field-0').value`), 'title', 'Add field picks the first field without a value');
     await fill('#playbook-set-value-0', 'Ready for review\nSecond line');
     // Typed values reach the draft after a short pause in typing.
-    await waitFor(`document.querySelector('.playbook-inspector h3')?.textContent.includes('sets Card title')`);
+    await waitFor(`document.querySelector('.playbook-summary')?.textContent.includes('sets Card title')`);
     await switchTo('markdown');
     assert.match(await markdown(), /^set:\n  title: \|-?\n    Ready for review\n    Second line$/m, 'Several lines are written as block text');
     await switchTo('form');
@@ -872,17 +872,12 @@ These values apply when a card enters this lane.
     assert.ok(await evaluate(`document.querySelector('#playbook-status').textContent.startsWith('Saved')`));
     await snapshot('lane-playbook-form');
     // The form is a sheet that fits a phone-wide column: no sideways scrolling,
-    // the set row folded, and the help text hidden until Hints is on.
+    // the set row folded, and the explanations behind help buttons.
     await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
     assert.ok(await evaluate(`document.querySelector('#playbook-dialog').scrollWidth <= document.querySelector('#playbook-dialog').clientWidth && document.querySelector('.playbook-main').scrollWidth <= document.querySelector('.playbook-main').clientWidth`), 'The form fits the column without sideways scrolling');
     assert.ok(await evaluate(`document.querySelector('#playbook-set-value-0').getBoundingClientRect().top >= document.querySelector('#playbook-set-field-0').getBoundingClientRect().bottom`), 'A narrow set row puts the value under the field picker');
-    assert.equal(await evaluate(`document.querySelector('.playbook-form .field-help').checkVisibility()`), false, 'Hints are hidden until asked for');
-    assert.equal(await evaluate(`document.querySelector('#playbook-hints').getAttribute('aria-pressed')`), 'false');
-    await click('#playbook-hints');
-    await waitFor(`document.querySelector('#playbook-hints')?.getAttribute('aria-pressed') === 'true' && document.querySelector('.playbook-form .field-help')?.checkVisibility()`);
+    assert.equal(await evaluate(`document.querySelectorAll('.playbook-form .help-button').length`), 2, 'Explanations are help popovers on the sections');
     await snapshot('mobile-playbook-form');
-    await click('#playbook-hints');
-    await waitFor(`document.querySelector('#playbook-hints')?.getAttribute('aria-pressed') === 'false' && !document.querySelector('.playbook-form .field-help').checkVisibility()`);
     await send('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
     assert.ok(await evaluate(`document.querySelector('#playbook-set-value-0').getBoundingClientRect().top < document.querySelector('#playbook-set-field-0').getBoundingClientRect().bottom`), 'A wide set row keeps the value beside the field picker');
     // Later checks type whole Markdown files and expect lanes without playbooks.
@@ -894,7 +889,7 @@ These values apply when a card enters this lane.
     await click('[data-playbook-action="close"]');
     await waitFor(`!document.querySelector('#playbook-dialog').open`);
     assert.equal((await state()).projects[0].lanes.at(-1).playbook, null);
-    console.log('PASS the playbook settings form writes run, may_edit, set and context into the Markdown draft, saves them, reopens in the remembered mode and fits a phone-wide column with its hints off');
+    console.log('PASS the playbook settings form writes run, may_edit, set and context into the Markdown draft, saves them, reopens in the remembered mode and fits a phone-wide column');
   }
 
   await click('.sidebar-section [data-action="add-project"]');
@@ -1133,19 +1128,19 @@ These values apply when a card enters this lane.
   assert.equal(await evaluate(`document.querySelectorAll('.library-thumb.file').length`), 2);
 
   await pickLibraryFiles([['logo.png', 'png', '#3c8b7d']]);
-  await waitFor(`document.querySelector('#form-dialog').open && document.querySelector('#form-heading')?.textContent === 'A file named logo.png already exists'`);
+  await waitFor(`document.querySelector('#form-dialog').open && document.querySelector('#form-heading')?.textContent === 'logo.png already exists'`);
   assert.equal(await evaluate(`document.querySelector('input[name="collision"]:checked').value`), 'create', 'Create new is the default');
   assert.match(await evaluate(`document.querySelector('#small-form').textContent`), /logo \(1\)\.png/);
   await click('#small-form [type="submit"]');
   await waitFor(`document.querySelectorAll('.library-asset').length === 4`);
   assert.deepEqual(await libraryNames(), ['logo (1).png', 'logo.png', 'opaque.bin', 'script.md']);
   await pickLibraryFiles([['logo.png', 'png', '#c7835a']]);
-  await waitFor(`document.querySelector('#form-dialog').open && document.querySelector('#form-heading')?.textContent === 'A file named logo.png already exists'`);
+  await waitFor(`document.querySelector('#form-dialog').open && document.querySelector('#form-heading')?.textContent === 'logo.png already exists'`);
   await click('input[name="collision"][value="replace"]');
   await click('#small-form [type="submit"]');
   await waitFor(`[...document.querySelectorAll('.library-upload-state')].some(node => node.textContent === 'Replaced · v2')`);
   await pickLibraryFiles([['opaque.bin', 'bytes']]);
-  await waitFor(`document.querySelector('#form-dialog').open && document.querySelector('#form-heading')?.textContent === 'A file named opaque.bin already exists'`);
+  await waitFor(`document.querySelector('#form-dialog').open && document.querySelector('#form-heading')?.textContent === 'opaque.bin already exists'`);
   await click('input[name="collision"][value="cancel"]');
   await click('#small-form [type="submit"]');
   await waitFor(`[...document.querySelectorAll('.library-upload-state')].some(node => node.textContent === 'Cancelled')`);
@@ -1170,7 +1165,7 @@ These values apply when a card enters this lane.
   await fill('#library-draft-name', 'Hook guide.md');
   await fill('#library-draft-text', '# Hooks\nOpen on the payoff.');
   await waitFor(`!document.querySelector('.library-draft-state').textContent.includes('Keeping draft')`);
-  assert.match(await draftState(), /not in the Library until you save/);
+  assert.match(await draftState(), /not in the Library yet/);
   await snapshot('library-editor');
   await click('[data-action="library-close"]');
   await waitFor(`!!document.querySelector('.library-asset.draft[aria-label="Edit draft Hook guide.md"]')`);
@@ -1192,7 +1187,7 @@ These values apply when a card enters this lane.
   await waitFor(`!!document.querySelector('#library-draft-text') && !document.querySelector('#library-draft-name')`);
   await fill('#library-draft-text', '# Hooks\nOpen on the payoff. Then cut.');
   await waitFor(`!document.querySelector('.library-draft-state').textContent.includes('Keeping draft')`);
-  assert.match(await draftState(), /use saved v1/);
+  assert.match(await draftState(), /v1 is saved/);
   await click('[data-action="library-close"]');
   await waitFor(`[...document.querySelectorAll('.library-asset')].some(node => node.textContent.includes('Hook guide.md') && node.textContent.includes('Draft'))`);
   await click('.library-asset[aria-label="Inspect Hook guide.md"]');
@@ -1211,7 +1206,7 @@ These values apply when a card enters this lane.
   await fill('#library-draft-name', 'script.md');
   await fill('#library-draft-text', 'pasted notes');
   await click('[data-action="library-save-draft"]');
-  await waitFor(`document.querySelector('#form-dialog').open && document.querySelector('#form-heading')?.textContent === 'A file named script.md already exists'`);
+  await waitFor(`document.querySelector('#form-dialog').open && document.querySelector('#form-heading')?.textContent === 'script.md already exists'`);
   assert.equal(await evaluate(`document.querySelector('input[name="collision"]:checked').value`), 'create');
   await click('#small-form [type="submit"]');
   await waitFor(`document.querySelector('#library-heading')?.textContent === 'script (1).md'`);
@@ -1235,7 +1230,7 @@ These values apply when a card enters this lane.
     await waitFor(`document.querySelector('#playbook-text')?.value.includes('lane: ${lane.id}')`);
     const written = `---\nlane: ${lane.id}\nrun: off   # Quiet during checks\nmay_edit: []\n---\n# Picker lane\n\nMention Hook guide.md in prose; that alone sends nothing.\n`;
     await fill('#playbook-text', written);
-    await waitFor(`document.querySelector('.playbook-inspector')?.textContent.includes('Library files') && !!document.querySelector('[data-playbook-action="add-assets"]')`);
+    await waitFor(`!!document.querySelector('.playbook-summary') && !!document.querySelector('[data-playbook-action="add-assets"]')`);
     await click('[data-playbook-action="add-assets"]');
     await waitFor(`!!document.querySelector('#small-form input[value="asset:${hook.id}"]')`);
     await click(`#small-form input[value="asset:${hook.id}"]`);
@@ -1319,7 +1314,7 @@ These values apply when a card enters this lane.
   await waitFor(`[...document.querySelectorAll('#library-copy-folder option')].some(option => option.textContent === 'Guides/')`);
   await evaluate(`document.querySelector('#library-copy-folder').value = ${JSON.stringify(guides.id)}`);
   await click('#small-form [type="submit"]');
-  await waitFor(`document.querySelector('#form-heading')?.textContent === 'A file named Hook guide.md already exists'`);
+  await waitFor(`document.querySelector('#form-heading')?.textContent === 'Hook guide.md already exists'`);
   assert.deepEqual(await evaluate(`[...document.querySelectorAll('input[name="collision"]')].map(input => input.value)`), ['create', 'cancel']);
   await click('#small-form [type="submit"]');
   for (let tries = 0; (await copiedFiles()).length < 2 && tries < 100; tries++) await new Promise((resolve) => setTimeout(resolve, 50));
@@ -1358,10 +1353,10 @@ These values apply when a card enters this lane.
   await click('.library-crumb:nth-of-type(2)');
   await waitFor(`!!document.querySelector('.library-folder[aria-label="Open folder refs"]')`);
   await dropFolder(tree);
-  await waitFor(`document.querySelector('#form-heading')?.textContent === 'A file named logo.png already exists'`);
+  await waitFor(`document.querySelector('#form-heading')?.textContent === 'logo.png already exists'`);
   assert.equal(await evaluate(`document.querySelector('input[name="collision"]:checked').value`), 'create');
   await click('#small-form [type="submit"]');
-  await waitFor(`document.querySelector('#form-heading')?.textContent === 'A file named note.md already exists' && document.querySelector('#form-dialog').open`);
+  await waitFor(`document.querySelector('#form-heading')?.textContent === 'note.md already exists' && document.querySelector('#form-dialog').open`);
   await click('input[name="collision"][value="cancel"]');
   await click('#small-form [type="submit"]');
   await waitFor(`[...document.querySelectorAll('.library-upload-state')].map(node => node.textContent).join() === 'Saved as logo (1).png,Cancelled'`);
@@ -1549,7 +1544,7 @@ These values apply when a card enters this lane.
   await click('[data-template-action="add-field"]');
   await waitFor(`!!document.querySelector('[data-list="fields"][data-index="1"] [name="label"]')`);
   await fill('[data-list="fields"][data-index="1"] [name="label"]', 'Body');
-  await select('[data-list="fields"][data-index="1"] [name="control"]', 'textarea');
+  await click('[data-list="fields"][data-index="1"] [name="control"][value="textarea"]');
   await waitFor(`document.querySelector('[data-list="fields"][data-index="1"] [name="max"]')?.value === '200000'`);
   await click('[data-list="fields"][data-index="1"] [name="countWords"]');
   await click('[data-template-action="add-role"]');
@@ -1894,7 +1889,7 @@ These values apply when a card enters this lane.
   assert.equal((await api('GET', '/api/settings')).providers.filter((p) => p.enabled).length, 2);
   await fill('#claude-instructions', 'Shared Claude guidance');
   await click('#claude-guidance button');
-  await waitFor(`document.querySelector('#status').textContent.includes('instructions saved')`);
+  await waitFor(`document.querySelector('#status').textContent.includes('Instructions saved')`);
   await click('input[data-provider="codex"]');
   await waitFor(`!document.querySelector('input[data-provider="codex"]').disabled`);
   await send('Page.navigate', { url: base + '/settings.html' });
@@ -1947,7 +1942,7 @@ These values apply when a card enters this lane.
   await send('Page.navigate', { url: base + '/settings.html' });
   await waitFor(`!!document.querySelector('input[data-provider="claude"]')`);
   await click('input[data-provider="claude"]');
-  await waitFor(`document.querySelector('#models').textContent.includes('Both providers are disabled')`);
+  await waitFor(`document.querySelector('#models').textContent.includes('No provider enabled')`);
   assert.equal(await evaluate(`document.querySelector('#refresh-models').disabled`), true);
   await send('Page.navigate', { url: base }); await open(b.id);
   await waitFor(`document.querySelector('#chat-composer').textContent.includes('Enable Claude or Codex')`);
@@ -1960,7 +1955,7 @@ These values apply when a card enters this lane.
   await waitFor(`document.querySelector('#backup-output')?.value.endsWith('backups')`);
   await fill('#backup-output', path.join(temporary, 'browser-backups'));
   await click('#backup-start');
-  await waitFor(`document.querySelector('#backup-status').textContent.includes('Backup saved to')`);
+  await waitFor(`document.querySelector('#backup-status').textContent.includes('Saved to')`);
   assert.equal(await evaluate(`document.querySelector('#backup-cancel').hidden`), true);
   assert.equal((await api('GET', '/api/maintenance')).last.status, 'completed');
   await snapshot('settings-export');
