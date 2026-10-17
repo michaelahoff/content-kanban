@@ -94,6 +94,24 @@ The research skill kept the work to public business information and the agents s
 
 ![The salon mockup, previewed from the saved output](demo-flows/mockup-salon.jpg)
 
+## Live run: Outlier remix (2026-10-17)
+
+Sample card: "Turn Claude Code Into Your AI Operating System (4 Layers)" (5,150 subscribers, 272,620 views, ratio 52.9×, 14:56, automatic captions), found with vidIQ's outlier search and checked with yt-dlp; the installer fetched its thumbnail and transcript. One click on **Run playbook** in Drop:
+
+| Node | Agent | Started | Result |
+| --- | --- | --- | --- |
+| Drop | Claude Opus (vision) | 19:01 UTC | Channel stats and a 6,500-character packaging analysis: the title skeleton, the thumbnail's composition and planted question, the promise, the audience, what to keep and what to beat |
+| Titles | Claude | 19:02 | 12 scored titles across patterns, top 3 and one recommended; none reuse the original wording |
+| Intro | Claude | 19:02 | A 175-word seven-part hook with `[PROOF: …]` placeholders where the creator's own numbers go, plus three alternate first lines |
+| Thumbnail · Codex | Codex gpt-6.1-sol, fresh context | 19:03 held, 19:04 | Held until **Use my full Codex setup** was saved in Settings, then three written concepts and two generated 1672×941 images in the chat, ready to adopt into the gallery |
+| Thumbnail · Claude | Claude Opus, fresh context | 19:06 | Two 1280×720 PNGs rendered from hand-written SVG with `rsvg-convert`, saved as outputs with their SVG sources |
+| Script | Claude Opus | 19:08 | A 2,700-word spoken script starting with the intro, chapter markers, `[B-ROLL]`/`[ON SCREEN]` cues, open loops and re-hooks per the retention skill |
+| Review | user | 19:13 | End: pick the title, adopt a thumbnail, record |
+
+Twelve minutes including the hold. The two providers' thumbnails make the comparison the flow was built for: Codex's photoreal composition against Claude's flat vector, both from the same concepts, neither a copy of the outlier's image.
+
+![Codex thumbnail](demo-flows/thumbnail-codex.jpg) ![Claude thumbnail](demo-flows/thumbnail-claude.jpg)
+
 ## Limits that stand, and what would lift them
 
 Found while running the three flows; none blocked a demo, each is a real edge of the system today.
