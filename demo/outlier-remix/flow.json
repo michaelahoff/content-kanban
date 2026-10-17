@@ -1,0 +1,52 @@
+{
+  "project": "Outlier remix",
+  "flow": { "name": "Long-form remix", "kind": "graph" },
+  "templates": [
+    {
+      "id": "outlier-video",
+      "name": "Outlier video",
+      "title": { "label": "Working title", "max": 500 },
+      "fields": [
+        { "key": "originalVideoUrl", "label": "Outlier URL", "control": "url", "max": 4096, "placement": "header", "youtube": true, "videoLabel": "outlier video", "placeholder": "Paste the outlier's YouTube link (optional if you dropped a screenshot)…" },
+        { "key": "originalVideoTitle", "label": "Outlier title", "control": "text", "max": 500, "placeholder": "The outlier's exact title…" },
+        { "key": "channelStats", "label": "Channel stats", "control": "text", "max": 500, "placeholder": "channel · subscribers · views · published · duration" },
+        { "key": "transcript", "label": "Transcript", "control": "textarea", "max": 400000, "transcript": true, "placeholder": "The outlier's captions, filled by the YouTube lookup or by Drop…" },
+        { "key": "packagingAnalysis", "label": "Packaging analysis", "control": "textarea", "max": 50000, "placeholder": "Why the outlier won: title formula, thumbnail, promise, audience, first 30 seconds, what to keep and what to beat…" },
+        { "key": "titleOptions", "label": "Title options", "control": "textarea", "max": 20000, "copy": true, "placeholder": "RECOMMENDED: …, then twelve scored candidates…" },
+        { "key": "thumbnailConcepts", "label": "Thumbnail concepts", "control": "textarea", "max": 50000, "placeholder": "Concepts A–C, then the Claude variants…" },
+        { "key": "intro", "label": "Intro", "control": "textarea", "max": 20000, "copy": true, "placeholder": "The first 30–45 seconds, as spoken…" },
+        { "key": "script", "label": "Script", "control": "textarea", "max": 400000, "countWords": true, "copy": true, "placeholder": "The full spoken script, starting with the intro…" },
+        { "key": "publishedVideoUrl", "label": "Published video URL", "control": "url", "max": 4096, "videoLabel": "published video", "placeholder": "https://…" }
+      ],
+      "imageRoles": [
+        { "key": "original", "label": "Original" },
+        { "key": "inspiration", "label": "Inspiration" },
+        { "key": "brand", "label": "Brand assets" }
+      ]
+    }
+  ],
+  "template": "outlier-video",
+  "map": "MAP.md",
+  "skills": ["skills/titles.md", "skills/hook.md", "skills/thumbnail-svg.md", "skills/retention.md"],
+  "nodes": [
+    { "name": "Drop", "color": "lavender", "x": 0, "y": 40, "playbook": "lanes/drop.md" },
+    { "name": "Titles", "color": "blue", "x": 380, "y": 40, "playbook": "lanes/titles.md" },
+    { "name": "Intro", "color": "blue", "x": 760, "y": 40, "playbook": "lanes/intro.md" },
+    { "name": "Thumbnail · Codex", "color": "orange", "x": 1140, "y": 40, "playbook": "lanes/thumbnail-codex.md" },
+    { "name": "Thumbnail · Claude", "color": "orange", "x": 1140, "y": 320, "playbook": "lanes/thumbnail-claude.md" },
+    { "name": "Script", "color": "blue", "x": 1520, "y": 40, "playbook": "lanes/script.md" },
+    { "name": "Review", "color": "amber", "x": 1900, "y": 40, "playbook": "lanes/review.md" },
+    { "name": "Done", "color": "green", "x": 2280, "y": 40, "playbook": "lanes/done.md" }
+  ],
+  "cards": [
+    {
+      "node": "Drop",
+      "title": "Turn Claude Code Into Your AI Operating System (4 Layers)",
+      "youtube": "originalVideoUrl",
+      "fields": {
+        "originalVideoUrl": "https://www.youtube.com/watch?v=Zs3faMCDYNs",
+        "channelStats": "Pav Rusovs | Automation Orbit · 5,150 subscribers · 272,620 views · ratio 52.9× · published 2026-09-22 · 14:56 · checked 2026-10-17"
+      }
+    }
+  ]
+}

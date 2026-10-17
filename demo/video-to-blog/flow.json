@@ -1,0 +1,40 @@
+{
+  "project": "Video to blog",
+  "flow": { "name": "Main", "kind": "graph" },
+  "templates": [
+    {
+      "id": "blog-post",
+      "name": "Blog post",
+      "title": { "label": "Post title", "max": 500 },
+      "fields": [
+        { "key": "originalVideoUrl", "label": "Original URL", "control": "url", "max": 4096, "placement": "header", "youtube": true, "videoLabel": "original video", "placeholder": "Paste the YouTube link…" },
+        { "key": "originalVideoTitle", "label": "Original video title", "control": "text", "max": 500, "placeholder": "The video's title on YouTube…" },
+        { "key": "transcript", "label": "Transcript", "control": "textarea", "max": 400000, "transcript": true, "placeholder": "Filled by Get title, thumbnail & transcript…" },
+        { "key": "outline", "label": "Outline", "control": "textarea", "max": 100000, "placeholder": "The angle and the H2/H3 outline, written by Outline…" },
+        { "key": "post", "label": "Post", "control": "textarea", "max": 400000, "countWords": true, "copy": true, "placeholder": "The post in Markdown…" },
+        { "key": "reviewNotes", "label": "Review notes", "control": "textarea", "max": 100000, "placeholder": "Numbered notes from Review…" },
+        { "key": "publishedUrl", "label": "Published URL", "control": "url", "max": 4096, "videoLabel": "published post", "placeholder": "Filled by Publish…" }
+      ],
+      "imageRoles": [ { "key": "original", "label": "Original" } ]
+    }
+  ],
+  "template": "blog-post",
+  "map": "MAP.md",
+  "skills": ["skills/voice.md", "skills/html-post.md", "skills/review-checklist.md"],
+  "nodes": [
+    { "name": "Inbox", "color": "lavender", "x": 0, "y": 40, "playbook": "lanes/inbox.md" },
+    { "name": "Outline", "color": "blue", "x": 380, "y": 40, "playbook": "lanes/outline.md" },
+    { "name": "Draft", "color": "blue", "x": 760, "y": 40, "playbook": "lanes/draft.md" },
+    { "name": "Review", "color": "amber", "x": 1140, "y": 40, "playbook": "lanes/review.md" },
+    { "name": "Publish", "color": "green", "x": 1520, "y": 40, "playbook": "lanes/publish.md" },
+    { "name": "Published", "color": "green", "x": 1900, "y": 40, "playbook": "lanes/published.md" }
+  ],
+  "cards": [
+    {
+      "node": "Inbox",
+      "title": "AI Engineer: How We Build Effective Agents (Barry Zhang, Anthropic)",
+      "youtube": "originalVideoUrl",
+      "fields": { "originalVideoUrl": "https://www.youtube.com/watch?v=D7_ipDqhtwk" }
+    }
+  ]
+}
