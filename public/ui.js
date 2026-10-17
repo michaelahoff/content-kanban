@@ -139,6 +139,26 @@ export function showHelp(title, html) {
   dialog.innerHTML = `<div class="small-dialog-header"><h2 id="help-heading">${escape(title)}</h2>${iconButton('close-help', 'Close help', 'close')}</div><div class="help-body">${html}</div>`;
   dialog.showModal();
 }
+// A saved HTML output (a mockup, a rendered post) shown inside the app. The
+// frame is sandboxed without allow-same-origin, so the page runs its own
+// scripts but cannot reach this app; the server sends the same restriction as
+// a Content-Security-Policy. `url` is the output's content URL. The frame is
+// emptied on close so a page's scripts and media stop with the dialog.
+export function previewDialog(url, filename) {
+  let dialog = document.querySelector('#preview-dialog');
+  if (!dialog) {
+    dialog = document.createElement('dialog');
+    dialog.id = 'preview-dialog';
+    dialog.className = 'preview-dialog';
+    dialog.setAttribute('aria-labelledby', 'preview-heading');
+    document.body.append(dialog);
+    dialog.addEventListener('click', (event) => { if (event.target === dialog || event.target.closest('[data-action="close-preview"]')) dialog.close(); });
+    dialog.addEventListener('close', () => { dialog.replaceChildren(); });
+  }
+  const inline = /[?&]inline=1(&|$)/.test(url) ? url : `${url}${url.includes('?') ? '&' : '?'}inline=1`;
+  dialog.innerHTML = `<div class="preview-header"><h2 id="preview-heading" title="${escape(filename)}">${escape(filename)}</h2><a class="button small secondary" href="${escape(inline)}" target="_blank" rel="noopener">Open in new tab${icon('external')}</a>${iconButton('close-preview', 'Close preview', 'close')}</div><iframe class="preview-frame" sandbox="allow-scripts" src="${escape(inline)}" title="Preview of ${escape(filename)}"></iframe>`;
+  dialog.showModal();
+}
 if (typeof document !== 'undefined' && document.addEventListener) {
   document.addEventListener('click', (event) => {
     const trigger = event.target.closest?.('[data-action="help"]');

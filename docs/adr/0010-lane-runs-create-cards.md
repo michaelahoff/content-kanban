@@ -27,5 +27,5 @@ Creating cards is authority, like `may_edit`. Putting it in the playbook keeps t
 ## Consequences
 
 - `knownKeys` gains `creates`; `playbookSettings` returns `creates`; `describeSettings` mentions it.
-- Schema version 22 adds `cards.parent_id`.
+- Schema version 25 adds `cards.parent_id`.
 - Deleting the origin card leaves its created cards in place; `parentId` still names it.

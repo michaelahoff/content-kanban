@@ -343,6 +343,21 @@
   .editor-breadcrumb > .icon { width: 18px; height: 18px; }
   .editor-breadcrumb select { background: var(--raised); border: 1px solid transparent; border-radius: 8px; font-size: 14px; font-weight: 500; padding: 6px 10px; max-width: 200px; }
   .editor-header-right { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+  /* Lineage: where this card came from and what it made (the list's menu look is in chat.css). */
+  .editor-lineage { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; padding: 10px 24px 0; }
+  .editor-lineage > .chip { min-height: 28px; max-width: 100%; padding: 0 10px; font-size: 13px; overflow: hidden; }
+  .editor-lineage .chip .icon { flex-shrink: 0; width: 14px; height: 14px; color: var(--muted); }
+  .editor-lineage .lineage-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  /* What the last lane run saved and created, under its "Last run" line. */
+  .card-playbook-saved, .card-playbook-created { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin: 0; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+  .card-playbook-label { color: var(--faint); }
+  .card-playbook-file { display: inline-flex; align-items: center; gap: 6px; }
+  .card-playbook-saved a { color: var(--blue); text-underline-offset: 3px; }
+  .card-playbook-saved .chip, .card-playbook-created .chip { min-height: 24px; padding: 0 9px; font-size: 12px; background: var(--bg); }
+  .card-playbook-saved .chip:hover, .card-playbook-created .chip:hover { background: var(--raised-hover); }
+  .card-playbook-created .chip { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+  /* Looking at a result changes nothing, so an archived project keeps these. */
+  #card-dialog.archived #card-playbook :is(.card-playbook-saved, .card-playbook-created) button { display: inline-flex; }
   .original-video { padding: 18px 24px 0; }
   .original-video label { display: block; margin-bottom: 8px; color: var(--text); font-size: 14px; font-weight: 500; }
   .original-video-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; }

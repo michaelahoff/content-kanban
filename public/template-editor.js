@@ -33,7 +33,7 @@ const heading = () => draft.name.trim() || (selected ? 'Untitled template' : 'Ne
 // Rows keep every definition key, so edits never change property order and
 // the unsaved check can compare JSON. Absent settings are undefined, which
 // JSON drops and validateTemplate treats as the default.
-const fieldRow = (field = {}, locked = false) => ({ key: field.key ?? '', label: field.label ?? '', control: field.control ?? 'text', max: field.max, placeholder: field.placeholder, placement: field.placement, copy: field.copy, countWords: field.countWords, editor: field.editor, youtube: field.youtube, videoLabel: field.videoLabel, locked: locked || undefined });
+const fieldRow = (field = {}, locked = false) => ({ key: field.key ?? '', label: field.label ?? '', control: field.control ?? 'text', max: field.max, placeholder: field.placeholder, placement: field.placement, copy: field.copy, countWords: field.countWords, editor: field.editor, youtube: field.youtube, transcript: field.transcript, videoLabel: field.videoLabel, locked: locked || undefined });
 const roleRow = (role = {}, locked = false) => ({ key: role.key ?? '', label: role.label ?? '', locked: locked || undefined });
 const toDraft = (definition, lock = false) => ({ name: definition.name ?? '', title: { label: definition.title?.label ?? 'Card title', max: definition.title?.max ?? 500 },
   fields: (definition.fields ?? []).map((field) => fieldRow(field, lock)), imageRoles: (definition.imageRoles ?? []).map((role) => roleRow(role, lock)) });
@@ -83,6 +83,8 @@ const helpMarkup = `<p>A card template is the set of text fields and image roles
   <p>Every field has a key, such as <code>script</code>, that card values, lane playbooks and chats refer to. Labels, controls and limits can change at any time; a key is permanent once cards use the template.</p>
   <h3>Hidden fields</h3>
   <p>A field hidden from the editor stays out of search, chats and lane results, but a lane playbook can still fill it with <code>set:</code>. The YouTube video template's Prompt works this way.</p>
+  <h3>YouTube lookup</h3>
+  <p>The lookup button beside a URL field marked <em>YouTube lookup</em> fetches the video's title and thumbnail. A text area marked <em>YouTube transcript</em> also receives the video's captions as plain text; a video without captions has no transcript.</p>
   <h3>Image roles</h3>
   <p>Roles label a card's images for agents, such as Original or Inspiration. Every card also has a display image, which playbooks call <code>display</code>.</p>
   <h3>Removing things</h3>
@@ -106,7 +108,7 @@ function renderNav() {
 function rowTitle(list, index) {
   const row = draft[list][index];
   const label = row.label.trim() ? `<span class="template-summary-label">${escape(row.label)}</span>` : '<span class="template-summary-label template-untitled">Untitled field</span>';
-  const tags = [row.editor === false && 'hidden', row.placement === 'header' && 'header', row.copy && 'copy', row.countWords && 'words', row.youtube && 'lookup'].filter(Boolean);
+  const tags = [row.editor === false && 'hidden', row.placement === 'header' && 'header', row.copy && 'copy', row.countWords && 'words', row.youtube && 'lookup', row.transcript && 'transcript'].filter(Boolean);
   return `${label}${row.key ? `<code>${escape(row.key)}</code>` : ''}${lock(row)}<span class="template-summary-meta"><span class="template-control">${controlLabel[row.control] ?? row.control}</span>${tags.map((tag) => `<span class="template-tag">${tag}</span>`).join('')}</span>`;
 }
 function refreshTitle(rowNode) {
@@ -147,6 +149,7 @@ function fieldMarkup(field, index, count) {
         ${check('countWords', 'Word count', field.countWords)}
         ${check('hidden', 'Hidden', field.editor === false, false, 'Hidden from the card editor')}
         ${url ? check('youtube', 'YouTube lookup', field.youtube) : ''}
+        ${field.control === 'textarea' ? check('transcript', 'YouTube transcript', field.transcript, false, "The YouTube lookup fills this field with the video's captions. One field per template.") : ''}
       </div></div>
       ${url ? `<label class="template-field"><span>Video label</span><input class="form-input" name="videoLabel" value="${escape(field.videoLabel ?? '')}" maxlength="100" placeholder="e.g. original video" autocomplete="off"></label>` : ''}
     </div>` : ''}</li>`;
@@ -232,15 +235,16 @@ function applyEdit(target) {
   if (name === 'placeholder' || name === 'videoLabel') row[name] = text || undefined;
   if (name === 'max') row.max = number;
   if (name === 'control') {
-    // A limit left at the old control's default follows the new one; only URL fields look up YouTube.
+    // A limit left at the old control's default follows the new one; only URL fields look up YouTube and only text areas take its transcript.
     if (row.max === defaultMax[row.control]) row.max = defaultMax[text];
     row.control = text;
     if (text !== 'url') row.youtube = undefined;
+    if (text !== 'textarea') row.transcript = undefined;
     return true;
   }
   if (name === 'header') row.placement = target.checked ? 'header' : undefined;
   if (name === 'hidden') row.editor = target.checked ? false : undefined;
-  if (['copy', 'countWords', 'youtube'].includes(name)) row[name] = target.checked || undefined;
+  if (['copy', 'countWords', 'youtube', 'transcript'].includes(name)) row[name] = target.checked || undefined;
   refreshTitle(rowNode);
   return false;
 }

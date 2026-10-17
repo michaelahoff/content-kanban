@@ -122,7 +122,7 @@ const configuredHosts = () => (process.env.FRAMEBOARD_HOSTS ?? '').split(',').ma
 const localHost = /^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/;
 
 export async function createApp({ dataDir = process.env.DATA_DIR || path.join(root, 'data'), fetch: fetchImpl = globalThis.fetch, transcript = fetchYoutubeTranscript, allowedHosts = configuredHosts(),
-  onCardEvent, codexAdapter, claudeAdapter, providerBackoffMs, streamReplayLimit, backupCheckpoint, retainedCheckpoint } = {}) {
+  onCardEvent, codexAdapter, claudeAdapter, providerBackoffMs, streamReplayLimit, backupCheckpoint, retainedCheckpoint, publisher: givenPublisher } = {}) {
   const lock = await lockDataDirectory(dataDir);
   dataDir = lock.dataDir;
   let store; let worker; let stream; let lanes; let maintenance;
@@ -152,7 +152,8 @@ export async function createApp({ dataDir = process.env.DATA_DIR || path.join(ro
     worker = createChatWorker({ store, adapter: codex, adapters, service: chat, ctx: currentUser(), providerBackoffMs, paused,
       onDelta: (delta) => stream.delta(currentUser().workspaceId, delta) });
     // Publishing happens outside the agent boundary: a lane action, not a run.
-    const publisher = createPublisher({ dataDir });
+    // Tests give their own, such as one with a stand-in rsync.
+    const publisher = givenPublisher ?? createPublisher({ dataDir });
     lanes = createLaneRunner({ store, service: chat, providers, ctx: currentUser(), paused, publisher });
     // Native files are collected from the home the harness reports in use.
     const codexHome = async () => {

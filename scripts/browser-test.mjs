@@ -694,6 +694,55 @@ These values apply when a card enters this lane.
   await click('#small-form button[type="submit"]');
   await waitFor(`document.querySelectorAll('.chat-saved-outputs li').length === 2 && document.querySelector('.chat-saved-outputs').textContent.includes('lane-reply.md')`);
   console.log('PASS lane result documents and Save as document appear beside the run with downloads');
+  // The run's row lists what it saved; only an HTML page gets Preview, which shows it in a sandboxed frame without leaving the card.
+  await waitFor(`document.querySelector('.card-playbook-saved a')?.textContent === 'intro-notes.md'`);
+  assert.equal(await evaluate(`document.querySelector('.card-playbook-saved a').target`), '_blank');
+  assert.equal(await evaluate(`document.querySelectorAll('.card-playbook-saved [data-action="preview-run-output"]').length`), 0, 'A Markdown file has no Preview');
+  await evaluate(`(() => { const range = document.createRange(); range.selectNodeContents([...document.querySelectorAll('.chat-reply-text')].at(-1)); getSelection().removeAllRanges(); getSelection().addRange(range); })()`);
+  await waitFor(`!document.querySelector('#chat-selection-actions').hidden`);
+  await click('[data-action="chat-save-selection"]');
+  await waitFor(`document.querySelector('#form-dialog').open && document.querySelector('#form-heading')?.textContent === 'Save as document'`);
+  await fill('#chat-document-name', 'reply-page.html');
+  await click('#small-form button[type="submit"]');
+  await waitFor(`[...document.querySelectorAll('.chat-saved-outputs li')].some((li) => li.textContent.includes('reply-page.html') && li.querySelector('[data-action="chat-preview-output"]'))`);
+  assert.equal(await evaluate(`document.querySelectorAll('.chat-saved-outputs [data-action="chat-preview-output"]').length`), 1, 'Only an HTML output offers Preview');
+  await click('.chat-saved-outputs [data-action="chat-preview-output"]');
+  await waitFor(`document.querySelector('#preview-dialog')?.open && document.querySelector('#preview-dialog iframe[sandbox="allow-scripts"]')`);
+  const previewSource = await evaluate(`document.querySelector('#preview-dialog iframe').getAttribute('src')`);
+  assert.match(previewSource, /\/saved-outputs\/[^/]+\/content\?inline=1$/);
+  assert.equal(await evaluate(`document.querySelector('#preview-dialog iframe').title`), 'Preview of reply-page.html');
+  assert.equal(await evaluate(`document.querySelector('#preview-heading').textContent`), 'reply-page.html');
+  assert.equal(await evaluate(`document.querySelector('#preview-dialog .preview-header a').getAttribute('href')`), previewSource, 'Open in new tab shows the same page');
+  assert.equal(await evaluate(`document.querySelector('#preview-dialog .preview-header a').target`), '_blank');
+  // The server lets the app frame the page (a refused frame would be an error page), and the sandbox puts it in its own process and origin.
+  let previewFrame;
+  for (let attempt = 0; attempt < 100 && !previewFrame; attempt++) {
+    previewFrame = (await send('Target.getTargets', {}, null)).targetInfos.find((target) => target.type === 'iframe' && target.url === new URL(previewSource, base).href);
+    if (!previewFrame) await pause(50);
+  }
+  assert.ok(previewFrame, 'The preview frame loads the saved page');
+  assert.equal(await evaluate(`document.querySelector('#preview-dialog iframe').contentDocument`), null, 'The page runs in an opaque origin');
+  assert.ok(await evaluate(`document.querySelector('#card-dialog').open`), 'Previewing leaves the card open');
+  await click('#preview-dialog [data-action="close-preview"]');
+  await waitFor(`!document.querySelector('#preview-dialog').open && !document.querySelector('#preview-dialog iframe')`);
+  console.log('PASS an HTML saved output previews in a sandboxed frame inside the card');
+  // A card made by a lane run names its origin, and the origin lists what it made (parentId, set here on the loaded cards).
+  const madeCardId = await evaluate(`import('/state.js').then(({ locateCard }) => {
+    const origin = locateCard(${JSON.stringify(entryCardId)});
+    const made = origin.project.flows.flatMap((flow) => flow.lanes).flatMap((lane) => lane.cards).find((card) => card.id !== origin.card.id);
+    made.parentId = origin.card.id;
+    return made.id;
+  })`);
+  await evaluate(`import('/editor.js').then(({ openCard }) => openCard(${JSON.stringify(entryCardId)}))`);
+  await waitFor(`document.querySelector('.editor-created > summary')?.textContent.trim() === 'Created 1 card'`);
+  assert.equal(await evaluate(`document.querySelector('.editor-lineage [data-action="open-card"]:not(.chat-menu-item)')`), null, 'The origin card has no origin of its own');
+  await click('.editor-created > summary');
+  await click(`.editor-created [data-action="open-card"][data-id="${madeCardId}"]`);
+  await waitFor(`document.querySelector('.editor-lineage > .chip')?.textContent.includes('Created from:') && !document.querySelector('.editor-created')`);
+  await click('.editor-lineage > .chip');
+  await waitFor(`document.querySelector('.editor-created') && !document.querySelector('.editor-lineage > .chip')`);
+  await evaluate(`import('/state.js').then(({ locateCard }) => { delete locateCard(${JSON.stringify(madeCardId)}).card.parentId; })`);
+  console.log('PASS the card editor links a created card to its origin and the origin to its created cards');
   // Save output keeps one named workspace file the response wrote.
   const renders = path.join(temporary, 'data', 'workspaces', entryCardId, 'renders');
   await mkdir(renders, { recursive: true });

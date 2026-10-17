@@ -289,10 +289,31 @@ test('a database from before graph flows opens with every flow a board', async (
   await f.close();
   const db = new DatabaseSync(path.join(f.dataDir, 'frameboard.db'));
   db.exec('ALTER TABLE flows DROP COLUMN kind; ALTER TABLE stages DROP COLUMN graph_x; ALTER TABLE stages DROP COLUMN graph_y;');
-  db.prepare("UPDATE meta SET value = ? WHERE key = 'schema_version'").run(String(supportedSchemaVersion - 1));
+  // Graph flows are the 24th migration.
+  db.prepare("UPDATE meta SET value = '23' WHERE key = 'schema_version'").run();
   db.close();
   await f.restart();
   const { flows } = await f.ok('GET', '/api/workspace');
   assert.deepEqual(flows.map((flow) => flow.kind), ['board']);
   assert.ok(flows[0].stages.every((stage) => stage.x === null && stage.y === null));
+});
+
+test('a database from before created cards (v24) opens with no card having an origin', async (t) => {
+  const f = await fixture(t);
+  const card = await f.card({ title: 'Older' });
+  await f.close();
+  const db = new DatabaseSync(path.join(f.dataDir, 'frameboard.db'));
+  db.exec('DROP INDEX cards_by_parent; ALTER TABLE cards DROP COLUMN parent_id;');
+  db.prepare("UPDATE meta SET value = '24' WHERE key = 'schema_version'").run();
+  db.close();
+  await f.restart();
+  assert.equal((await f.ok('GET', `/api/cards/${card.id}`)).card.parentId, null);
+  const { projects } = await f.ok('GET', '/api/workspace');
+  assert.deepEqual((await f.ok('GET', `/api/projects/${projects[0].id}/cards`)).cards.map((item) => item.parentId), [null]);
+  await f.close();
+  const upgraded = new DatabaseSync(path.join(f.dataDir, 'frameboard.db'), { readOnly: true });
+  try {
+    assert.equal(upgraded.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get().value, String(supportedSchemaVersion));
+    assert.ok(upgraded.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'cards_by_parent'").get());
+  } finally { upgraded.close(); }
 });
