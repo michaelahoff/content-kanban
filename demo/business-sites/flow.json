@@ -1,0 +1,187 @@
+{
+  "project": "Local business sites",
+  "flow": {
+    "name": "Main",
+    "kind": "graph"
+  },
+  "templates": [
+    {
+      "id": "business-list",
+      "name": "Business list",
+      "title": {
+        "label": "List",
+        "max": 500
+      },
+      "fields": [
+        {
+          "key": "location",
+          "label": "Location",
+          "control": "text",
+          "placement": "header",
+          "placeholder": "Town, State"
+        },
+        {
+          "key": "businesses",
+          "label": "Businesses",
+          "control": "textarea",
+          "placeholder": "One business per line, optionally with its website"
+        },
+        {
+          "key": "listNotes",
+          "label": "List notes",
+          "control": "textarea"
+        }
+      ],
+      "imageRoles": []
+    },
+    {
+      "id": "business-site",
+      "name": "Business site",
+      "title": {
+        "label": "Business",
+        "max": 500
+      },
+      "fields": [
+        {
+          "key": "location",
+          "label": "Location",
+          "control": "text",
+          "placement": "header",
+          "placeholder": "Town, State"
+        },
+        {
+          "key": "website",
+          "label": "Website",
+          "control": "url",
+          "placement": "header",
+          "videoLabel": "website",
+          "placeholder": "https://…"
+        },
+        {
+          "key": "owner",
+          "label": "Owner",
+          "control": "text",
+          "placeholder": "Owner or principal, as publicly stated"
+        },
+        {
+          "key": "socials",
+          "label": "Socials",
+          "control": "textarea",
+          "max": 20000
+        },
+        {
+          "key": "research",
+          "label": "Research",
+          "control": "textarea",
+          "max": 400000
+        },
+        {
+          "key": "designBrief",
+          "label": "Design brief",
+          "control": "textarea",
+          "countWords": true,
+          "copy": true,
+          "max": 200000
+        },
+        {
+          "key": "mockupNotes",
+          "label": "Mockup notes",
+          "control": "textarea",
+          "max": 50000
+        },
+        {
+          "key": "mockupUrl",
+          "label": "Mockup URL",
+          "control": "url",
+          "videoLabel": "mockup",
+          "placeholder": "https://…"
+        }
+      ],
+      "imageRoles": [
+        {
+          "key": "logo",
+          "label": "Logo"
+        },
+        {
+          "key": "reference",
+          "label": "Reference"
+        }
+      ]
+    }
+  ],
+  "template": "business-list",
+  "map": "MAP.md",
+  "skills": [
+    "skills/research-ethics.md",
+    "skills/design-brief.md",
+    "skills/mockup-html.md"
+  ],
+  "nodes": [
+    {
+      "name": "Intake",
+      "color": "lavender",
+      "x": 0,
+      "y": 40,
+      "playbook": "lanes/intake.md"
+    },
+    {
+      "name": "Research",
+      "color": "blue",
+      "x": 380,
+      "y": 40,
+      "playbook": "lanes/research.md",
+      "template": "business-site"
+    },
+    {
+      "name": "Socials",
+      "color": "blue",
+      "x": 760,
+      "y": 40,
+      "playbook": "lanes/socials.md",
+      "template": "business-site"
+    },
+    {
+      "name": "Brief",
+      "color": "purple",
+      "x": 1140,
+      "y": 40,
+      "playbook": "lanes/brief.md",
+      "template": "business-site"
+    },
+    {
+      "name": "Mockup",
+      "color": "teal",
+      "x": 1520,
+      "y": 40,
+      "playbook": "lanes/mockup.md",
+      "template": "business-site"
+    },
+    {
+      "name": "Review",
+      "color": "amber",
+      "x": 1900,
+      "y": 40,
+      "playbook": "lanes/review.md",
+      "template": "business-site"
+    },
+    {
+      "name": "Done",
+      "color": "green",
+      "x": 2280,
+      "y": 40,
+      "playbook": "lanes/done.md",
+      "template": "business-site"
+    }
+  ],
+  "cards": [
+    {
+      "node": "Intake",
+      "template": "business-list",
+      "title": "Montpelier, VT — four local businesses",
+      "fields": {
+        "location": "Montpelier, VT",
+        "businesses": "Birchgrove Baking — https://www.birchgrovebaking.com\nBear Pond Books — https://bearpondbooks.com\nSignature Styles Salon — https://signaturestylesvt.com\nOnion River Outdoors — https://www.onionriver.com"
+      }
+    }
+  ]
+}
