@@ -10,7 +10,7 @@ import { emptyFields, emptyImageRoles, normalizeCard, youtubeVideoTemplate, card
 import { templatesMigration, templatesTable, projectTemplateColumn, createTemplateStore } from './store-templates.js';
 import { readLegacyBoard } from './legacy-board.js';
 import { createPlaybooks } from './playbooks.js';
-import { parseDocument, playbookSettings, describeSettings, resolveRoutes, nodeTemplate, routeName, advanceModes, maxAutomaticMoves } from './public/playbook-format.js';
+import { parseDocument, playbookSettings, describeSettings, resolveRoutes, resolveLaneTemplate, nodeTemplate, routeName, advanceModes, maxAutomaticMoves, hasWork, maxCreatedCards } from './public/playbook-format.js';
 import { chatMigration, recoveryMigration, createChatStore, archivedMessage } from './store-chat.js';
 import { protectionMigration, createProtectionStore } from './store-protection.js';
 import { imagesMigration, createImageStore } from './store-images.js';
@@ -200,6 +200,14 @@ function graphFlowsMigration(db) {
   for (const column of ['graph_x', 'graph_y']) if (!hasColumn(db, 'stages', column)) db.exec(`ALTER TABLE stages ADD COLUMN ${column} REAL;`);
 }
 
+// Created cards (ADR 0010): a card a lane run creates names the card whose
+// run created it, its origin. Cards are only ever hidden, never removed, so
+// the link stays valid when the origin card is deleted.
+function createdCardsMigration(db) {
+  if (!hasColumn(db, 'cards', 'parent_id')) db.exec('ALTER TABLE cards ADD COLUMN parent_id TEXT REFERENCES cards(id);');
+  db.exec('CREATE INDEX IF NOT EXISTS cards_by_parent ON cards(parent_id) WHERE parent_id IS NOT NULL;');
+}
+
 function hasTable(db, table) {
   return Boolean(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?").get(table));
 }
@@ -346,7 +354,8 @@ const migrations = [`
 `, libraryDraftsMigration, `
   -- What each delivery attempt actually did with a submission's inputs.
   ALTER TABLE chat_attempts ADD COLUMN delivery TEXT;
-`, foldersMigration, savedOutputsMigration, templatesMigration, schemaRepairMigration, projectFlowsMigration, cardLibraryMigration, graphFlowsMigration];
+`, foldersMigration, savedOutputsMigration, templatesMigration, schemaRepairMigration, projectFlowsMigration, cardLibraryMigration, graphFlowsMigration,
+  createdCardsMigration];
 
 // Delivery was already v16 on an earlier feature branch, so the released v17
 // entry (this index) runs only where that column is still missing.
@@ -375,7 +384,7 @@ const stageFrom = (row) => ({
 const cardFrom = (row) => ({
   id: row.id, projectId: row.project_id, stageId: row.stage_id, position: row.position, template: row.template, title: row.title,
   fields: JSON.parse(row.fields), images: JSON.parse(row.images), imageRoles: JSON.parse(row.image_roles), library: JSON.parse(row.library ?? '[]'), revision: row.revision,
-  enteredStageAt: row.entered_stage_at, createdAt: row.created_at, updatedAt: row.updated_at,
+  enteredStageAt: row.entered_stage_at, createdAt: row.created_at, updatedAt: row.updated_at, parentId: row.parent_id ?? null,
 });
 const eventFrom = (row) => ({
   id: row.id, cardId: row.card_id, projectId: row.project_id, type: row.type, actor: row.actor, fromStageId: row.from_stage_id,
@@ -634,10 +643,11 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
     const found = playbooks.settings(stage.flowId, stage.id, templates.forCard(card));
     if (!found) return null;
     const { settings } = found;
-    if (trigger === 'enter' && (settings.run !== 'on-enter' || !settings.instructions)) return null;
+    // A lane has work when its agent has instructions or Frameboard has an action to do.
+    if (trigger === 'enter' && (settings.run !== 'on-enter' || !hasWork(settings))) return null;
     const id = randomUUID(); const at = now();
     const problem = settings.errors.length ? `The playbook ${found.document.path} has errors: ${settings.errors.join(' ')}`
-      : !settings.instructions ? 'This lane playbook has no instructions to run.' : settings.run === 'off' ? 'This lane playbook is turned off (run: off).' : '';
+      : !hasWork(settings) ? 'This lane playbook has no instructions to run.' : settings.run === 'off' ? 'This lane playbook is turned off (run: off).' : '';
     run('INSERT INTO lane_runs (id, workspace_id, card_id, stage_id, move_id, trigger, status, reason, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       id, ctx.workspaceId, card.id, stage.id, moveId, trigger, problem ? 'failed' : 'pending', problem, at, at);
     recordChange(ctx, 'card', card.id, problem ? 'lane_run_failed' : 'lane_run_requested', { projectId: card.projectId, data: { laneRunId: id, stageId: stage.id, trigger, reason: problem }, at });
@@ -736,21 +746,31 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
   // against the flow's card template.
   // Routes are resolved against the flow's lanes: laneId is null for a
   // route whose lane is gone.
+  // A lane whose playbook says template: holds cards of that template (created
+  // cards, ADR 0010), so its settings are read against it rather than the flow's.
+  function laneTemplate(flowId, stageId, flowTemplate, text = playbooks.forStage(flowId, stageId)?.text) {
+    if (typeof text !== 'string') return { template: flowTemplate, error: null };
+    return resolveLaneTemplate(text, templates.list({ workspaceId: flowTemplate.workspaceId }), flowTemplate);
+  }
+  const laneSettings = (flowId, stageId, flowTemplate) => playbooks.settings(flowId, stageId, laneTemplate(flowId, stageId, flowTemplate).template);
   function withPlaybooks(flowId, stages, template) {
     const documents = playbooks.lanes(flowId);
     return stages.map((stage) => {
       const document = documents.find((entry) => entry.laneId === stage.id);
       if (!document) return { ...stage, playbook: null };
-      const settings = playbookSettings(parseDocument(document.text), template);
+      const own = laneTemplate(flowId, stage.id, template, document.text);
+      const settings = playbookSettings(parseDocument(document.text), own.template);
+      if (own.error) settings.errors.unshift(own.error);
       return { ...stage, playbook: { path: document.path, hash: document.hash, run: settings.run, provider: settings.provider, model: settings.model,
-        hasInstructions: Boolean(settings.instructions), errors: settings.errors, summary: describeSettings(settings, template),
+        hasInstructions: Boolean(settings.instructions), errors: settings.errors, summary: describeSettings(settings, own.template),
+        action: settings.action, creates: settings.creates,
         advance: settings.advance, routes: resolveRoutes(settings.routes, stages, stage.id).map(({ name, target, laneId }) => ({ name, target, laneId })) } };
     });
   }
   // Routes of each lane, by lane ID, resolved against the flow's lanes.
   function flowRoutes(flowId, stages, template) {
     return new Map(stages.map((stage) => {
-      const found = playbooks.settings(flowId, stage.id, template);
+      const found = laneSettings(flowId, stage.id, template);
       return [stage.id, found ? resolveRoutes(found.settings.routes, stages, stage.id).filter((route) => route.laneId) : []];
     }));
   }
@@ -1013,7 +1033,7 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
         // Every node of a graph has a playbook, the last one included.
         stages.forEach((stage, index) => {
           const next = stages[index + 1];
-          const found = playbooks.settings(id, stage.id, template);
+          const found = laneSettings(id, stage.id, template);
           if (next && !found?.settings.routes.length) written.push(playbooks.updateSettings(id, stage, { routes: { next: next.id } }));
           else if (!found) written.push(playbooks.write(id, playbooks.freePath(id, stage.name), nodeTemplate(stage), null));
         });
@@ -1044,7 +1064,7 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
       check(input.baseHash === undefined || input.baseHash === null || (typeof input.baseHash === 'string' && /^[a-f0-9]{64}$/.test(input.baseHash)), 'Saving routes needs the playbook version you edited.');
       const stage = requireStage(ctx, stageId);
       const lanes = activeStages(stage.flowId);
-      const current = playbooks.settings(stage.flowId, stage.id, templateForFlow(requireFlow(ctx, stage.flowId)))?.settings.routes ?? [];
+      const current = laneSettings(stage.flowId, stage.id, templateForFlow(requireFlow(ctx, stage.flowId)))?.settings.routes ?? [];
       const routes = {};
       for (const route of input.routes) {
         check(isObject(route) && typeof route.name === 'string' && routeName.test(route.name.trim()) && typeof route.to === 'string', 'Route names use letters, numbers, spaces, - and _ (up to 40 characters).');
@@ -1205,7 +1225,7 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
       const remaining = activeStages(stage.flowId);
       const template = templateForFlow(flow);
       for (const other of remaining) {
-        const found = playbooks.settings(stage.flowId, other.id, template);
+        const found = laneSettings(stage.flowId, other.id, template);
         const gone = found && resolveRoutes(found.settings.routes, [...remaining, stage], other.id).filter((route) => route.laneId === stage.id);
         if (!gone?.length) continue;
         const kept = Object.fromEntries(found.settings.routes.filter((route) => !gone.some((item) => item.name === route.name)).map((route) => [route.name, route.target]));
@@ -1240,6 +1260,7 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
 
     createCard(ctx, projectId, input) {
       check(isObject(input), 'Invalid card.');
+      check(!('parentId' in input), 'Cards get their origin from the lane run that creates them.');
       const project = requireProject(ctx, projectId);
       checkId(input.id);
       check(input.template === undefined || typeof input.template === 'string', 'Unknown card template.');
@@ -1259,6 +1280,46 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
         applyEntrySet(ctx, requireCard(ctx, id), stage, at);
         recordSavedState(ctx, id, 'created', at);
         return requireCard(ctx, id);
+      });
+    },
+
+    // Cards a lane run creates (ADR 0010); only the lane runner calls this.
+    // They go to the end of a lane of the flow whose playbook named it, use
+    // the creates: template and record the card whose run created them as
+    // their origin. Every check comes before the first write, so a refusal
+    // inside a lane result's transaction leaves nothing half made.
+    createCards(ctx, { parentId, stageId, templateId, cards, laneRunId = null }) {
+      check(Array.isArray(cards) && cards.length <= maxCreatedCards, `A lane run can create up to ${maxCreatedCards} cards.`);
+      return transaction(() => {
+        const parent = requireCard(ctx, parentId);
+        const stage = requireStage(ctx, stageId);
+        const runRow = laneRunId === null ? null : get('SELECT card_id, stage_id FROM lane_runs WHERE id = ? AND workspace_id = ?', laneRunId, ctx.workspaceId);
+        check(laneRunId === null || runRow?.card_id === parent.id, 'Cards can only be created by a lane run of their origin card.');
+        // The run's lane names the flow even if the origin card has left it since.
+        const flowId = get('SELECT flow_id FROM stages WHERE id = ?', runRow?.stage_id ?? parent.stageId).flow_id;
+        check(stage.flowId === flowId, 'Created cards go to a lane of the same flow as the lane that creates them.');
+        const template = templates.requireLive(ctx, templateId);
+        const empty = { title: '', fields: emptyFields(template), images: [], imageRoles: emptyImageRoles(template), library: [] };
+        const contents = cards.map((input) => {
+          check(isObject(input) && typeof input.title === 'string' && input.title.trim(), 'Each created card needs a title.');
+          return cardContent(template, { title: input.title, fields: input.fields ?? {} }, empty);
+        });
+        const at = now();
+        return contents.map((content) => {
+          const id = randomUUID();
+          run('INSERT INTO cards (id, project_id, stage_id, position, template, title, fields, images, image_roles, library, parent_id, entered_stage_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            id, parent.projectId, stage.id, positionFor(stage.id, null), template.id, content.title, JSON.stringify(content.fields), JSON.stringify(content.images),
+            JSON.stringify(content.imageRoles), JSON.stringify(content.library), parent.id, at, at, at);
+          insertEvent(ctx.workspaceId, { id, projectId: parent.projectId }, 'created', ctx.actor, { to: stage.id, data: { origin: parent.id, laneRunId }, at });
+          applyEntrySet(ctx, requireCard(ctx, id), stage, at);
+          recordSavedState(ctx, id, 'created', at);
+          // As if it had been moved there: a lane that runs on entry and has
+          // work asks for a run (requestLaneRun checks both). This is the one
+          // exception to "creating a card never starts an agent": a run
+          // created the card, under a playbook that names the lane.
+          requestLaneRun(ctx, requireCard(ctx, id), stage, 'enter');
+          return requireCard(ctx, id);
+        });
       });
     },
 
@@ -1506,7 +1567,7 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
         const found = playbooks.settings(stage.flowId, stage.id, templates.forCard(card));
         if (!found) fail(409, `${stage.name} has no lane playbook yet. Open its playbook to write one.`);
         if (found.settings.errors.length) fail(409, `Fix the playbook first: ${found.settings.errors.join(' ')}`);
-        if (!found.settings.instructions) fail(409, 'This lane playbook has no instructions to run.');
+        if (!hasWork(found.settings)) fail(409, 'This lane playbook has no instructions to run.');
         if (found.settings.run === 'off') fail(409, 'This lane playbook is turned off. Change run: off to manual or on-enter.');
         return transaction(() => {
           // New explicit work replaces runs held after a restore, with their submissions.

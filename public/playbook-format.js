@@ -15,12 +15,18 @@ export const providerNames = { codex: 'Codex', claude: 'Claude' };
 // How a card leaves a node of a graph flow when its agent chooses a route:
 // after the user reviews the move, or at once.
 export const advanceModes = ['review', 'auto'];
-export const knownKeys = ['lane', 'run', 'provider', 'model', 'context', 'may_edit', 'set', 'conversation', 'skills', 'assets', 'advance', 'routes'];
+export const knownKeys = ['lane', 'template', 'run', 'provider', 'model', 'context', 'may_edit', 'set', 'conversation', 'skills', 'assets', 'advance', 'routes', 'creates', 'action', 'publish'];
 export const skillName = /^[a-z0-9][a-z0-9_-]{0,79}$/i;
 export const routeName = /^[a-z0-9][a-z0-9 _-]{0,39}$/i;
 // Automatic route moves in a row, without a move by the user, before the
 // next one waits for review. Stops a loop that never converges.
 export const maxAutomaticMoves = 12;
+// Lane actions: work Frameboard does itself when a card enters the lane, in
+// place of an agent run (ADR 0011). `publish` copies the card's saved outputs
+// to a site.
+export const actions = ['publish'];
+// Cards one lane run may create (ADR 0010).
+export const maxCreatedCards = 50;
 const notesInPrompt = 20000;
 
 // --- Frontmatter: a small YAML subset -------------------------------------
@@ -434,8 +440,68 @@ export function playbookSettings(document, template) {
       else routes.push({ name, target: target.trim() });
     }
   }
-  return { lane: data.lane ? String(data.lane) : null, run, provider, model, conversation, selections, mayEdit, set, skills, assets: library.sources,
-    advance, routes, instructions: body.trim(), errors, warnings };
+  // creates: the lane a run may create new cards in and the card template
+  // they use, each by ID or name. Resolved against the flow's lanes and the
+  // workspace's templates by resolveCreates when a run is prepared.
+  let creates = null;
+  if (data.creates !== undefined && data.creates !== '') {
+    if (!data.creates || typeof data.creates !== 'object' || Array.isArray(data.creates)) errors.push('creates needs a “lane:” line and a “template:” line.');
+    else {
+      const lane = String(data.creates.lane ?? '').trim(); const templateName = String(data.creates.template ?? '').trim();
+      if (!lane) errors.push('creates: name the lane new cards go to (lane:).');
+      if (!templateName) errors.push('creates: name the card template new cards use (template:).');
+      const extra = Object.keys(data.creates).filter((key) => !['lane', 'template'].includes(key));
+      if (extra.length) warnings.push(`creates: ${extra.map((key) => `“${key}”`).join(', ')} ignored; it takes lane and template.`);
+      if (lane && templateName) creates = { lane, template: templateName };
+    }
+  }
+  // action: Frameboard does this lane's work itself, so the body needs no
+  // agent instructions. publish: where a publish action sends the card's
+  // saved outputs: a site folder name under data/sites, or user@host:/path.
+  const action = data.action ? String(data.action).toLowerCase() : null;
+  if (action && !actions.includes(action)) errors.push(`action must be ${actions.join(', ')}.`);
+  let publish = null;
+  if (data.publish !== undefined && data.publish !== '') {
+    if (!data.publish || typeof data.publish !== 'object' || Array.isArray(data.publish)) errors.push('publish needs a “to:” line, and optionally “url:” and “field:” lines.');
+    else {
+      const to = String(data.publish.to ?? '').trim(); const url = String(data.publish.url ?? '').trim(); const fieldName = String(data.publish.field ?? '').trim();
+      const field = fieldName ? fieldKey(readable, fieldName) : null;
+      if (!to) errors.push('publish: say where to publish (to:): a site folder name, or user@host:/path for rsync.');
+      if (url && !/^https?:\/\/\S+$/i.test(url)) errors.push('publish: url must start with http:// or https://.');
+      if (fieldName && !field) errors.push(`publish: “${fieldName}” is not an editable card field to put the published address in.`);
+      const extra = Object.keys(data.publish).filter((key) => !['to', 'url', 'field'].includes(key));
+      if (extra.length) warnings.push(`publish: ${extra.map((key) => `“${key}”`).join(', ')} ignored; it takes to, url and field.`);
+      if (to && (!url || /^https?:\/\/\S+$/i.test(url)) && (!fieldName || field)) publish = { to, url: url || null, field };
+    }
+  }
+  if (action === 'publish' && !publish && !errors.some((message) => message.startsWith('publish'))) errors.push('action: publish needs a publish: block saying where (to:).');
+  return { lane: data.lane ? String(data.lane) : null, template: laneTemplateName(data), run, provider, model, conversation, selections, mayEdit, set, skills, assets: library.sources,
+    advance, routes, creates, action, publish, instructions: body.trim(), errors, warnings };
+}
+// template: names the card template a lane's playbook is written for, by ID
+// or name, when its cards are not the flow's (a lane that receives created
+// cards of another template). Settings that name fields are read against it;
+// a run still reads them against the card's own template. The store resolves
+// the name (resolveLaneTemplate); here it is only read.
+export const laneTemplateName = (data) => (data.template ? String(data.template).trim() || null : null);
+export function resolveLaneTemplate(text, templates, fallback) {
+  const name = laneTemplateName(parseDocument(text).data);
+  if (!name) return { template: fallback, error: null };
+  const found = templates.find((item) => item.id === name) ?? templates.find((item) => item.name.toLowerCase() === name.toLowerCase()) ?? null;
+  return { template: found ?? fallback, error: found ? null : `template: “${name}” is not a card template, so these settings are read against the flow's template.` };
+}
+// A lane has work for a run when an agent has instructions or Frameboard has
+// an action; a playbook with neither only applies its set: values.
+export const hasWork = (settings) => Boolean(settings.action || settings.instructions);
+
+// A playbook's creates: setting resolved against its flow's lanes (by ID,
+// then name) and the live card templates (by ID, then name). A lane or
+// template that is not found is null, and the run reports it.
+export function resolveCreates(creates, lanes, templates) {
+  if (!creates) return null;
+  const lane = lanes.find((item) => item.id === creates.lane) ?? lanes.find((item) => item.name.toLowerCase() === creates.lane.toLowerCase()) ?? null;
+  const template = templates.find((item) => item.id === creates.template) ?? templates.find((item) => item.name.toLowerCase() === creates.template.toLowerCase()) ?? null;
+  return { lane: lane ? { id: lane.id, name: lane.name } : null, template: template ?? null };
 }
 
 // A playbook's routes resolved against its flow's lanes, by ID and then by
@@ -454,10 +520,13 @@ export function describeSettings(settings, template) {
   if (settings.errors.length) return 'Has errors';
   const label = (key) => setFields(template).find((field) => field.key === key)?.label ?? key;
   const parts = [];
-  if (settings.instructions && settings.run !== 'off') parts.push(settings.run === 'on-enter' ? 'Runs on entry' : 'Runs when you choose');
+  if (settings.action === 'publish') parts.push(settings.run === 'off' ? 'Publishing is off' : `Publishes to ${settings.publish.to}${settings.run === 'on-enter' ? ' on entry' : ' when you choose'}`);
+  else if (settings.instructions && settings.run !== 'off') parts.push(settings.run === 'on-enter' ? 'Runs on entry' : 'Runs when you choose');
   else parts.push('No agent run');
-  if (settings.instructions && settings.run !== 'off') parts.push(settings.provider === 'claude' ? 'Claude' : settings.provider === 'codex' ? 'Codex' : 'Card chat provider');
+  if (!settings.action && settings.instructions && settings.run !== 'off') parts.push(settings.provider === 'claude' ? 'Claude' : settings.provider === 'codex' ? 'Codex' : 'Card chat provider');
   if (settings.mayEdit.length) parts.push(`may edit ${settings.mayEdit.map(label).join(', ')}`);
+  if (settings.creates) parts.push(`creates cards in ${settings.creates.lane}`);
+  if (settings.template) parts.push(`for ${settings.template} cards`);
   const set = Object.keys(settings.set);
   if (set.length) parts.push(`sets ${set.map(label).join(', ')}`);
   if (settings.routes.length) parts.push(`${settings.routes.length} ${settings.routes.length === 1 ? 'route' : 'routes'}${settings.advance === 'auto' ? ', followed automatically' : ''}`);
@@ -531,9 +600,17 @@ export const resultTag = 'frameboard-result';
 const maxLaneOutputs = 20;
 
 // `routes` are the playbook's routes resolved against the flow (resolveRoutes);
-// a route whose lane is gone is left out.
-export function composeLanePrompt({ projectName, flowName, laneName, lanes, trigger = 'enter', map, playbook, skills = [], notes = '', settings, template, routes = [] }) {
+// a route whose lane is gone is left out. `creates` is the playbook's creates:
+// setting resolved (resolveCreates) with both its lane and template found.
+export function composeLanePrompt({ projectName, flowName, laneName, lanes, trigger = 'enter', map, playbook, skills = [], notes = '', settings, template, routes = [], creates = null }) {
   const fields = setFields(template).filter((field) => field.editor !== false);
+  const creating = creates?.lane && creates?.template ? creates : null;
+  const createdFields = creating ? setFields(creating.template).filter((field) => field.editor !== false && field.key !== 'title') : [];
+  const createSection = creating ? `## Creating cards
+
+This lane may create new cards in “${creating.lane.name}”, each using the “${creating.template.name}” card template. List them under "cards" in your result, one object per card with its "title" and the "fields" it starts with. Each new card is placed in ${creating.lane.name} and goes through that lane's playbook on its own, so give it everything the next lane needs. Create up to ${maxCreatedCards}; leave "cards" out to create none.
+
+- Field keys for new cards: ${createdFields.map((field) => `${field.key} (${field.label})`).join(', ') || '(none; give each card a title only)'}.` : '';
   const label = (key) => fields.find((field) => field.key === key)?.label ?? key;
   // The example names a long-text field when there is one, never a URL or the title.
   const example = (fields.find((field) => field.control === 'textarea') ?? fields.find((field) => field.key !== 'title' && field.control !== 'url') ?? fields.find((field) => field.key !== 'title'))?.key ?? 'title';
@@ -554,6 +631,7 @@ ${automatic ? 'Frameboard moves the card along the route you choose as soon as y
     `## Lane playbook: ${laneName} (${playbook.path})\n\n${settings.instructions}`,
     ...skills.map((skill) => (skill.text === null ? `## Skill ${skill.name}\n\n(skills/${skill.name}.md does not exist yet.)` : `## Skill: ${skill.name} (${skill.path})\n\n${skill.text.trim()}`)),
     routeSection,
+    createSection,
     `## Hand-off notes (notes.md)\n\n${trimmedNotes.trim() || 'No notes yet. This is the first lane run that leaves notes for this card.'}`,
     `Every photo in the card gallery is attached to this run. Use the current image references listed below to identify the available photos${roles.length ? `; the ${roles.join(', ')} and display labels mark the roles the card assigns` : ''}. Hand-off notes describe earlier runs; check these attachments before treating a photo as missing.`,
     `## Reporting your result
@@ -564,7 +642,10 @@ When you finish, end your reply with exactly one fenced code block tagged \`${re
 {
   "fields": { "${example}": "the complete new value" },
   "notes": "a short hand-off for whoever works on this card next",
-  ${ways.length ? `"route": "${ways[0].name}"` : '"move": "Lane name"'},
+  ${ways.length ? `"route": "${ways[0].name}"` : '"move": "Lane name"'},${creating ? `
+  "cards": [
+    { "title": "a new card's title", "fields": { ${createdFields.length ? `"${createdFields[0].key}": "its starting value"` : ''} } }
+  ],` : ''}
   "outputs": [
     { "filename": "script.md", "text": "the document's complete exact text", "sources": ["a supplied version ID"] },
     { "path": "renders/thumbnail.png", "filename": "thumbnail.png", "sources": [] }
@@ -575,7 +656,8 @@ When you finish, end your reply with exactly one fenced code block tagged \`${re
 - Field keys: ${fields.map((field) => `${field.key} (${field.label})`).join(', ')}.
 - A value replaces the whole field. Leave out fields you did not change.
 - ${settings.mayEdit.length ? `Frameboard applies ${settings.mayEdit.map(label).join(', ')} directly.` : 'This lane may not edit fields directly.'} Every other field becomes a proposal the user reviews.
-- ${ways.length ? `Include "route" with one of ${ways.map((route) => `"${route.name}"`).join(', ')} when your work decides where the card goes next. ${automatic ? 'The card follows it at once.' : 'The user reviews it first.'}` : `Include "move" only if the playbook tells you to propose a move. Moves always wait for the user. Lanes: ${lanes.map((lane) => lane.name).join(', ')}.`}
+- ${ways.length ? `Include "route" with one of ${ways.map((route) => `"${route.name}"`).join(', ')} when your work decides where the card goes next. ${automatic ? 'The card follows it at once.' : 'The user reviews it first.'}` : `Include "move" only if the playbook tells you to propose a move. Moves always wait for the user. Lanes: ${lanes.map((lane) => lane.name).join(', ')}.`}${creating ? `
+- Include "cards" only for the new cards this lane creates (see Creating cards above). Each needs a "title"; "fields" uses the new cards' field keys and is optional.` : ''}
 - Always include "notes": what you did, decisions made and anything still open.
 - Include "outputs" only for finished documents and files the playbook asks you to deliver. Give a document's exact "text", or the workspace-relative "path" of a finished file you wrote in this card workspace ("filename" defaults to its last part). Frameboard saves exactly those bytes when you finish, kept with this card chat; it saves nothing you do not list, and mentioning a path in your reply saves nothing. A path is saved only if you could write files here and it is a regular file inside the workspace, not a link or a reference copy. In "sources", list the version IDs of the supplied images or Library files it was derived from, [] if none, or leave it out if unsure. Saving never adds anything to the project Library: only the user can save it to the project Library, so suggest that in "notes" if it would help.
 - Report through this block only. Do not call Frameboard card tools or edit notes.md yourself during a lane run.`,
@@ -584,13 +666,14 @@ When you finish, end your reply with exactly one fenced code block tagged \`${re
 }
 
 // The last result block in a reply. Missing blocks are not errors; a block
-// that cannot be read is.
-export function parseLaneResult(text, template) {
+// that cannot be read is. `creates` is the run's resolved creates: setting
+// (resolveCreates), whose template the new cards' fields are checked against.
+export function parseLaneResult(text, template, { creates = null } = {}) {
   const blocks = [...String(text ?? '').matchAll(/^```[ \t]*frameboard(?:-result)?[ \t]*\r?\n([\s\S]*?)^```[ \t]*(?=\r?$)/gm)];
   if (!blocks.length) return null;
   let value;
-  try { value = JSON.parse(blocks.at(-1)[1]); } catch (error) { return { fields: {}, notes: '', move: null, route: null, outputs: [], errors: [`The result block is not valid JSON: ${error.message}`] }; }
-  const result = { fields: {}, notes: '', move: null, route: null, outputs: [], errors: [] };
+  try { value = JSON.parse(blocks.at(-1)[1]); } catch (error) { return { fields: {}, notes: '', move: null, route: null, outputs: [], cards: [], errors: [`The result block is not valid JSON: ${error.message}`] }; }
+  const result = { fields: {}, notes: '', move: null, route: null, outputs: [], cards: [], errors: [] };
   if (!value || typeof value !== 'object' || Array.isArray(value)) return { ...result, errors: ['The result block must be a JSON object.'] };
   const fields = setFields(template).filter((field) => field.editor !== false);
   if (value.fields !== undefined) {
@@ -640,6 +723,41 @@ export function parseLaneResult(text, template) {
         const keys = ['filename', file ? 'path' : 'text', 'sources'];
         const extra = Object.keys(output).filter((key) => !keys.includes(key));
         if (extra.length) result.errors.push(`Ignored ${extra.map((key) => `“${key}”`).join(', ')} in ${label}: an output is saved with this card chat from its filename, ${keys[1]} and sources only, and only the user can save it to the project Library.`);
+      }
+    }
+  }
+  // New cards this lane creates (ADR 0010): each needs a title, and its
+  // fields are checked against the creates: template. A field a card cannot
+  // hold is dropped and reported; the card is still created.
+  if (value.cards !== undefined) {
+    const target = creates?.lane && creates?.template ? creates.template : null;
+    if (!target) result.errors.push('Ignored “cards”: this lane does not create cards (no creates: setting, or its lane or template was not found).');
+    else if (!Array.isArray(value.cards)) result.errors.push('Ignored “cards”: it must be a list of cards, each with a title.');
+    else {
+      const titleMax = target.title?.max ?? 500;
+      const targetFields = setFields(target).filter((field) => field.editor !== false && field.key !== 'title');
+      for (const [index, card] of value.cards.entries()) {
+        const label = `card ${index + 1}`;
+        if (index >= maxCreatedCards) { result.errors.push(`Ignored ${label}: a lane run can create up to ${maxCreatedCards} cards.`); continue; }
+        if (!card || typeof card !== 'object' || Array.isArray(card)) { result.errors.push(`Ignored ${label}: each card is an object with a title.`); continue; }
+        const title = typeof card.title === 'string' ? card.title.trim() : '';
+        if (!title) { result.errors.push(`Ignored ${label}: it needs a title.`); continue; }
+        if (title.length > titleMax) { result.errors.push(`Ignored ${label}: its title is longer than ${titleMax.toLocaleString('en-US')} characters.`); continue; }
+        const created = { title, fields: {} };
+        if (card.fields !== undefined) {
+          if (!card.fields || typeof card.fields !== 'object' || Array.isArray(card.fields)) result.errors.push(`Ignored the fields of “${title}”: “fields” must be an object of text values.`);
+          else for (const [name, fieldValue] of Object.entries(card.fields)) {
+            const key = fieldKey(targetFields, name);
+            const field = targetFields.find((item) => item.key === key);
+            if (!field) result.errors.push(`Ignored unknown field “${name}” on “${title}”.`);
+            else if (typeof fieldValue !== 'string') result.errors.push(`Ignored ${field.label} on “${title}”: its value must be text.`);
+            else if (fieldValue.length > field.max) result.errors.push(`Ignored ${field.label} on “${title}”: it is longer than ${field.max.toLocaleString('en-US')} characters.`);
+            else created.fields[key] = fieldValue;
+          }
+        }
+        const extra = Object.keys(card).filter((key) => !['title', 'fields'].includes(key));
+        if (extra.length) result.errors.push(`Ignored ${extra.map((key) => `“${key}”`).join(', ')} on “${title}”: a new card takes a title and fields only.`);
+        result.cards.push(created);
       }
     }
   }
