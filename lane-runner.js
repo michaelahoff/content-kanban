@@ -1,7 +1,7 @@
 // Turns pending lane runs into card chat submissions. A run reads its flow's
 // map, its lane playbook, the skills it names and the card's hand-off notes,
 // and freezes all of it into one prompt. The chat worker delivers it.
-import { composeLanePrompt, parseLaneResult, setFields, parseDocument, playbookSettings, resolveRoutes, findRoute, maxAutomaticMoves } from './public/playbook-format.js';
+import { composeLanePrompt, parseLaneResult, setFields, parseDocument, playbookSettings, resolveRoutes, findRoute, maxAutomaticMoves, hasWork } from './public/playbook-format.js';
 import { submissionText } from './public/chat-context.js';
 import { problemMessage } from './submission-inputs.js';
 import { uniqueSources } from './public/library-format.js';
@@ -11,7 +11,7 @@ const providerName = (provider) => (provider === 'claude' ? 'Claude' : 'Codex');
 // source both name is sent once, in the playbook's place.
 export const laneAssets = (settings, card) => uniqueSources([...settings.assets, ...card.library ?? []]);
 
-export function createLaneRunner({ store, service, providers, ctx, paused = () => false }) {
+export function createLaneRunner({ store, service, providers, ctx, paused = () => false, publisher = null }) {
   let draining = false; let again = false; let closed = false; let scheduled = null;
   const waitingForChat = new Set();
 
@@ -22,7 +22,7 @@ export function createLaneRunner({ store, service, providers, ctx, paused = () =
     if (!found) return { error: `${stage.name} has no lane playbook.` };
     const { document, settings } = found;
     if (settings.errors.length) return { error: `The playbook ${document.path} has errors: ${settings.errors.join(' ')}`, document, settings };
-    if (!settings.instructions) return { error: 'This lane playbook has no instructions to run.', document, settings };
+    if (!hasWork(settings)) return { error: 'This lane playbook has no instructions to run.', document, settings };
     const chat = store.chats.laneConversation(ctx, card.id);
     const provider = settings.provider ?? chat.composer.provider ?? chat.provider ?? 'codex';
     const discovery = store.providerCatalog(ctx, provider).discovery;
