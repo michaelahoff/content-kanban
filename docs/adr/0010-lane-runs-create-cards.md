@@ -28,4 +28,5 @@ Creating cards is authority, like `may_edit`. Putting it in the playbook keeps t
 
 - `knownKeys` gains `creates`; `playbookSettings` returns `creates`; `describeSettings` mentions it.
 - Schema version 25 adds `cards.parent_id`.
+- A lane that receives created cards holds cards of another template than its flow's. Its playbook says so with `template: <id or name>`, and the board, route editing and conversions read its settings against that template; a run always reads them against the card's own template.
 - Deleting the origin card leaves its created cards in place; `parentId` still names it.

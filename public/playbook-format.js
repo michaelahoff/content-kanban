@@ -15,7 +15,7 @@ export const providerNames = { codex: 'Codex', claude: 'Claude' };
 // How a card leaves a node of a graph flow when its agent chooses a route:
 // after the user reviews the move, or at once.
 export const advanceModes = ['review', 'auto'];
-export const knownKeys = ['lane', 'run', 'provider', 'model', 'context', 'may_edit', 'set', 'conversation', 'skills', 'assets', 'advance', 'routes', 'creates', 'action', 'publish'];
+export const knownKeys = ['lane', 'template', 'run', 'provider', 'model', 'context', 'may_edit', 'set', 'conversation', 'skills', 'assets', 'advance', 'routes', 'creates', 'action', 'publish'];
 export const skillName = /^[a-z0-9][a-z0-9_-]{0,79}$/i;
 export const routeName = /^[a-z0-9][a-z0-9 _-]{0,39}$/i;
 // Automatic route moves in a row, without a move by the user, before the
@@ -475,8 +475,20 @@ export function playbookSettings(document, template) {
     }
   }
   if (action === 'publish' && !publish && !errors.some((message) => message.startsWith('publish'))) errors.push('action: publish needs a publish: block saying where (to:).');
-  return { lane: data.lane ? String(data.lane) : null, run, provider, model, conversation, selections, mayEdit, set, skills, assets: library.sources,
+  return { lane: data.lane ? String(data.lane) : null, template: laneTemplateName(data), run, provider, model, conversation, selections, mayEdit, set, skills, assets: library.sources,
     advance, routes, creates, action, publish, instructions: body.trim(), errors, warnings };
+}
+// template: names the card template a lane's playbook is written for, by ID
+// or name, when its cards are not the flow's (a lane that receives created
+// cards of another template). Settings that name fields are read against it;
+// a run still reads them against the card's own template. The store resolves
+// the name (resolveLaneTemplate); here it is only read.
+export const laneTemplateName = (data) => (data.template ? String(data.template).trim() || null : null);
+export function resolveLaneTemplate(text, templates, fallback) {
+  const name = laneTemplateName(parseDocument(text).data);
+  if (!name) return { template: fallback, error: null };
+  const found = templates.find((item) => item.id === name) ?? templates.find((item) => item.name.toLowerCase() === name.toLowerCase()) ?? null;
+  return { template: found ?? fallback, error: found ? null : `template: “${name}” is not a card template, so these settings are read against the flow's template.` };
 }
 // A lane has work for a run when an agent has instructions or Frameboard has
 // an action; a playbook with neither only applies its set: values.
@@ -514,6 +526,7 @@ export function describeSettings(settings, template) {
   if (!settings.action && settings.instructions && settings.run !== 'off') parts.push(settings.provider === 'claude' ? 'Claude' : settings.provider === 'codex' ? 'Codex' : 'Card chat provider');
   if (settings.mayEdit.length) parts.push(`may edit ${settings.mayEdit.map(label).join(', ')}`);
   if (settings.creates) parts.push(`creates cards in ${settings.creates.lane}`);
+  if (settings.template) parts.push(`for ${settings.template} cards`);
   const set = Object.keys(settings.set);
   if (set.length) parts.push(`sets ${set.map(label).join(', ')}`);
   if (settings.routes.length) parts.push(`${settings.routes.length} ${settings.routes.length === 1 ? 'route' : 'routes'}${settings.advance === 'auto' ? ', followed automatically' : ''}`);

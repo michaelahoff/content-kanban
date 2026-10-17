@@ -224,3 +224,27 @@ test('the store creates cards only in the flow of the lane that creates them', a
   store.deleteCard(ctx, origin.id);
   assert.deepEqual(store.listCards(ctx, projects[0].id).map((card) => card.parentId), [origin.id, origin.id]);
 });
+
+test('a lane that holds created cards names their template, and the board reads its settings against it', async (t) => {
+  const f = await fixture(t);
+  const workspace = await f.ok('GET', '/api/workspace');
+  const project = workspace.projects[0];
+  const flow = workspace.flows.find((item) => item.id === project.flowId);
+  const research = flow.stages[1];
+  const created = await f.ok('POST', '/api/templates', { name: 'Business site', fields: [{ key: 'research', label: 'Research', control: 'textarea' }], imageRoles: [] });
+  // Written for Business site cards: its fields are not the flow template's.
+  await setPlaybook(f.ok, flow.id, research, { run: 'on-enter', template: 'Business site', may_edit: ['research'], context: ['title', 'research'] }, 'Research the business.');
+  const view = async () => (await f.ok('GET', '/api/workspace')).flows.find((item) => item.id === flow.id).stages.find((stage) => stage.id === research.id).playbook;
+  let playbook = await view();
+  assert.deepEqual(playbook.errors, [], 'settings are read against the named template');
+  assert.match(playbook.summary, /for Business site cards/);
+  // Without template: the same settings are errors against the flow's template.
+  await setPlaybook(f.ok, flow.id, research, { run: 'on-enter', may_edit: ['research'] }, 'Research the business.');
+  playbook = await view();
+  assert.deepEqual(playbook.errors, ['may_edit: “research” is not an editable card field.']);
+  // A template that does not exist is reported, and the flow's template stands in.
+  await setPlaybook(f.ok, flow.id, research, { run: 'on-enter', template: 'Nowhere', may_edit: ['intro'] }, 'Work.');
+  playbook = await view();
+  assert.deepEqual(playbook.errors, ['template: “Nowhere” is not a card template, so these settings are read against the flow\'s template.']);
+  assert.equal(created.id, 'business-site');
+});

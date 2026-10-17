@@ -10,7 +10,7 @@ import { emptyFields, emptyImageRoles, normalizeCard, youtubeVideoTemplate, card
 import { templatesMigration, templatesTable, projectTemplateColumn, createTemplateStore } from './store-templates.js';
 import { readLegacyBoard } from './legacy-board.js';
 import { createPlaybooks } from './playbooks.js';
-import { parseDocument, playbookSettings, describeSettings, resolveRoutes, nodeTemplate, routeName, advanceModes, maxAutomaticMoves, hasWork, maxCreatedCards } from './public/playbook-format.js';
+import { parseDocument, playbookSettings, describeSettings, resolveRoutes, resolveLaneTemplate, nodeTemplate, routeName, advanceModes, maxAutomaticMoves, hasWork, maxCreatedCards } from './public/playbook-format.js';
 import { chatMigration, recoveryMigration, createChatStore, archivedMessage } from './store-chat.js';
 import { protectionMigration, createProtectionStore } from './store-protection.js';
 import { imagesMigration, createImageStore } from './store-images.js';
@@ -746,14 +746,23 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
   // against the flow's card template.
   // Routes are resolved against the flow's lanes: laneId is null for a
   // route whose lane is gone.
+  // A lane whose playbook says template: holds cards of that template (created
+  // cards, ADR 0010), so its settings are read against it rather than the flow's.
+  function laneTemplate(flowId, stageId, flowTemplate, text = playbooks.forStage(flowId, stageId)?.text) {
+    if (typeof text !== 'string') return { template: flowTemplate, error: null };
+    return resolveLaneTemplate(text, templates.list({ workspaceId: flowTemplate.workspaceId }), flowTemplate);
+  }
+  const laneSettings = (flowId, stageId, flowTemplate) => playbooks.settings(flowId, stageId, laneTemplate(flowId, stageId, flowTemplate).template);
   function withPlaybooks(flowId, stages, template) {
     const documents = playbooks.lanes(flowId);
     return stages.map((stage) => {
       const document = documents.find((entry) => entry.laneId === stage.id);
       if (!document) return { ...stage, playbook: null };
-      const settings = playbookSettings(parseDocument(document.text), template);
+      const own = laneTemplate(flowId, stage.id, template, document.text);
+      const settings = playbookSettings(parseDocument(document.text), own.template);
+      if (own.error) settings.errors.unshift(own.error);
       return { ...stage, playbook: { path: document.path, hash: document.hash, run: settings.run, provider: settings.provider, model: settings.model,
-        hasInstructions: Boolean(settings.instructions), errors: settings.errors, summary: describeSettings(settings, template),
+        hasInstructions: Boolean(settings.instructions), errors: settings.errors, summary: describeSettings(settings, own.template),
         action: settings.action, creates: settings.creates,
         advance: settings.advance, routes: resolveRoutes(settings.routes, stages, stage.id).map(({ name, target, laneId }) => ({ name, target, laneId })) } };
     });
@@ -761,7 +770,7 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
   // Routes of each lane, by lane ID, resolved against the flow's lanes.
   function flowRoutes(flowId, stages, template) {
     return new Map(stages.map((stage) => {
-      const found = playbooks.settings(flowId, stage.id, template);
+      const found = laneSettings(flowId, stage.id, template);
       return [stage.id, found ? resolveRoutes(found.settings.routes, stages, stage.id).filter((route) => route.laneId) : []];
     }));
   }
@@ -1024,7 +1033,7 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
         // Every node of a graph has a playbook, the last one included.
         stages.forEach((stage, index) => {
           const next = stages[index + 1];
-          const found = playbooks.settings(id, stage.id, template);
+          const found = laneSettings(id, stage.id, template);
           if (next && !found?.settings.routes.length) written.push(playbooks.updateSettings(id, stage, { routes: { next: next.id } }));
           else if (!found) written.push(playbooks.write(id, playbooks.freePath(id, stage.name), nodeTemplate(stage), null));
         });
@@ -1055,7 +1064,7 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
       check(input.baseHash === undefined || input.baseHash === null || (typeof input.baseHash === 'string' && /^[a-f0-9]{64}$/.test(input.baseHash)), 'Saving routes needs the playbook version you edited.');
       const stage = requireStage(ctx, stageId);
       const lanes = activeStages(stage.flowId);
-      const current = playbooks.settings(stage.flowId, stage.id, templateForFlow(requireFlow(ctx, stage.flowId)))?.settings.routes ?? [];
+      const current = laneSettings(stage.flowId, stage.id, templateForFlow(requireFlow(ctx, stage.flowId)))?.settings.routes ?? [];
       const routes = {};
       for (const route of input.routes) {
         check(isObject(route) && typeof route.name === 'string' && routeName.test(route.name.trim()) && typeof route.to === 'string', 'Route names use letters, numbers, spaces, - and _ (up to 40 characters).');
@@ -1216,7 +1225,7 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
       const remaining = activeStages(stage.flowId);
       const template = templateForFlow(flow);
       for (const other of remaining) {
-        const found = playbooks.settings(stage.flowId, other.id, template);
+        const found = laneSettings(stage.flowId, other.id, template);
         const gone = found && resolveRoutes(found.settings.routes, [...remaining, stage], other.id).filter((route) => route.laneId === stage.id);
         if (!gone?.length) continue;
         const kept = Object.fromEntries(found.settings.routes.filter((route) => !gone.some((item) => item.name === route.name)).map((route) => [route.name, route.target]));

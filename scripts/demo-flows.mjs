@@ -157,12 +157,16 @@ export function checkFlow(dir) {
     if (node.invalid || !node.playbook?.text) continue;
     const own = laneOf(node.name);
     const where = node.playbook.file;
-    if (!flowTemplate) { warn(where, 'not checked against a card template because the flow template is unusable.'); continue; }
-    const settings = playbookSettings(parseDocument(node.playbook.text), flowTemplate);
+    // A node may hold cards of another template (created cards); its playbook
+    // is read against that template, as the server reads it against the card's.
+    if (node.template !== undefined && (typeof node.template !== 'string' || !definitions.has(node.template))) bad(where, `template “${node.template}” is not in "templates" and is not ${youtubeVideoTemplate.id}.`);
+    const nodeTemplate = typeof node.template === 'string' ? definitions.get(node.template) ?? null : flowTemplate;
+    if (!nodeTemplate) { warn(where, 'not checked against a card template because its template is unusable.'); continue; }
+    const settings = playbookSettings(parseDocument(node.playbook.text), nodeTemplate);
     for (const message of settings.errors) bad(where, message);
     for (const message of settings.warnings) warn(where, message);
     // The installer sets lane: with the same patch, so it must apply cleanly.
-    try { withSetting(node.playbook.text, 'lane', 'check'); } catch (error) { bad(where, `the installer cannot set lane: ${error.message}`); }
+    try { withSetting(withSetting(node.playbook.text, 'lane', 'check'), 'template', 'check'); } catch (error) { bad(where, `the installer cannot set lane: ${error.message}`); }
     for (const route of resolveRoutes(settings.routes, lanes, own?.id)) {
       if (!route.laneName) bad(where, `routes: “${route.name}” leads to “${route.target}”, which is not a node of this flow.`);
       else if (!route.laneId) bad(where, `routes: “${route.name}” leads back to its own node, which leads nowhere.`);
@@ -330,10 +334,12 @@ export async function installFlow(base, dir, { replace = false, log = () => {} }
     const current = documents.get(node.playbook.path);
     if (current && current.laneId !== stage.id && mine.has(current.laneId)) throw new Error(`${node.playbook.path} is already the playbook of another node.`);
     let text;
-    try { text = withSetting(node.playbook.text, 'lane', stage.id); }
+    // A node holding cards of another template says so in its playbook, so the
+    // board reads the settings against that template (ADR 0010).
+    try { text = withSetting(node.playbook.text, 'lane', stage.id); if (node.template) text = withSetting(text, 'template', templateIds.get(node.template) ?? node.template); }
     catch (error) { throw new Error(`${node.playbook.file}: ${error.message}`); }
     await put(node.playbook.path, text, current);
-    say(`node ${stage.name}: playbook ${node.playbook.path} written (lane: ${stage.id}).`);
+    say(`node ${stage.name}: playbook ${node.playbook.path} written (lane: ${stage.id}${node.template ? `, template: ${node.template}` : ''}).`);
   }
 
   // Cards, in the order of the manifest.
