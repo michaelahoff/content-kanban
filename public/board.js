@@ -103,17 +103,25 @@ const archivedHeader = (p) => `<header class="board-header"><div><div class="hea
       ${projectView(p, searchBox())}`;
 export const archivedNotice = 'Archived: read-only. Unarchive to make changes.';
 
-export function renderApp() {
-  const p = project();
-  document.title = `${p?.name || 'Workspace'} · Frameboard`;
-  app.innerHTML = `
-    <aside class="sidebar" aria-label="Projects">
+const sidebarMarkup = () => `<aside class="sidebar" aria-label="Projects">
       <a class="brand" href="/" aria-label="Frameboard home"><span class="brand-mark">${icon('board')}</span>Frameboard</a>
       <div class="sidebar-section"><span>Projects</span>${iconButton('add-project', 'Add project', 'plus')}</div>
       <nav class="project-list">${state.projects.filter((item) => !item.archivedAt).map(projectLink).join('')}</nav>
       ${state.projects.some((item) => item.archivedAt) ? `<div class="sidebar-section"><span>Archived</span></div><nav class="project-list archived-projects" aria-label="Archived projects">${state.projects.filter((item) => item.archivedAt).map(projectLink).join('')}</nav>` : ''}
       <div class="sidebar-bottom" title="Saved on this computer">${themeToggleMarkup()}${accentSwitchMarkup()}<a class="icon-button" href="/settings.html" aria-label="General settings" title="General settings">${icon('settings')}<span class="sr-only">Settings</span></a></div>
-    </aside>
+    </aside>`;
+// The sidebar alone, when the main area must stay as it is (the project chat).
+export function renderSidebar() {
+  const node = $('.sidebar'); if (!node) return;
+  const open = node.classList.contains('mobile-open');
+  node.outerHTML = sidebarMarkup();
+  if (open) $('.sidebar').classList.add('mobile-open');
+}
+export function renderApp() {
+  const p = project();
+  document.title = `${p?.name || 'Workspace'} · Frameboard`;
+  app.innerHTML = `
+    ${sidebarMarkup()}
     <main class="main">
       <div class="topbar"><div class="breadcrumbs">${iconButton('toggle-sidebar', 'Toggle projects', 'menu')}</div><div class="workspace-chat-activity"><button type="button" class="icon-button" data-action="workspace-chat-activity" aria-label="Chat activity" title="Chat activity">${icon('bolt')}</button><div id="chat-activity-list" hidden></div></div><div class="save-status" data-save-status></div></div>
       <div id="save-error" class="error-banner" role="alert" hidden></div>

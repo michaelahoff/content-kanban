@@ -123,6 +123,7 @@ export function createProjectChatStore({ all, get, run, transaction, recordChang
         return true;
       });
     },
+    nativeTurnIds: (conversationId) => all('SELECT native_turn_id FROM project_chat_turns WHERE conversation_id = ? AND native_turn_id IS NOT NULL', conversationId).map((row) => row.native_turn_id),
     nativeTurn(ctx, id, nativeTurnId) { transaction(() => run('UPDATE project_chat_turns SET native_turn_id = COALESCE(native_turn_id, ?) WHERE id = ?', nativeTurnId, id)); },
     bind(ctx, conversationId, binding, configuration) {
       transaction(() => {

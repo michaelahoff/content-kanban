@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { DatabaseSync } from 'node:sqlite';
 import { fixture, waitFor } from './support/chat-fixture.js';
 import { createClaudeAdapter } from '../claude-adapter.js';
 import { compileConfiguration, queuedConfigurationDecision } from '../provider-configuration.js';
@@ -163,6 +164,60 @@ test('a message after the provider guidance or the builder changed starts a new 
   assert.equal(done.conversationId, after.conversations[1].id, 'the turn belongs to the new conversation');
   assert.ok(after.items.some((item) => item.turnId === second.id && item.kind === 'notice' && item.text.includes('starts a new conversation')));
   assert.equal(after.turns[0].conversationId, after.conversations[0].id, 'the first turn stays with the old one');
+});
+
+test('a change to the builder\'s tool list also starts a new conversation', async (t) => {
+  const f = await projectChat(t);
+  const first = await f.say('First', { model: 'test-model' });
+  const send = await waitFor(() => f.codex.sends[0]);
+  f.codex.finish(send, 'completed', 'OK.');
+  await f.settled(first.id);
+  // As a Frameboard upgrade would: the frozen conversation knows other tools.
+  const db = new DatabaseSync(path.join(f.dataDir, 'frameboard.db'));
+  try { db.exec('PRAGMA busy_timeout = 5000'); db.exec(`UPDATE project_chat_conversations SET configuration = json_set(configuration, '$.nativeOptions.dynamicTools', json('[]'))`); } finally { db.close(); }
+  const second = await f.say('Second', { model: 'test-model' });
+  const next = await waitFor(() => f.codex.sends[1]);
+  assert.notEqual(next.threadId, send.threadId);
+  assert.ok(f.codex.threads.get(next.threadId).config.dynamicTools.some((tool) => tool.name === 'layout_flow'), 'the new conversation has the current tools');
+  f.codex.finish(next, 'completed', 'OK again.');
+  assert.equal((await f.settled(second.id)).status, 'completed');
+  assert.deepEqual((await f.snapshot()).conversations.map((conversation) => conversation.state), ['previous', 'active']);
+});
+
+test('a late event from the previous native turn does not capture the next one', async (t) => {
+  const f = await projectChat(t);
+  const first = await f.say('One', { model: 'test-model' });
+  const send = await waitFor(() => f.codex.sends[0]);
+  f.codex.finish(send, 'completed', 'Done.');
+  await f.settled(first.id);
+  let release; f.codex.ackGate = new Promise((resolve) => { release = resolve; });
+  const second = await f.say('Two', { model: 'test-model' });
+  const next = await waitFor(() => f.codex.sends[1]);
+  f.codex.emit(next.threadId, { type: 'item-completed', turnId: send.turnId, item: { type: 'commandExecution', id: 'late', text: 'late output' } });
+  release();
+  await waitFor(async () => (await f.snapshot()).turns.find((turn) => turn.id === second.id)?.nativeTurnId === next.turnId);
+  f.codex.emit(next.threadId, { type: 'delta', turnId: next.turnId, itemId: 'reply', delta: 'Fresh' });
+  f.codex.finish(next, 'completed', 'Fresh reply.');
+  assert.equal((await f.settled(second.id)).status, 'completed');
+  const items = (await f.snapshot()).items;
+  assert.ok(items.some((item) => item.turnId === second.id && item.text === 'Fresh reply.'));
+  assert.ok(!items.some((item) => item.nativeId === 'late'), 'the old turn\'s late item is not taken for the new turn');
+});
+
+test('a second Stop ends a turn whose interruption the provider never confirmed', async (t) => {
+  const f = await projectChat(t);
+  f.codex.autoInterrupt = false;
+  const turn = await f.say('Hang', { model: 'test-model' });
+  await waitFor(() => f.codex.sends[0]);
+  const first = await f.ok('POST', f.url('stop'), {});
+  assert.equal(first.turn.status, 'interrupt-requested');
+  await waitFor(() => f.codex.interrupts.length === 1);
+  await assert.rejects(f.say('Again'), /Wait for the current reply/);
+  const second = await f.ok('POST', f.url('stop'), {});
+  assert.equal(second.turn.status, 'interrupted');
+  assert.match(second.turn.reason, /did not confirm/);
+  assert.equal((await f.snapshot()).busy, false);
+  assert.equal((await f.settled(turn.id)).status, 'interrupted');
 });
 
 test('a turn without a model takes the provider default, and one with an unavailable model fails in the transcript', async (t) => {

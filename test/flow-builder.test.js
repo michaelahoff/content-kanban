@@ -101,6 +101,7 @@ test('create_flow rebuilds the untouched starter flow as a graph with a new temp
   const cards = await f.call('create_cards', { laneId: byName['New leads'].id, cards: [{ title: 'Acme', fields: { contact: 'Ada' } }] });
   const card = f.store.getCard(f.ctx, cards.cards[0].id).card;
   assert.deepEqual([card.template, card.fields.contact, card.fields.brief], ['lead', 'Ada', 'Warm, short, one clear ask.']);
+  assert.equal((await f.call('read_project')).flows[0].lanes[0].cardCount, 1);
   await assert.rejects(() => f.call('create_flow', { flowId: flow.id, lanes: emailLanes }), /holds 1 card, so it cannot be rebuilt/);
 });
 
@@ -114,6 +115,7 @@ test('create_flow checks every playbook against the planned lanes and template b
   await assert.rejects(() => f.call('create_flow', { name: 'Broken', lanes: [{ name: 'A', color: 'plaid' }] }), /color must be one of/);
   await assert.rejects(() => f.call('create_flow', { name: 'Broken', lanes: [{ name: 'A', playbook: { set: { prompt: 7 } } }] }), /set must be an object of text values/);
   await assert.rejects(() => f.call('create_flow', { name: 'Broken', lanes: [{ name: 'A', playbook: { bogus: 'x' } }] }), /unknown playbook setting bogus/);
+  await assert.rejects(() => f.call('create_flow', { flowId: f.flows()[0].id, kind: 'graph', lanes: [{ name: 'Far', x: 2e6, y: 40 }] }), /within a million/);
   assert.deepEqual(f.flows().map((flow) => flow.id), before.map((flow) => flow.id), 'nothing was created');
   assert.deepEqual(f.flows()[0].stages.map((stage) => stage.name), ['Ideas', 'In progress', 'Review', 'Done']);
   // A new flow joins the existing one; its map is generated when none is given.
@@ -197,10 +199,10 @@ test('layout_flow places nodes from the routes and leaves nodes the user placed 
   assert.deepEqual(built.flow.lanes.map((lane) => [lane.x, lane.y, lane.placedBy]), [[0, 40, null], [380, 40, null], [760, 40, null], [1140, 40, null]]);
   // A node added with a route to Review sits one column before it, in the free row under Work.
   const added = await f.call('create_lane', { flowId: main.id, name: 'Research', playbook: { run: 'off', routes: { next: 'Review' } } });
-  assert.deepEqual([added.lane.x, added.lane.y], [380, 270]);
+  assert.deepEqual([added.lane.x, added.lane.y], [380, 320]);
   await f.call('set_routes', { laneId: built.flow.lanes[0].id, routes: { go: 'Research' } });
   const tidy = await f.call('layout_flow', { flowId: main.id });
-  assert.deepEqual(tidy.nodes.map((node) => [node.name, node.x, node.y]), [['Start', 0, 40], ['Work', 1140, 270], ['Review', 760, 40], ['Done', 1140, 40], ['Research', 380, 40]], 'Work is now reached only through the loop, so it sits beside Done');
+  assert.deepEqual(tidy.nodes.map((node) => [node.name, node.x, node.y]), [['Start', 0, 40], ['Work', 1140, 320], ['Review', 760, 40], ['Done', 1140, 40], ['Research', 380, 40]], 'Work is now reached only through the loop, so it sits beside Done');
   assert.equal(tidy.moved, 2);
   assert.deepEqual((await f.call('layout_flow', { flowId: main.id })).moved, 0);
   // The user drags Done; the builder refuses to rearrange unless told.
@@ -212,6 +214,12 @@ test('layout_flow places nodes from the routes and leaves nodes the user placed 
   const forced = await f.call('layout_flow', { flowId: main.id, rearrange: true });
   assert.deepEqual(forced.nodes.filter((node) => node.name === 'Done').map((node) => [node.x, node.y]), [[1140, 40]]);
   assert.equal((await lanes()).find((lane) => lane.name === 'Done').placedBy, 'builder');
+  // A conversion places every node afresh, so a drag from before it no longer counts.
+  f.store.updateStage(f.ctx, built.flow.lanes[3].id, { x: 1500, y: 300 });
+  await f.call('update_flow', { flowId: main.id, kind: 'board' });
+  await f.call('update_flow', { flowId: main.id, kind: 'graph' });
+  assert.equal((await lanes()).find((lane) => lane.name === 'Done').placedBy, 'builder');
+  assert.ok((await f.call('layout_flow', { flowId: main.id })).nodes.length === 5, 'no refusal after a conversion');
   const board = await f.call('create_flow', { name: 'Board', lanes: [{ name: 'A' }] });
   await assert.rejects(() => f.call('layout_flow', { flowId: board.flow.id }), /is a board/);
 });
@@ -236,7 +244,7 @@ test('composePlaybook writes a document Frameboard reads back the same way, and 
   assert.deepEqual(composed.warnings, []);
   assert.throws(() => composePlaybook({ routes: { back: 'Draft' } }, { laneId: 'a', lanes, templates, flowTemplate: templates[0], skills: new Set(), where: 'Lane “Draft”' }), /leads back to this lane/);
   const placed = layoutGraph([{ name: 'Start', playbook: { routes: { a: 'Left', b: 'Right' } } }, { name: 'Left', playbook: { routes: { on: 'End' } } }, { name: 'Right', playbook: { routes: { on: 'End' } } }, { name: 'End' }, { name: 'Lost', x: 5, y: 6 }]);
-  assert.deepEqual(placed.map((lane) => [lane.x, lane.y]), [[0, 40], [380, 40], [380, 270], [760, 40], [5, 6]]);
+  assert.deepEqual(placed.map((lane) => [lane.x, lane.y]), [[0, 40], [380, 40], [380, 320], [760, 40], [5, 6]]);
   // The longest path decides the column, so a shortcut route does not pull a node back; loops do not count; unreached lanes follow.
   const long = layoutGraph([{ name: 'Start', playbook: { routes: { a: 'A', skip: 'End' } } }, { name: 'A', playbook: { routes: { b: 'B' } } }, { name: 'B', playbook: { routes: { end: 'End', back: 'A' } } }, { name: 'End' }, { name: 'Alone' }]);
   assert.deepEqual(long.map((lane) => [lane.x, lane.y]), [[0, 40], [380, 40], [760, 40], [1140, 40], [1520, 40]]);

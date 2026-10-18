@@ -3,7 +3,7 @@
 // lanes, playbooks, templates, skills and cards through these calls only.
 // Every write goes through the same store methods the board uses, so the
 // activity log, playbook files and template rules are the ones users get.
-import { laneColors, flowKinds } from './store.js';
+import { laneColors, flowKinds, onCanvas } from './store.js';
 import { parseDocument, serializeDocument, playbookSettings, resolveRoutes, resolveCreates, resolveLaneTemplate, mapTemplate, describeSettings,
   maxDocumentLength, skillName, hasWork, maxCreatedCards } from './public/playbook-format.js';
 import { libraryPaths } from './public/library-format.js';
@@ -22,7 +22,7 @@ const textKeys = ['run', 'provider', 'model', 'conversation', 'advance', 'action
 const listKeys = ['context', 'may_edit', 'skills', 'assets'];
 const mapKeys = ['set', 'routes'];
 // Nodes of a graph laid out by the builder sit this far apart.
-const nodeSpacing = 380; const rowSpacing = 230;
+const nodeSpacing = 380; const rowSpacing = 280;
 const toolNames = new Set(builderTools.map((tool) => tool.name));
 
 const findTemplate = (templates, nameOrId) => templates.find((template) => template.id === nameOrId) ?? templates.find((template) => same(template.name, nameOrId)) ?? null;
@@ -170,13 +170,9 @@ export function createFlowBuilder({ store }) {
   }
   const requireTemplate = (ctx, nameOrId) => findTemplate(store.templates.list(ctx), nameOrId) || fail(404, `There is no card template “${nameOrId}”.`);
   const skillNames = (flowId) => new Set(store.playbooks.list(flowId).skills.map((document) => document.path.slice('skills/'.length, -'.md'.length)));
-  const cardsByLane = (ctx, projectId) => {
-    const counts = new Map();
-    for (const card of store.listCards(ctx, projectId)) counts.set(card.stageId, (counts.get(card.stageId) ?? 0) + 1);
-    return counts;
-  };
+  const cardsByLane = (ctx, projectId) => store.cardCounts(ctx, projectId);
   // What read_project says about one flow's lanes, and the problems a build left.
-  const laneView = (stage, counts) => ({ id: stage.id, name: stage.name, color: stage.color, position: stage.position, ...(stage.x === null ? {} : { x: stage.x, y: stage.y, placedBy: store.stagePlacement(stage.id) }), cardCount: counts.get(stage.id) ?? 0,
+  const laneView = (ctx, stage, counts) => ({ id: stage.id, name: stage.name, color: stage.color, position: stage.position, ...(stage.x === null ? {} : { x: stage.x, y: stage.y, placedBy: store.stagePlacement(ctx, stage.id) }), cardCount: counts.get(stage.id) ?? 0,
     playbook: stage.playbook && { path: stage.playbook.path, run: stage.playbook.run, provider: stage.playbook.provider, model: stage.playbook.model, hasInstructions: stage.playbook.hasInstructions,
       summary: stage.playbook.summary, advance: stage.playbook.advance, routes: stage.playbook.routes, action: stage.playbook.action, creates: stage.playbook.creates, errors: stage.playbook.errors } });
   function flowResult(ctx, projectId, flowId) {
@@ -187,7 +183,7 @@ export function createFlowBuilder({ store }) {
       for (const message of stage.playbook?.errors ?? []) problems.push(`Lane “${stage.name}”: ${message}`);
       for (const route of stage.playbook?.routes ?? []) if (!route.laneId) problems.push(`Lane “${stage.name}”: the route “${route.name}” leads nowhere (${route.target}).`);
     }
-    return { flow: { id: flow.id, name: flow.name, kind: flow.kind, templateId: flow.templateId, lanes: flow.stages.map((stage) => laneView(stage, counts)), skills: [...skillNames(flow.id)] }, problems };
+    return { flow: { id: flow.id, name: flow.name, kind: flow.kind, templateId: flow.templateId, lanes: flow.stages.map((stage) => laneView(ctx, stage, counts)), skills: [...skillNames(flow.id)] }, problems };
   }
   function writeDocument(ctx, flowId, relative, text) {
     const current = store.playbooks.read(flowId, relative);
@@ -218,7 +214,7 @@ export function createFlowBuilder({ store }) {
       const unknown = Object.keys(lane).filter((key) => !['name', 'color', 'x', 'y', 'playbook'].includes(key));
       check(!unknown.length, `Lane “${lane.name}”: unknown ${unknown.join(', ')}. A lane takes name, color, x, y and playbook.`);
       check(lane.color === undefined || laneColors.includes(lane.color), `Lane “${lane.name}”: color must be one of ${laneColors.join(', ')}.`);
-      for (const axis of ['x', 'y']) check(lane[axis] === undefined || (typeof lane[axis] === 'number' && Number.isFinite(lane[axis])), `Lane “${lane.name}”: ${axis} must be a number.`);
+      for (const axis of ['x', 'y']) check(lane[axis] === undefined || onCanvas(lane[axis]), `Lane “${lane.name}”: ${axis} must be a number within a million.`);
       return { name: lane.name.trim(), color: lane.color ?? laneColors[position % laneColors.length], x: lane.x, y: lane.y, playbook: lane.playbook ?? null };
     });
     for (const [position, lane] of plan.entries()) check(!plan.slice(0, position).some((other) => same(other.name, lane.name)), `Two lanes are called “${lane.name}”. Give each lane its own name.`);
@@ -250,7 +246,7 @@ export function createFlowBuilder({ store }) {
       return {
         project: { id: project.id, name: project.name, archived: Boolean(project.archivedAt) },
         flows: flowsOf(ctx, projectId).map((flow) => ({ id: flow.id, name: flow.name, kind: flow.kind, templateId: flow.templateId, cardCount: flow.cardCount,
-          lanes: flow.stages.map((stage) => laneView(stage, counts)), skills: [...skillNames(flow.id)] })),
+          lanes: flow.stages.map((stage) => laneView(ctx, stage, counts)), skills: [...skillNames(flow.id)] })),
         templates: store.templates.list(ctx).map(templateView),
         library: { files: listing.assets.slice(0, 200).map((asset) => ({ source: `asset:${asset.id}`, path: paths.assets.get(asset.id) })),
           folders: listing.folders.slice(0, 200).map((folder) => ({ source: `folder:${folder.id}`, path: paths.folders.get(folder.id) })) },
@@ -394,7 +390,7 @@ export function createFlowBuilder({ store }) {
       requireProject(ctx, projectId);
       const flow = requireFlow(ctx, projectId, input.flowId);
       check(flow.kind === 'graph', `“${flow.name}” is a board; only a graph has nodes to place.`);
-      const byHand = flow.stages.filter((stage) => store.stagePlacement(stage.id) === 'user');
+      const byHand = flow.stages.filter((stage) => store.stagePlacement(ctx, stage.id) === 'user');
       if (byHand.length && input.rearrange !== true) fail(409, `The user placed ${byHand.map((stage) => `“${stage.name}”`).join(', ')} by hand. Ask whether to reorganize the canvas, then call layout_flow again with rearrange: true.`);
       let moved = 0;
       const nodes = layoutStages(flow.stages);

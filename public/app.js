@@ -3,7 +3,7 @@ import { $, escape, iconButton, imageURL, toast, wordCount, confirmDelete, small
 import { retry, request } from './api.js';
 import { fieldInputId } from './card-template.js';
 import { state, project, flow, flowCardCount, forgetFlow, locateCard, locateFlow, cardCount, loadWorkspace, loadCards, loadTemplates, templateOf, cardChanged, flushCards, createCard, moveCard, deleteCard, updateLane, updateFlow, deleteLane, deleteFlow, deleteProject, archiveProject, unarchiveProject, saveStatus, hasUnsavedWork, onStatusChange, useSavedCard, undoLastMove, loadPlaybooks, applyStages, applyFlowView, convertFlow, restoreFlowSelection, refreshSavedCard } from './state.js';
-import { view, selectProject, renderApp, renderBoard, renderStatus, renderTabs, editProject, editFlow, editLane, toggleCards, showTab, showFlow } from './board.js';
+import { view, selectProject, renderApp, renderBoard, renderStatus, renderTabs, renderSidebar, editProject, editFlow, editLane, toggleCards, showTab, showFlow } from './board.js';
 import { mountProjectChat } from './project-chat.js';
 import { dropLibraryItems, libraryActivity, hasLibraryUploads } from './library.js';
 import { openCard, closeCard, cardPanelOpen, renderImages, copyText, copyTrifecta, fetchYoutube, addImages, originalVideoMarkup, videoLinkMarkup } from './editor.js';
@@ -609,7 +609,7 @@ try {
   await loadCards(state.projectId);
   renderApp();
   initializeChats({ openCard, switchProject, renderBoard });
-  mountProjectChat({ renderApp, renderTabs });
+  mountProjectChat({ renderApp, renderTabs, renderSidebar, chatShown: () => view.tab === 'chat' });
   // Playbook files saved in another tab change lane summaries on the board.
   onActivity((entry) => {
     cardPlaybookActivity(entry);

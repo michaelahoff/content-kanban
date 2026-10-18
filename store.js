@@ -141,7 +141,7 @@ Set run to on-enter when these instructions say what you want, and advance to au
 // A node is placed on a grid this far from its neighbor in a single line.
 const nodeSpacing = 380;
 // A place on the graph canvas: a finite number of pixels, not absurdly far out.
-const onCanvas = (value) => typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= 1e6;
+export const onCanvas = (value) => typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= 1e6;
 const firstFlowName = 'Main';
 const idPattern = /^[\w-]{1,100}$/;
 const criterionRules = { field: 'filled', imageRole: 'set' };
@@ -1051,6 +1051,8 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
         run('UPDATE flows SET kind = ? WHERE id = ?', input.kind, id);
         ordered.forEach((stage, index) => run('UPDATE stages SET position = ?, graph_x = ?, graph_y = ? WHERE id = ?', index,
           input.kind === 'graph' ? index * nodeSpacing : null, input.kind === 'graph' ? 40 : null, stage.id));
+        // A conversion places every node afresh: none of them was dragged there.
+        for (const stage of ordered) recordChange({ ...ctx, actor: 'system:convert-flow' }, 'stage', stage.id, 'updated', { data: { flowId: id, changed: ['x', 'y'] } });
         recordChange(ctx, 'flow', id, 'updated', { projectId: flow.project_id, data: { kind: input.kind } });
         return flowView(get('SELECT * FROM flows WHERE id = ?', id));
       });
@@ -1216,10 +1218,16 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
 
     // Who last moved a node on the graph canvas: the user, an automation
     // (the project chat's flow builder) or nobody since it was created.
-    stagePlacement(stageId) {
-      const row = get(`SELECT actor FROM activity_log WHERE entity = 'stage' AND entity_id = ? AND type = 'updated'
-        AND EXISTS (SELECT 1 FROM json_each(json_extract(data, '$.changed')) WHERE value IN ('x', 'y')) ORDER BY id DESC LIMIT 1`, stageId);
+    stagePlacement(ctx, stageId) {
+      const row = get(`SELECT actor FROM activity_log WHERE workspace_id = ? AND entity = 'stage' AND entity_id = ? AND type = 'updated'
+        AND EXISTS (SELECT 1 FROM json_each(json_extract(data, '$.changed')) WHERE value IN ('x', 'y')) ORDER BY id DESC LIMIT 1`, ctx.workspaceId, stageId);
       return !row ? null : row.actor.startsWith('user:') ? 'user' : 'builder';
+    },
+
+    // Live cards per lane of a project, by lane ID.
+    cardCounts(ctx, projectId) {
+      requireProject(ctx, projectId, { allowArchived: true });
+      return new Map(all('SELECT stage_id, COUNT(*) AS count FROM cards WHERE project_id = ? AND deleted_at IS NULL GROUP BY stage_id', projectId).map((row) => [row.stage_id, row.count]));
     },
 
     // Routes that led to a deleted lane are taken out of the other lanes'

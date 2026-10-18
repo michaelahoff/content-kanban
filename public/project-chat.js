@@ -7,6 +7,7 @@ import { request, send } from './api.js';
 import { state, project, reloadProject } from './state.js';
 import { attemptMarkup } from './chat-transcript.js';
 import { onActivity, onDelta } from './chat.js';
+import { providerNames } from './playbook-format.js';
 
 const chats = new Map();
 let catalog = null; let catalogLoading = null; let clock = null;
@@ -15,7 +16,7 @@ const unfinished = new Set(['queued', 'running', 'interrupt-requested']);
 // Tools whose results change what the board shows.
 const writingTools = new Set(['create_flow', 'update_flow', 'delete_flow', 'create_lane', 'update_lane', 'delete_lane', 'write_playbook', 'set_routes', 'write_map', 'write_skill', 'delete_skill', 'create_template', 'update_template', 'delete_template', 'create_cards']);
 const url = (id, action = '') => `/api/projects/${encodeURIComponent(id)}/chat${action ? `/${action}` : ''}`;
-const providerName = (provider) => (provider === 'claude' ? 'Claude' : 'Codex');
+const providerName = (provider) => providerNames[provider] ?? provider;
 const statusLabels = { queued: 'Queued', running: 'Working', 'interrupt-requested': 'Stopping', failed: 'Failed', interrupted: 'Stopped' };
 const workLabels = { reasoning: 'Thinking…', dynamicToolCall: 'Changing the project…', mcpToolCall: 'Using a connected tool…', commandExecution: 'Running a command…', webSearch: 'Searching the web…' };
 const examples = [
@@ -51,9 +52,10 @@ async function refresh(entry) {
   const snapshot = await request(url(entry.id));
   const wasBusy = entry.snapshot?.busy;
   entry.snapshot = snapshot;
+  // The Chat tab's dot follows the chat whichever tab is shown.
+  if (wasBusy !== snapshot.busy && project()?.id === entry.id) navigation.renderTabs?.();
   if (!shown(entry)) return;
   paint(entry);
-  if (wasBusy !== snapshot.busy) navigation.renderTabs?.();
 }
 function scheduleRefresh(entry) {
   clearTimeout(entry.refreshTimer);
@@ -66,7 +68,12 @@ function scheduleReload(projectId) {
   reloads.set(projectId, setTimeout(() => {
     reloads.delete(projectId);
     const p = state.projects.find((item) => item.id === projectId); if (!p) return;
-    void reloadProject(p).then(() => { if (project() === p) navigation.renderApp(); }).catch(() => {});
+    void reloadProject(p).then(() => {
+      if (project() !== p) return;
+      // With the chat shown, the panel the user is typing in stays; only the
+      // sidebar and tabs take the new flows and counts.
+      if (navigation.chatShown?.()) { navigation.renderSidebar?.(); navigation.renderTabs?.(); } else navigation.renderApp();
+    }).catch(() => {});
   }, 300));
 }
 
@@ -218,6 +225,7 @@ document.addEventListener('input', (event) => {
   const button = $('[data-action="project-chat-send"]'); if (button) button.disabled = entry.sending || Boolean(activeTurn(entry.snapshot)) || !choice(entry).model || !entry.draft.trim();
 });
 document.addEventListener('change', (event) => {
+  if (!['project-chat-provider', 'project-chat-model'].includes(event.target.id)) return;
   const entry = project() && entryFor(project().id); if (!entry) return;
   if (event.target.id === 'project-chat-provider') { entry.provider = event.target.value; entry.model = null; renderComposer(entry); }
   if (event.target.id === 'project-chat-model') { entry.model = event.target.value || null; }

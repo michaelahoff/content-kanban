@@ -9,11 +9,12 @@ import path from 'node:path';
 import { configurationDiscovery, compileConfiguration, queuedConfigurationDecision, openConfiguredThread } from './provider-configuration.js';
 import { createFlowBuilder, projectSummary } from './flow-builder.js';
 import { failureReason } from './chat-worker.js';
+import { providerNames } from './public/playbook-format.js';
 
 const fail = (status, message) => { throw Object.assign(new Error(message), { status }); };
 const check = (value, message) => { if (!value) fail(400, message); };
 const object = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
-const providerName = (provider) => (provider === 'claude' ? 'Claude' : 'Codex');
+const providerName = (provider) => providerNames[provider] ?? provider;
 // Why a turn could not be sent, in words that say what to do next.
 function explain(error) {
   const message = failureReason(error) || error.message || 'The provider could not take this message.';
@@ -64,7 +65,9 @@ export function createProjectChat({ store, adapters, providers, ctx, dataDir, pa
     if (closed) return;
     if (event.turnId && work.turnId && event.turnId !== work.turnId) return;
     if (event.turnId && !work.turnId) {
-      if (!work.dispatching) return;
+      // A late event of an earlier turn in this conversation must not be
+      // taken for the turn being dispatched.
+      if (!work.dispatching || work.previousTurnIds.has(event.turnId)) return;
       work.turnId = event.turnId;
     }
     if (event.type === 'turn-started') {
@@ -118,7 +121,7 @@ export function createProjectChat({ store, adapters, providers, ctx, dataDir, pa
     }
   }
   async function run(turn) {
-    const work = { turn, projectId: turn.projectId, items: new Map(), threadId: null, turnId: null, unsubscribe: null, dispatching: false };
+    const work = { turn, projectId: turn.projectId, items: new Map(), threadId: null, turnId: null, unsubscribe: null, dispatching: false, previousTurnIds: new Set() };
     live.set(turn.projectId, work);
     work.timer = setInterval(() => flush(work), 500);
     work.timer.unref();
@@ -142,19 +145,25 @@ export function createProjectChat({ store, adapters, providers, ctx, dataDir, pa
       // guidance or Frameboard's flow builder changed), the message starts a
       // new conversation rather than failing: the builder's guidance is
       // Frameboard's, not something the user chose to keep.
+      const current = compileConfiguration(selection, discovery, builder.tools, turn.provider, 'builder');
       let frozen = conversation.configuration;
-      if (frozen && queuedConfigurationDecision(frozen, selection, discovery).status !== 'ready') {
+      const stale = Boolean(frozen) && (queuedConfigurationDecision(frozen, selection, discovery).status !== 'ready'
+        || JSON.stringify(frozen.nativeOptions.dynamicTools) !== JSON.stringify(current.nativeOptions.dynamicTools));
+      // A configuration that cannot run now fails the turn and keeps the
+      // conversation; only a usable new one replaces it.
+      if ((!frozen || stale) && !current.supported) fail(409, current.reasons.join(' '));
+      if (stale) {
         conversation = store.projectChats.rotate(ctx, turn.id);
         work.items.set('new-conversation', { id: 'new-conversation', kind: 'notice', text: 'Settings or the flow builder changed since this conversation began, so this message starts a new conversation. The earlier one is kept above.', data: {}, completed: true, dirty: true });
         flush(work);
-        frozen = null;
+        frozen = current;
       }
-      frozen ??= compileConfiguration(selection, discovery, builder.tools, turn.provider, 'builder');
-      if (!frozen.supported) fail(409, frozen.reasons.join(' '));
+      frozen ??= current;
       const opened = await openConfiguredThread(adapter, { frozen, discovery, currentSelection: selection, threadId: conversation.binding?.threadId ?? null,
         binding: conversation.binding, bindingConfiguration: conversation.configuration, cwd, model });
       if (closed) return;
       work.threadId = opened.threadId;
+      work.previousTurnIds = new Set(store.projectChats.nativeTurnIds(conversation.id));
       store.projectChats.bind(ctx, conversation.id, opened.binding, frozen);
       work.unsubscribe = adapter.subscribe(opened.threadId, { acceptsRequest: (request) => request.turnId === work.turnId,
         onEvent: (event) => receive(work, event), onRequest: (request) => decline(work, request), onToolCall: (request) => toolCall(work, request) });
@@ -203,8 +212,14 @@ export function createProjectChat({ store, adapters, providers, ctx, dataDir, pa
     },
     stop(userCtx, projectId) {
       const turn = store.projectChats.active(projectId) || fail(409, 'Nothing is running in this project chat.');
-      store.projectChats.requestStop(userCtx, turn.id);
       const work = live.get(projectId);
+      if (turn.status === 'interrupt-requested') {
+        // The provider has not confirmed the first Stop: a second one ends the turn here.
+        const reason = 'Stopped; the provider did not confirm the interruption.';
+        if (work) end(work, 'interrupted', reason); else store.projectChats.finish(userCtx, turn.id, 'interrupted', reason);
+        return { turn: store.projectChats.turn(turn.id) };
+      }
+      store.projectChats.requestStop(userCtx, turn.id);
       if (work?.turnId) void interrupt(work);
       else if (!work) store.projectChats.finish(userCtx, turn.id, 'interrupted', 'Stopped before it started.');
       return { turn: store.projectChats.turn(turn.id) };
