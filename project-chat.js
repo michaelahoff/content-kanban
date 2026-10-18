@@ -6,7 +6,7 @@
 // the next message continues the same native conversation.
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
-import { configurationDiscovery, compileConfiguration, openConfiguredThread } from './provider-configuration.js';
+import { configurationDiscovery, compileConfiguration, queuedConfigurationDecision, openConfiguredThread } from './provider-configuration.js';
 import { createFlowBuilder, projectSummary } from './flow-builder.js';
 import { failureReason } from './chat-worker.js';
 
@@ -135,10 +135,21 @@ export function createProjectChat({ store, adapters, providers, ctx, dataDir, pa
       if (!model) fail(409, turn.model ? `The model ${turn.model} is not available for ${providerName(turn.provider)}. Choose another model.` : `No ${providerName(turn.provider)} model is available. Refresh models in Settings.`);
       if (model !== turn.model) store.projectChats.setModel(ctx, turn.id, model);
       const selection = store.providerConfiguration(ctx, turn.provider).selection;
-      const conversation = store.projectChats.conversation(turn.conversationId);
+      let conversation = store.projectChats.conversation(turn.conversationId);
       // The conversation's first turn freezes its configuration; later turns
       // reuse it, so the native session keeps the same guidance and tools.
-      const frozen = conversation.configuration ?? compileConfiguration(selection, discovery, builder.tools, turn.provider, 'builder');
+      // When that configuration no longer applies (the user's provider
+      // guidance or Frameboard's flow builder changed), the message starts a
+      // new conversation rather than failing: the builder's guidance is
+      // Frameboard's, not something the user chose to keep.
+      let frozen = conversation.configuration;
+      if (frozen && queuedConfigurationDecision(frozen, selection, discovery).status !== 'ready') {
+        conversation = store.projectChats.rotate(ctx, turn.id);
+        work.items.set('new-conversation', { id: 'new-conversation', kind: 'notice', text: 'Settings or the flow builder changed since this conversation began, so this message starts a new conversation. The earlier one is kept above.', data: {}, completed: true, dirty: true });
+        flush(work);
+        frozen = null;
+      }
+      frozen ??= compileConfiguration(selection, discovery, builder.tools, turn.provider, 'builder');
       if (!frozen.supported) fail(409, frozen.reasons.join(' '));
       const opened = await openConfiguredThread(adapter, { frozen, discovery, currentSelection: selection, threadId: conversation.binding?.threadId ?? null,
         binding: conversation.binding, bindingConfiguration: conversation.configuration, cwd, model });

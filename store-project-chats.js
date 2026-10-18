@@ -193,6 +193,20 @@ export function createProjectChatStore({ all, get, run, transaction, recordChang
         return api.snapshot(ctx, projectId);
       });
     },
+    // The configuration a conversation froze no longer applies (Settings or
+    // the flow builder changed): the turn moves to a new conversation and the
+    // old one is kept as history.
+    rotate(ctx, turnId) {
+      return transaction(() => {
+        const row = turn(turnId);
+        const old = current(row.projectId);
+        run("UPDATE project_chat_conversations SET state = 'previous' WHERE id = ?", old.id);
+        const next = newConversation(row.projectId, row.provider);
+        run('UPDATE project_chat_turns SET conversation_id = ? WHERE id = ?', next.id, turnId);
+        activity(ctx, row.projectId, 'fresh_context', { previousConversationId: old.id, conversationId: next.id, turnId, reason: 'configuration-changed' });
+        return next;
+      });
+    },
     // After a restart nothing resumes: an unfinished turn ends, its
     // conversation stays bound, and the next message continues it.
     interruptAll(ctx, reason) {

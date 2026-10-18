@@ -1209,9 +1209,17 @@ export async function openStore({ dataDir, onCardEvent = () => {}, onCommit = ()
           others.splice(Math.min(input.position, others.length), 0, stage);
           renumberStages(stage.flowId, others);
         }
-        recordChange(ctx, 'stage', id, 'updated', { data: { flowId: stage.flowId } });
+        recordChange(ctx, 'stage', id, 'updated', { data: { flowId: stage.flowId, changed: ['name', 'color', 'x', 'y', 'position', 'instructions', 'exitCriteria', 'approveTo', 'sendBackTo', 'automations'].filter((key) => key in input) } });
         return requireStage(ctx, id);
       });
+    },
+
+    // Who last moved a node on the graph canvas: the user, an automation
+    // (the project chat's flow builder) or nobody since it was created.
+    stagePlacement(stageId) {
+      const row = get(`SELECT actor FROM activity_log WHERE entity = 'stage' AND entity_id = ? AND type = 'updated'
+        AND EXISTS (SELECT 1 FROM json_each(json_extract(data, '$.changed')) WHERE value IN ('x', 'y')) ORDER BY id DESC LIMIT 1`, stageId);
+      return !row ? null : row.actor.startsWith('user:') ? 'user' : 'builder';
     },
 
     // Routes that led to a deleted lane are taken out of the other lanes'

@@ -143,6 +143,28 @@ test('Stop ends a running turn, fresh context starts a new native conversation, 
   assert.equal((await f.snapshot()).turns.length, 2);
 });
 
+test('a message after the provider guidance or the builder changed starts a new conversation and says so', async (t) => {
+  const f = await projectChat(t);
+  const first = await f.say('First', { model: 'test-model' });
+  const send = await waitFor(() => f.codex.sends[0]);
+  f.codex.finish(send, 'completed', 'OK.');
+  await f.settled(first.id);
+  const settings = await f.ok('GET', '/api/providers/codex');
+  await f.ok('PUT', '/api/providers/codex', { revision: settings.revision, selection: { ...settings.selection, instructions: 'Write tersely.' } });
+  const second = await f.say('Second', { model: 'test-model' });
+  const next = await waitFor(() => f.codex.sends[1]);
+  assert.notEqual(next.threadId, send.threadId, 'a new native conversation starts');
+  assert.ok(f.codex.threads.get(next.threadId).config.developerInstructions.endsWith('Write tersely.'), 'with the current guidance');
+  f.codex.finish(next, 'completed', 'Terse.');
+  const done = await f.settled(second.id);
+  assert.equal(done.status, 'completed');
+  const after = await f.snapshot();
+  assert.deepEqual(after.conversations.map((conversation) => conversation.state), ['previous', 'active']);
+  assert.equal(done.conversationId, after.conversations[1].id, 'the turn belongs to the new conversation');
+  assert.ok(after.items.some((item) => item.turnId === second.id && item.kind === 'notice' && item.text.includes('starts a new conversation')));
+  assert.equal(after.turns[0].conversationId, after.conversations[0].id, 'the first turn stays with the old one');
+});
+
 test('a turn without a model takes the provider default, and one with an unavailable model fails in the transcript', async (t) => {
   const f = await projectChat(t);
   const turn = await f.say('Default please');

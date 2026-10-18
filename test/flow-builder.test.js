@@ -4,7 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { openStore } from '../store.js';
-import { createFlowBuilder, composePlaybook, layoutGraph, projectSummary } from '../flow-builder.js';
+import { createFlowBuilder, composePlaybook, layoutGraph, layerGraph, projectSummary } from '../flow-builder.js';
 import { builderTools } from '../flow-builder-tools.js';
 import { parseDocument } from '../public/playbook-format.js';
 
@@ -15,7 +15,9 @@ async function fixture(t) {
   const ctx = { workspaceId: store.owner.workspaceId, userId: store.owner.userId, actor: `user:${store.owner.userId}` };
   const builder = createFlowBuilder({ store });
   const project = store.workspace(ctx).projects[0];
-  const call = async (name, input) => builder.call(ctx, project.id, name, input);
+  // The builder acts as a project chat turn does; `ctx` stays the user's.
+  const automation = { ...ctx, actor: 'automation:project-chat:test-turn' };
+  const call = async (name, input) => builder.call(automation, project.id, name, input);
   const flows = () => store.workspace(ctx).flows.filter((flow) => flow.projectId === project.id);
   return { store, ctx, builder, project, call, flows, dataDir };
 }
@@ -184,6 +186,36 @@ test('lanes, playbooks, routes, skills, templates and cards can be changed one a
   await assert.rejects(() => f.call('create_cards', { laneId: ideas.id, cards: [] }), /one to 50 cards/);
 });
 
+test('layout_flow places nodes from the routes and leaves nodes the user placed by hand unless told to rearrange', async (t) => {
+  const f = await fixture(t);
+  const main = f.flows()[0];
+  const built = await f.call('create_flow', { flowId: main.id, name: 'Graph', kind: 'graph', lanes: [
+    { name: 'Start', playbook: { run: 'off', routes: { go: 'Work' } } },
+    { name: 'Work', playbook: { run: 'off', routes: { check: 'Review' } } },
+    { name: 'Review', playbook: { run: 'off', routes: { ok: 'Done', redo: 'Work' } } },
+    { name: 'Done' }] });
+  assert.deepEqual(built.flow.lanes.map((lane) => [lane.x, lane.y, lane.placedBy]), [[0, 40, null], [380, 40, null], [760, 40, null], [1140, 40, null]]);
+  // A node added with a route to Review sits one column before it, in the free row under Work.
+  const added = await f.call('create_lane', { flowId: main.id, name: 'Research', playbook: { run: 'off', routes: { next: 'Review' } } });
+  assert.deepEqual([added.lane.x, added.lane.y], [380, 270]);
+  await f.call('set_routes', { laneId: built.flow.lanes[0].id, routes: { go: 'Research' } });
+  const tidy = await f.call('layout_flow', { flowId: main.id });
+  assert.deepEqual(tidy.nodes.map((node) => [node.name, node.x, node.y]), [['Start', 0, 40], ['Work', 1140, 270], ['Review', 760, 40], ['Done', 1140, 40], ['Research', 380, 40]], 'Work is now reached only through the loop, so it sits beside Done');
+  assert.equal(tidy.moved, 2);
+  assert.deepEqual((await f.call('layout_flow', { flowId: main.id })).moved, 0);
+  // The user drags Done; the builder refuses to rearrange unless told.
+  f.store.updateStage(f.ctx, built.flow.lanes[3].id, { x: 1500, y: 300 });
+  const lanes = async () => (await f.call('read_project')).flows[0].lanes;
+  assert.equal((await lanes()).find((lane) => lane.name === 'Done').placedBy, 'user');
+  assert.equal((await lanes()).find((lane) => lane.name === 'Research').placedBy, 'builder');
+  await assert.rejects(() => f.call('layout_flow', { flowId: main.id }), /placed “Done” by hand/);
+  const forced = await f.call('layout_flow', { flowId: main.id, rearrange: true });
+  assert.deepEqual(forced.nodes.filter((node) => node.name === 'Done').map((node) => [node.x, node.y]), [[1140, 40]]);
+  assert.equal((await lanes()).find((lane) => lane.name === 'Done').placedBy, 'builder');
+  const board = await f.call('create_flow', { name: 'Board', lanes: [{ name: 'A' }] });
+  await assert.rejects(() => f.call('layout_flow', { flowId: board.flow.id }), /is a board/);
+});
+
 test('an archived project can be read but not changed by the builder', async (t) => {
   const f = await fixture(t);
   f.store.archiveProject(f.ctx, f.project.id);
@@ -205,4 +237,8 @@ test('composePlaybook writes a document Frameboard reads back the same way, and 
   assert.throws(() => composePlaybook({ routes: { back: 'Draft' } }, { laneId: 'a', lanes, templates, flowTemplate: templates[0], skills: new Set(), where: 'Lane “Draft”' }), /leads back to this lane/);
   const placed = layoutGraph([{ name: 'Start', playbook: { routes: { a: 'Left', b: 'Right' } } }, { name: 'Left', playbook: { routes: { on: 'End' } } }, { name: 'Right', playbook: { routes: { on: 'End' } } }, { name: 'End' }, { name: 'Lost', x: 5, y: 6 }]);
   assert.deepEqual(placed.map((lane) => [lane.x, lane.y]), [[0, 40], [380, 40], [380, 270], [760, 40], [5, 6]]);
+  // The longest path decides the column, so a shortcut route does not pull a node back; loops do not count; unreached lanes follow.
+  const long = layoutGraph([{ name: 'Start', playbook: { routes: { a: 'A', skip: 'End' } } }, { name: 'A', playbook: { routes: { b: 'B' } } }, { name: 'B', playbook: { routes: { end: 'End', back: 'A' } } }, { name: 'End' }, { name: 'Alone' }]);
+  assert.deepEqual(long.map((lane) => [lane.x, lane.y]), [[0, 40], [380, 40], [760, 40], [1140, 40], [1520, 40]]);
+  assert.deepEqual(layerGraph(3, [[0, 1], [0, 2], [1, 2], [2, 0]]), [{ column: 0, row: 0 }, { column: 1, row: 0 }, { column: 2, row: 0 }]);
 });

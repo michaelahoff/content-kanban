@@ -91,28 +91,65 @@ export function composePlaybook(spec, { laneId, lanes, templates, flowTemplate, 
   return { text, settings, template: own.template, warnings };
 }
 
-// Nodes without a place: left to right by how far they are from the start
-// lane along the routes, branches stacked below each other.
+// Layered layout for a graph. Columns follow the longest route path from the
+// start lane: a route that closes a loop does not count, so a node sits after
+// everything that leads to it. Within a column, nodes line up beside the
+// nodes that lead to them, so branches stay next to their parents and routes
+// cross as little as possible. Lanes no route reaches get columns after the
+// last. `edges` are [from, to] index pairs; the result gives each index its
+// column and row.
+export function layerGraph(count, edges) {
+  const out = Array.from({ length: count }, () => []);
+  for (const [from, to] of edges) if (Number.isInteger(from) && Number.isInteger(to) && from !== to && from >= 0 && to >= 0 && from < count && to < count && !out[from].includes(to)) out[from].push(to);
+  // Depth first from the start lane, then from each lane nothing reached. An
+  // edge to a node still on the stack closes a loop and is left out.
+  const state = new Array(count).fill(0); const preorder = new Array(count).fill(0); const component = new Array(count).fill(0);
+  const kept = Array.from({ length: count }, () => []); const postorder = [];
+  let visited = 0; let components = 0;
+  const visit = (v) => {
+    state[v] = 1; preorder[v] = visited++; component[v] = components;
+    for (const w of out[v]) {
+      if (state[w] === 1) continue;
+      kept[v].push(w);
+      if (state[w] === 0) visit(w);
+    }
+    state[v] = 2; postorder.push(v);
+  };
+  for (let root = 0; root < count; root++) if (state[root] === 0) { visit(root); components++; }
+  // Longest path in topological order, then each component after the
+  // columns of the ones before it.
+  const level = new Array(count).fill(0);
+  for (const v of [...postorder].reverse()) for (const w of kept[v]) level[w] = Math.max(level[w], level[v] + 1);
+  const width = new Array(components).fill(0);
+  for (let v = 0; v < count; v++) width[component[v]] = Math.max(width[component[v]], level[v] + 1);
+  const offset = width.map((_, c) => width.slice(0, c).reduce((sum, w) => sum + w, 0));
+  for (let v = 0; v < count; v++) level[v] += offset[component[v]];
+  const parents = Array.from({ length: count }, () => []);
+  for (let v = 0; v < count; v++) for (const w of kept[v]) if (level[w] > level[v]) parents[w].push(v);
+  const columns = new Map();
+  for (let v = 0; v < count; v++) { if (!columns.has(level[v])) columns.set(level[v], []); columns.get(level[v]).push(v); }
+  const row = new Array(count).fill(0);
+  for (const column of [...columns.keys()].sort((a, b) => a - b)) {
+    const centre = (v) => (parents[v].length ? parents[v].reduce((sum, parent) => sum + row[parent], 0) / parents[v].length : 0);
+    columns.get(column).sort((a, b) => centre(a) - centre(b) || preorder[a] - preorder[b]).forEach((v, index) => { row[v] = index; });
+  }
+  return Array.from({ length: count }, (_, v) => ({ column: level[v], row: row[v] }));
+}
+const place = ({ column, row }) => ({ x: column * nodeSpacing, y: 40 + row * rowSpacing });
+// Planned lanes of a create_flow call, routes naming lanes by name; a lane
+// with its own x and y keeps them.
 export function layoutGraph(lanes) {
   const index = new Map(lanes.map((lane, position) => [lane.name.toLowerCase(), position]));
-  const level = lanes.map(() => null);
-  if (lanes.length) level[0] = 0;
-  const queue = lanes.length ? [0] : [];
-  while (queue.length) {
-    const from = queue.shift();
-    for (const target of Object.values(lanes[from].playbook?.routes ?? {})) {
-      const to = index.get(String(target).trim().toLowerCase());
-      if (to === undefined || to === from || level[to] !== null) continue;
-      level[to] = level[from] + 1; queue.push(to);
-    }
-  }
-  let next = Math.max(-1, ...level.filter((value) => value !== null)) + 1;
-  const rows = new Map();
-  return lanes.map((lane, position) => {
-    const column = level[position] ?? next++;
-    const row = rows.get(column) ?? 0; rows.set(column, row + 1);
-    return { ...lane, x: lane.x ?? column * nodeSpacing, y: lane.y ?? 40 + row * rowSpacing };
-  });
+  const edges = lanes.flatMap((lane, from) => Object.values(lane.playbook?.routes ?? {}).map((target) => [from, index.get(String(target).trim().toLowerCase())]).filter(([, to]) => to !== undefined));
+  const placed = layerGraph(lanes.length, edges).map(place);
+  return lanes.map((lane, position) => ({ ...lane, x: lane.x ?? placed[position].x, y: lane.y ?? placed[position].y }));
+}
+// A flow's lanes as the workspace lists them, their routes resolved to lane IDs.
+export function layoutStages(stages) {
+  const at = new Map(stages.map((stage, position) => [stage.id, position]));
+  const edges = stages.flatMap((stage, from) => (stage.playbook?.routes ?? []).filter((route) => route.laneId && at.has(route.laneId)).map((route) => [from, at.get(route.laneId)]));
+  const placed = layerGraph(stages.length, edges).map(place);
+  return stages.map((stage, position) => ({ id: stage.id, name: stage.name, ...placed[position] }));
 }
 
 export function createFlowBuilder({ store }) {
@@ -139,7 +176,7 @@ export function createFlowBuilder({ store }) {
     return counts;
   };
   // What read_project says about one flow's lanes, and the problems a build left.
-  const laneView = (stage, counts) => ({ id: stage.id, name: stage.name, color: stage.color, position: stage.position, ...(stage.x === null ? {} : { x: stage.x, y: stage.y }), cardCount: counts.get(stage.id) ?? 0,
+  const laneView = (stage, counts) => ({ id: stage.id, name: stage.name, color: stage.color, position: stage.position, ...(stage.x === null ? {} : { x: stage.x, y: stage.y, placedBy: store.stagePlacement(stage.id) }), cardCount: counts.get(stage.id) ?? 0,
     playbook: stage.playbook && { path: stage.playbook.path, run: stage.playbook.run, provider: stage.playbook.provider, model: stage.playbook.model, hasInstructions: stage.playbook.hasInstructions,
       summary: stage.playbook.summary, advance: stage.playbook.advance, routes: stage.playbook.routes, action: stage.playbook.action, creates: stage.playbook.creates, errors: stage.playbook.errors } });
   function flowResult(ctx, projectId, flowId) {
@@ -314,12 +351,19 @@ export function createFlowBuilder({ store }) {
       check(!flow.stages.some((stage) => same(stage.name, input.name)), `“${flow.name}” already has a lane called “${input.name.trim()}”.`);
       const color = input.color ?? laneColors[flow.stages.length % laneColors.length];
       check(laneColors.includes(color), `color must be one of ${laneColors.join(', ')}.`);
-      let place = {};
+      let at = {};
       if (flow.kind === 'graph') {
         for (const axis of ['x', 'y']) check(input[axis] === undefined || (typeof input[axis] === 'number' && Number.isFinite(input[axis])), `${axis} must be a number.`);
-        place = { x: input.x ?? Math.max(-nodeSpacing, ...flow.stages.map((stage) => stage.x ?? 0)) + nodeSpacing, y: input.y ?? 40 };
+        // Without a place: one column before the nodes its routes lead to
+        // (after the last column when it has none), in the first free row.
+        const targets = isObject(input.playbook) && isObject(input.playbook.routes) ? Object.values(input.playbook.routes).map((target) => findLane(flow.stages, String(target))).filter(Boolean) : [];
+        const x = input.x ?? (targets.length ? Math.min(...targets.map((stage) => stage.x ?? 0)) - nodeSpacing : Math.max(-nodeSpacing, ...flow.stages.map((stage) => stage.x ?? 0)) + nodeSpacing);
+        const taken = flow.stages.filter((stage) => Math.abs((stage.x ?? 0) - x) < nodeSpacing / 2).map((stage) => stage.y ?? 0);
+        let y = 40;
+        while (taken.some((value) => Math.abs(value - y) < rowSpacing / 2)) y += rowSpacing;
+        at = { x, y: input.y ?? y };
       }
-      const stage = store.createStage(ctx, flow.id, { name: input.name.trim(), color, ...place });
+      const stage = store.createStage(ctx, flow.id, { name: input.name.trim(), color, ...at });
       if (input.position !== undefined) { check(Number.isInteger(input.position) && input.position >= 0, 'position must be a whole number, 0 first.'); store.updateStage(ctx, stage.id, { position: input.position }); }
       const warnings = [];
       if (input.playbook !== undefined) {
@@ -342,6 +386,25 @@ export function createFlowBuilder({ store }) {
       store.updateStage(ctx, lane.id, changes);
       const result = flowResult(ctx, projectId, flow.id);
       return { lane: result.flow.lanes.find((entry) => entry.id === lane.id), problems: result.problems };
+    },
+    // Every node placed from the routes. Nodes the user dragged into place
+    // stay unless the call says to rearrange them.
+    layout_flow(ctx, projectId, input) {
+      check(isObject(input) && typeof input.flowId === 'string', 'layout_flow needs a flowId.');
+      requireProject(ctx, projectId);
+      const flow = requireFlow(ctx, projectId, input.flowId);
+      check(flow.kind === 'graph', `“${flow.name}” is a board; only a graph has nodes to place.`);
+      const byHand = flow.stages.filter((stage) => store.stagePlacement(stage.id) === 'user');
+      if (byHand.length && input.rearrange !== true) fail(409, `The user placed ${byHand.map((stage) => `“${stage.name}”`).join(', ')} by hand. Ask whether to reorganize the canvas, then call layout_flow again with rearrange: true.`);
+      let moved = 0;
+      const nodes = layoutStages(flow.stages);
+      for (const node of nodes) {
+        const stage = flow.stages.find((entry) => entry.id === node.id);
+        if (stage.x === node.x && stage.y === node.y) continue;
+        store.updateStage(ctx, stage.id, { x: node.x, y: node.y });
+        moved++;
+      }
+      return { moved, nodes };
     },
     delete_lane(ctx, projectId, input) {
       check(isObject(input) && typeof input.laneId === 'string', 'delete_lane needs a laneId.');
@@ -381,13 +444,13 @@ export function createFlowBuilder({ store }) {
       return { routes: saved.playbook.routes.map((route) => ({ name: route.name, to: stages.find((stage) => stage.id === route.laneId)?.name ?? route.target })), advance: saved.playbook.advance };
     },
     write_map(ctx, projectId, input) {
-      check(isObject(input) && typeof input.flowId === 'string' && typeof input.text === 'string' && input.text.length <= maxDocumentLength, 'write_map needs a flowId and Markdown text.');
+      check(isObject(input) && typeof input.flowId === 'string' && typeof input.text === 'string' && input.text.length <= maxDocumentLength, 'write_map takes flowId and text (the complete Markdown of the map).');
       requireProject(ctx, projectId);
       const flow = requireFlow(ctx, projectId, input.flowId);
       return { path: writeDocument(ctx, flow.id, 'MAP.md', input.text).path };
     },
     write_skill(ctx, projectId, input) {
-      check(isObject(input) && typeof input.flowId === 'string' && typeof input.name === 'string' && typeof input.text === 'string' && input.text.length <= maxDocumentLength, 'write_skill needs a flowId, a name and Markdown text.');
+      check(isObject(input) && typeof input.flowId === 'string' && typeof input.name === 'string' && typeof input.text === 'string' && input.text.length <= maxDocumentLength, 'write_skill takes flowId, name and text (the complete Markdown of the skill).');
       check(skillName.test(input.name), 'Skill names use letters, numbers, - and _ (up to 80).');
       requireProject(ctx, projectId);
       const flow = requireFlow(ctx, projectId, input.flowId);
