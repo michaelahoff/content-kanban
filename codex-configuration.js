@@ -4,8 +4,12 @@ import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { CodexError } from './codex-adapter.js';
+import { builderInstructions } from './flow-builder-tools.js';
 
 export const cardInstructions = 'You are working in a Frameboard card workspace. Use Frameboard card tools for card changes. Tool availability does not grant authority to edit card fields, adopt images, change image roles, or move cards. Follow the authority frozen in each submission and request approval when required.';
+// What each agent role is told before the user's provider guidance: a card
+// chat or lane run (card), or a project chat building flows (builder).
+export const roleInstructions = { card: cardInstructions, builder: builderInstructions };
 export const mandatoryBehavior = [
   'Your installed Codex manages sign-in and conversation history. A listed model is not proof of account access.',
   'Codex uses workspace-write / on-request: workspace writes and sandboxed commands without network access can run automatically. Sandbox escapes require approval. Frameboard grants answer individual requests without writing native global rules. Retained originals, outputs, frozen history and authority metadata stay outside agent write authority, including under Full native access. Local and private network destinations are unreachable. Card acceptance stays separate.',
@@ -48,7 +52,7 @@ export async function configurationDiscovery(adapter, { cwd } = {}) {
 // Inherited (explicit opt-in, ADR 0002): Codex loads its own instructions,
 // skills, MCP servers, plugins/connectors and hooks, exactly as it would
 // outside Frameboard. No isolation is claimed; permissions stay separate.
-export function compileConfiguration(selection, discovery, dynamicTools = []) {
+export function compileConfiguration(selection, discovery, dynamicTools = [], role = 'card') {
   const inherited = selection.inherited === true;
   const selected = inherited ? [] : [...new Set(selection.selected ?? [])].sort();
   const reasons = [];
@@ -66,7 +70,7 @@ export function compileConfiguration(selection, discovery, dynamicTools = []) {
   }
   if (discovery.errors.length) reasons.push('Native discovery was incomplete; resolve its reported errors before submitting.');
   const nativeOptions = {
-    developerInstructions: [cardInstructions, selection.instructions ?? ''].filter(Boolean).join('\n\n'),
+    developerInstructions: [roleInstructions[role] ?? cardInstructions, selection.instructions ?? ''].filter(Boolean).join('\n\n'),
     sandbox: 'workspace-write', approvalPolicy: 'on-request', approvalsReviewer: 'user',
     config: inherited ? {} : {
       project_doc_max_bytes: 0, 'skills.bundled.enabled': false,
@@ -77,8 +81,10 @@ export function compileConfiguration(selection, discovery, dynamicTools = []) {
     dynamicTools: structuredClone(dynamicTools),
   };
   const inventory = items.map(({ id, kind, contentHash }) => ({ id, kind, ...(contentHash ? { contentHash } : {}) })).sort((a, b) => a.id.localeCompare(b.id));
+  // A card chat's snapshot has no role, so configurations frozen before roles
+  // existed keep their identity and their conversations resume.
   const value = {
-    provider: 'codex', workspace: discovery.cwd, harness: discovery.harness.userAgent, selected,
+    provider: 'codex', workspace: discovery.cwd, harness: discovery.harness.userAgent, selected, ...(role === 'card' ? {} : { role }),
     instructions: selection.instructions ?? '', ...(inherited ? { inherited } : { inventory }),
     ...(discovery.protection ? { protection: discovery.protection } : {}),
     nativeOptions, supported: reasons.length === 0, reasons: [...new Set(reasons)],
@@ -96,7 +102,7 @@ export function queuedConfigurationDecision(frozen, currentSelection, discovery)
   if (Boolean(frozen.inherited) !== (currentSelection.inherited === true)) return { status: 'held', reason: 'The queued configuration used a different Codex setup mode. Explicitly cancel or resubmit under the current mode.' };
   const removed = frozen.selected.filter((id) => !currentSelection.selected.includes(id));
   if (removed.length || frozen.instructions !== currentSelection.instructions) return { status: 'held', reason: 'The queued configuration includes removed or changed guidance. Explicitly cancel or resubmit under the new configuration.' };
-  const checked = compileConfiguration({ selected: frozen.selected, instructions: frozen.instructions, inherited: frozen.inherited }, discovery, frozen.nativeOptions.dynamicTools);
+  const checked = compileConfiguration({ selected: frozen.selected, instructions: frozen.instructions, inherited: frozen.inherited }, discovery, frozen.nativeOptions.dynamicTools, frozen.role ?? 'card');
   if (!checked.supported || configurationIdentity(checked) !== configurationIdentity(frozen)) return { status: 'held', reason: checked.reasons.join(' ') || 'The installed configuration inventory changed. Explicitly cancel or resubmit after reviewing the new discovery.' };
   return { status: 'ready' };
 }

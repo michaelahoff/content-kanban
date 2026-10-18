@@ -8,11 +8,11 @@ import { setTimeout as sleep } from 'node:timers/promises';
 const fail = (status, message) => { throw Object.assign(new Error(message), { status }); };
 export const maintenanceMessage = 'Frameboard is exporting a backup. Changes are paused until it finishes; your edits are kept and can be retried.';
 
-export function createMaintenance({ store, ctx, worker, lanes, settle, exportWorkspace, dataDir, codexHome, pollMs = 25 }) {
+export function createMaintenance({ store, ctx, worker, lanes, projectChat = null, settle, exportWorkspace, dataDir, codexHome, pollMs = 25 }) {
   let current = null; let last = null; let writers = 0;
   const defaultOutput = path.join(path.dirname(dataDir), 'backups');
   const running = () => store.chats.activeAttempts(ctx);
-  const quiet = () => !writers && worker.idle() && lanes.idle() && !running().length;
+  const quiet = () => !writers && worker.idle() && lanes.idle() && (projectChat?.idle() ?? true) && !running().length;
   const status = () => ({ active: Boolean(current), phase: current?.phase ?? 'idle', output: current?.output ?? null, defaultOutput,
     startedAt: current?.startedAt ?? null, running: current ? running() : [], last });
 
@@ -32,7 +32,7 @@ export function createMaintenance({ store, ctx, worker, lanes, settle, exportWor
     } finally {
       last.finishedAt = new Date().toISOString();
       current = null;
-      worker.wake(); lanes.wake();
+      worker.wake(); lanes.wake(); projectChat?.wake();
     }
   }
 

@@ -1154,6 +1154,55 @@ These values apply when a card enters this lane.
   assert.equal(await evaluate(`document.querySelectorAll('.archived-projects').length`), 0);
   console.log('PASS project archive and unarchive');
 
+  // Project chat: a message to the flow builder becomes one native turn; its
+  // tools change the board while the reply streams; Stop, fresh context and
+  // history across a reload.
+  await click('[data-action="show-chat"]');
+  await waitFor(`document.querySelector('.project-chat-example') && document.querySelector('#project-chat-model option[value="test-model"]')`);
+  assert.equal(await evaluate(`document.querySelector('[data-action="project-chat-send"]').disabled`), true, 'Send waits for a message');
+  const sendsBeforeChat = codex.sends.length;
+  await fill('#project-chat-prompt', 'Build me an intro flow.');
+  await click('[data-action="project-chat-send"]');
+  await waitFor(`document.querySelector('#project-chat-transcript .chat-prompt-sent')?.textContent.includes('Build me an intro flow.') && !document.querySelector('#project-chat-progress').hidden`);
+  assert.equal(await evaluate(`document.querySelector('#project-chat-prompt').value`), '', 'The draft clears once sent');
+  for (let attempt = 0; attempt < 100 && codex.sends.length <= sendsBeforeChat; attempt++) await pause(50);
+  const builderSend = codex.sends[sendsBeforeChat];
+  assert.ok(builderSend?.input[0].text.includes('## Message\n\nBuild me an intro flow.'), 'The message reaches the provider under the project summary');
+  assert.ok(codex.threads.get(builderSend.threadId).config.developerInstructions.includes("Frameboard's flow builder"), 'The turn carries the builder guidance');
+  await waitFor(`document.querySelector('.project-chat-dot')`);
+  const builtFlow = await codex.tool(builderSend, 'create_flow', { name: 'Chat intros', kind: 'graph', lanes: [{ name: 'Inbox', playbook: { run: 'off', routes: { start: 'Draft' } } }, { name: 'Draft', playbook: { may_edit: ['intro'], routes: { done: 'Done' }, instructions: 'Write the intro.' } }, { name: 'Done' }] }, 'chat-call-1');
+  assert.equal(builtFlow.success, true, builtFlow.contentItems[0].text);
+  codex.emit(builderSend.threadId, { type: 'delta', turnId: builderSend.turnId, itemId: 'reply', delta: 'Built the Chat intros flow.' });
+  await waitFor(`document.querySelector('#project-chat-transcript .chat-reply-text')?.textContent.includes('Built the Chat intros flow.')`);
+  await waitFor(`[...document.querySelectorAll('.flow-link span')].some((node) => node.textContent === 'Chat intros')`);
+  codex.finish(builderSend, 'completed', 'Built the Chat intros flow.');
+  await waitFor(`document.querySelector('#project-chat-progress').hidden && !document.querySelector('.project-chat-dot')`);
+  assert.equal(await evaluate(`document.querySelector('[data-action="project-chat-stop"]').disabled`), true);
+  await snapshot('project-chat');
+  await fill('#project-chat-prompt', 'Add a review node.');
+  await evaluate(`document.querySelector('#project-chat-prompt').dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true }))`);
+  for (let attempt = 0; attempt < 100 && codex.sends.length <= sendsBeforeChat + 1; attempt++) await pause(50);
+  assert.equal(codex.sends[sendsBeforeChat + 1].threadId, builderSend.threadId, 'Ctrl+Enter sends, and the conversation continues in the same native thread');
+  await waitFor(`!document.querySelector('[data-action="project-chat-stop"]').disabled`);
+  await click('[data-action="project-chat-stop"]');
+  await waitFor(`document.querySelector('#project-chat-transcript').textContent.includes('Stopped') && document.querySelector('#project-chat-progress').hidden`);
+  await click('[data-action="project-chat-fresh"]');
+  await click('#small-form [type="submit"]');
+  await waitFor(`document.querySelector('#project-chat-transcript').textContent.includes('Previous conversation')`);
+  await send('Page.navigate', { url: base });
+  await waitFor(`!!document.querySelector('[data-action="show-chat"]')`);
+  await click('[data-action="show-chat"]');
+  await waitFor(`document.querySelector('#project-chat-transcript').textContent.includes('Previous conversation')`);
+  assert.equal(await evaluate(`document.querySelectorAll('#project-chat-transcript .chat-submission').length`), 2, 'The history survives a reload');
+  // Leave the board as the steps that follow expect it.
+  const chatFlow = (await api('GET', '/api/workspace')).flows.find((flow) => flow.name === 'Chat intros');
+  await api('DELETE', `/api/flows/${chatFlow.id}`);
+  await click('[data-action="show-board"]');
+  await waitFor(`document.querySelector('#board') && ![...document.querySelectorAll('.flow-link span')].some((node) => node.textContent === 'Chat intros')`);
+  // The card chat checks below start from a fixture that has sent nothing.
+  codex.sends.length = 0; codex.interrupts.length = 0; codex.threads.clear();
+  console.log('PASS project chat: a message to the flow builder streams its reply, its tools change the board live, Stop, fresh context and history across a reload');
+
   // Library: batch upload, thumbnails, explicit collision choices, inspection and download.
   await click('[data-action="show-library"]');
   await waitFor(`document.querySelector('#library .library-empty')?.textContent.includes('No files yet')`);

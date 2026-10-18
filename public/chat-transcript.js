@@ -1,7 +1,7 @@
 import { escape } from './ui.js';
 
 const activityNames = {
-  reasoning: 'Thinking', commandExecution: 'Running a command', dynamicToolCall: 'Using a card tool',
+  reasoning: 'Thinking', commandExecution: 'Running a command', dynamicToolCall: 'Using a Frameboard tool',
   mcpToolCall: 'Using a connected tool', fileChange: 'Updating files', webSearch: 'Searching the web',
   imageView: 'Inspecting an image', plan: 'Planning', contextCompaction: 'Compacting context',
 };
